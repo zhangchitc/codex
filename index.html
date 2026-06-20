@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codex 工作原理 · HTML Slides</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    min-height: 100vh;
+    background: #f7f5ef;
+    color: #111;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", "Helvetica Neue", Arial, sans-serif;
+    padding: 64px 24px 80px;
+  }
+  .container { max-width: 980px; margin: 0 auto; }
+  header { text-align: center; margin-bottom: 56px; }
+  h1 {
+    font-size: 40px;
+    line-height: 1.15;
+    font-weight: 900;
+    letter-spacing: -.6px;
+    margin-bottom: 14px;
+  }
+  .sub {
+    color: #756f66;
+    font-size: 17px;
+    line-height: 1.65;
+    font-weight: 650;
+  }
+  .list { display: grid; gap: 18px; }
+  a.row {
+    position: relative;
+    display: grid;
+    grid-template-columns: 380px 1fr auto;
+    min-height: 238px;
+    background: #fff;
+    border: 1px solid #ded9ce;
+    border-radius: 18px;
+    color: #111;
+    text-decoration: none;
+    overflow: hidden;
+    box-shadow: 0 18px 50px rgba(44,42,39,.06);
+    transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease;
+  }
+  a.row:hover {
+    transform: translateY(-2px);
+    border-color: #111;
+    box-shadow: 0 22px 70px rgba(44,42,39,.12);
+  }
+  .thumb {
+    aspect-ratio: 16 / 10;
+    min-height: 238px;
+    background: #eeeae1 center / cover no-repeat;
+    border-right: 1px solid #ded9ce;
+  }
+  .body {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 30px 34px;
+  }
+  .episode {
+    color: #837d73;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 14px;
+    font-weight: 850;
+    margin-bottom: 12px;
+  }
+  .title {
+    font-size: 29px;
+    line-height: 1.22;
+    font-weight: 900;
+    letter-spacing: -.3px;
+    margin-bottom: 13px;
+  }
+  .desc {
+    align-self: flex-start;
+    border-radius: 999px;
+    background: #f1eee7;
+    color: #4f4a43;
+    padding: 8px 13px;
+    font-size: 15px;
+    line-height: 1.35;
+    font-weight: 750;
+  }
+  .arrow {
+    display: grid;
+    place-items: center;
+    padding: 0 30px;
+    color: #b5afa4;
+    font-size: 28px;
+    transition: transform .2s ease, color .2s ease;
+  }
+  a.row:hover .arrow { transform: translateX(4px); color: #111; }
+  footer {
+    text-align: center;
+    margin-top: 72px;
+    color: #9a948a;
+    font-size: 12px;
+  }
+  @media (max-width: 760px) {
+    a.row { grid-template-columns: 1fr; }
+    .thumb { border-right: 0; border-bottom: 1px solid #ded9ce; }
+    .arrow { display: none; }
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Codex 工作原理 · HTML Slides</h1>
+      <div class="sub">存放「Codex 工作原理」系列视频的交互式 HTML slides 和缩略图。</div>
+    </header>
+
+    <main class="list">
+      <a class="row" href="069_reconnect/visual.html">
+        <div class="thumb" style="background-image:url('thumbs-tight/069.jpg')"></div>
+        <div class="body">
+          <div class="episode">069</div>
+          <div class="title">Reconnecting 背后的传输层问题</div>
+          <div class="desc">Responses API · WebSocket · HTTP streaming</div>
+        </div>
+        <div class="arrow">→</div>
+      </a>
+    </main>
+
+    <footer>Codex 工作原理系列视频配套 slides</footer>
+  </div>
+</body>
+</html>

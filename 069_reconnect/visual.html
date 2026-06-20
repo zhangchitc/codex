@@ -1,0 +1,1320 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codex 工作原理 · Reconnecting</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #f7f5ef;
+    --panel: #ffffff;
+    --panel-2: #f1eee7;
+    --line: #ded9ce;
+    --soft-line: #ded9ce;
+    --text: #111111;
+    --muted: #6f6a62;
+    --dim: #918c84;
+    --paper: #f6f3eb;
+    --paper-2: #ffffff;
+    --ink: #111111;
+    --accent: #2c2a27;
+    --warn: #e2b66f;
+  }
+  body {
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Noto Sans SC", "PingFang SC", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 18px;
+  }
+  .stage {
+    width: min(1360px, 100%);
+    min-height: 820px;
+    position: relative;
+    overflow: hidden;
+    border: 1px solid #242424;
+    border-radius: 28px;
+    background:
+      linear-gradient(180deg, #ffffff 0%, #f6f3eb 100%);
+    box-shadow: 0 28px 90px rgba(44, 42, 39, .12);
+  }
+  .watermark {
+    display: none;
+  }
+  .watermark img { width: 100%; height: 100%; display: block; }
+  header {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 28px;
+    align-items: start;
+    padding: 30px 42px 12px;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    min-width: 0;
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    height: 52px;
+    padding: 0 22px;
+    border-radius: 999px;
+    background: var(--ink);
+    color: #fff;
+    font-size: 22px;
+    font-weight: 900;
+    letter-spacing: 1px;
+    white-space: nowrap;
+  }
+  h1 {
+    font-size: 28px;
+    line-height: 1.15;
+    font-weight: 850;
+    letter-spacing: 0;
+    color: #1f1e1b;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding-top: 8px;
+  }
+  .tabs {
+    display: flex;
+    gap: 4px;
+    background: #eeeae1;
+    border: 1px solid #ded9ce;
+    border-radius: 999px;
+    padding: 5px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.65);
+  }
+  .tab {
+    appearance: none;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: #7b756d;
+    font: inherit;
+    font-size: 15px;
+    font-weight: 800;
+    padding: 10px 17px;
+    cursor: pointer;
+  }
+  .tab.active {
+    background: #fffdf8;
+    color: var(--ink);
+    box-shadow: 0 8px 24px rgba(44,42,39,.08), 0 1px 0 rgba(255,255,255,.85) inset;
+  }
+  main {
+    position: relative;
+    z-index: 1;
+    padding: 8px 42px 30px;
+  }
+  .scene { display: none; }
+  .scene.active { display: block; }
+  .scene-title {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    margin: 6px 0 22px;
+  }
+  .scene-title .num {
+    font-family: "SF Mono", Menlo, monospace;
+    color: var(--dim);
+    font-size: 18px;
+    font-weight: 900;
+  }
+  .scene-title .text {
+    font-size: 47px;
+    line-height: 1.05;
+    font-weight: 950;
+    letter-spacing: 0;
+  }
+  .scene-title .sub {
+    margin-left: auto;
+    color: var(--muted);
+    font-size: 19px;
+    font-weight: 800;
+  }
+  .grid {
+    display: grid;
+    gap: 18px;
+  }
+  .grid.transport { grid-template-columns: 1fr; }
+  .grid.root { grid-template-columns: 1.08fr .92fr; }
+  .grid.root.single { grid-template-columns: 1fr; }
+  .grid.root.single .network-map { display: grid; align-content: center; }
+  .grid.code { grid-template-columns: minmax(0, 1.08fr) minmax(0, .92fr); }
+  .card {
+    border: 1px solid #ded9ce;
+    border-radius: 20px;
+    background: rgba(255,255,255,.92);
+    box-shadow: 0 18px 55px rgba(44,42,39,.08);
+  }
+  .paper-card {
+    background: var(--paper);
+    color: var(--ink);
+    border-color: var(--soft-line);
+  }
+  .card-h {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 18px 20px 0;
+    color: var(--muted);
+    font-size: 15px;
+    font-weight: 900;
+    letter-spacing: .7px;
+    text-transform: uppercase;
+  }
+  .paper-card .card-h { color: #8a857c; }
+  .card-h.no-transform { text-transform: none; }
+  .card-b { padding: 20px; }
+  .prompt-box {
+    min-height: 478px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .chat-line {
+    background: #f6f3eb;
+    border: 1px solid #ded9ce;
+    border-radius: 14px;
+    padding: 16px;
+  }
+  .chat-label {
+    color: var(--muted);
+    font-size: 15px;
+    font-weight: 800;
+    margin-bottom: 8px;
+  }
+  .chat-text {
+    font-size: 22px;
+    font-weight: 900;
+    line-height: 1.35;
+  }
+  .payload {
+    display: grid;
+    gap: 10px;
+  }
+  .payload span {
+    display: flex;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 12px 14px;
+    border-radius: 12px;
+    background: #f6f3eb;
+    border: 1px solid #ded9ce;
+    color: #36322d;
+    font-size: 16px;
+    font-weight: 800;
+  }
+  .payload code { color: #111; font-family: "SF Mono", Menlo, monospace; }
+  .lanes {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+  }
+  .lane {
+    min-height: 478px;
+    padding: 24px;
+    border-radius: 20px;
+    border: 1px solid #ded9ce;
+    background: #ffffff;
+    position: relative;
+    overflow: hidden;
+  }
+  .lane.hot {
+    background: #f6f3eb;
+    color: var(--ink);
+    border-color: var(--soft-line);
+  }
+  .lane-title {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 22px;
+  }
+  .lane-title strong {
+    font-size: 28px;
+    font-weight: 950;
+  }
+  .badge {
+    border-radius: 999px;
+    padding: 8px 12px;
+    background: #ece8df;
+    color: #2c2a27;
+    font-size: 14px;
+    font-weight: 900;
+    white-space: nowrap;
+  }
+  .lane.hot .badge {
+    background: #111;
+    color: #fff;
+  }
+  .endpoint {
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 16px;
+    line-height: 1.45;
+    font-weight: 850;
+    word-break: normal;
+    overflow-wrap: anywhere;
+    padding: 16px;
+    border-radius: 14px;
+    background: #ffffff;
+    color: #111;
+    border: 1px solid #ded9ce;
+  }
+  .lane.hot .endpoint {
+    background: #fff;
+    color: #111;
+    border-color: #ded9ce;
+  }
+  .flow-steps {
+    display: grid;
+    gap: 12px;
+    margin-top: 20px;
+  }
+  .flow-step {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 18px;
+    font-weight: 850;
+    color: #36322d;
+  }
+  .lane.hot .flow-step { color: #242424; }
+  .dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--muted);
+    flex: 0 0 auto;
+  }
+  .lane.hot .dot { background: var(--ink); }
+  .compare {
+    margin-top: 24px;
+    padding: 18px;
+    border-radius: 16px;
+    border: 1px dashed #c9c4ba;
+    color: #57534c;
+    font-size: 18px;
+    font-weight: 850;
+    line-height: 1.45;
+  }
+  .lane.hot .compare {
+    border-color: #c9c4ba;
+    color: #3a3a3a;
+  }
+  .network-map {
+    padding: 26px;
+    min-height: 520px;
+  }
+  .map-row {
+    display: grid;
+    grid-template-columns: 1fr 90px 1fr;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .node {
+    min-height: 108px;
+    border-radius: 18px;
+    border: 1px solid #ded9ce;
+    background: #ffffff;
+    padding: 18px;
+  }
+  .node.light {
+    background: #f6f3eb;
+    color: var(--ink);
+    border-color: var(--soft-line);
+  }
+  .node-title {
+    font-size: 22px;
+    font-weight: 950;
+    margin-bottom: 8px;
+  }
+  .node-desc {
+    color: var(--muted);
+    font-size: 16px;
+    line-height: 1.45;
+    font-weight: 750;
+  }
+  .node.light .node-desc { color: #6b665e; }
+  .arrow {
+    height: 3px;
+    background: linear-gradient(90deg, #918c84, #111);
+    position: relative;
+  }
+  .arrow:after {
+    content: "";
+    position: absolute;
+    right: -2px;
+    top: -6px;
+    border-left: 13px solid #111;
+    border-top: 8px solid transparent;
+    border-bottom: 8px solid transparent;
+  }
+  .split-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin-top: 20px;
+  }
+  .path {
+    border-radius: 18px;
+    padding: 18px;
+    border: 1px solid #ded9ce;
+    background: #ffffff;
+    min-height: 230px;
+  }
+  .path.ok { border-color: #56514a; }
+  .path.bad { border-color: #5d4632; }
+  .path-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 21px;
+    font-weight: 950;
+    margin-bottom: 14px;
+  }
+  .status-chip {
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: var(--paper);
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 950;
+  }
+  .path.bad .status-chip {
+    background: #2c2118;
+    color: #e6c48a;
+  }
+  .path-list {
+    display: grid;
+    gap: 9px;
+    color: #4f4a43;
+    font-size: 16px;
+    line-height: 1.35;
+    font-weight: 760;
+  }
+  .log-panel {
+    min-height: 520px;
+    padding: 34px 38px;
+    background: #ffffff;
+  }
+  .log-head {
+    font-size: 31px;
+    color: #6f6a62;
+    font-weight: 850;
+    margin-bottom: 28px;
+  }
+  .log-rule {
+    height: 2px;
+    background: #ded9ce;
+    margin-bottom: 26px;
+  }
+  .log-lines {
+    font-size: 31px;
+    line-height: 1.72;
+    font-weight: 850;
+    color: #6f6a62;
+  }
+  .log-lines .count { color: #8f8f8f; }
+  .thinking {
+    color: #111;
+  }
+  .code-panel {
+    min-height: 520px;
+    overflow: hidden;
+    min-width: 0;
+  }
+  .code-window {
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 14px;
+    line-height: 1.42;
+    color: #24211d;
+    background: #ffffff;
+    border-radius: 16px;
+    border: 1px solid #ded9ce;
+    padding: 16px;
+    overflow: hidden;
+  }
+  .code-window .comment { color: #8b857b; }
+  .code-window .kw { color: #111; font-weight: 900; }
+  .code-window .fn { color: #4f4a43; font-weight: 900; }
+  .code-window .hit {
+    display: inline-block;
+    background: #111;
+    color: #fff;
+    border-radius: 5px;
+    padding: 0 5px;
+    font-weight: 900;
+  }
+  .decision {
+    display: grid;
+    gap: 8px;
+  }
+  .grid.code .decision {
+    align-content: start;
+    gap: 10px;
+  }
+  .decision-card {
+    padding: 14px;
+    border-radius: 18px;
+    border: 1px solid #ded9ce;
+    background: #ffffff;
+  }
+  .grid.code .decision-card {
+    padding: 19px 24px;
+    border-radius: 20px;
+  }
+  .decision-card.paper-card {
+    background: var(--paper);
+    border-color: var(--soft-line);
+  }
+  .decision-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 20px;
+    font-weight: 950;
+    margin-bottom: 10px;
+  }
+  .grid.code .decision-title {
+    font-size: 28px;
+    line-height: 1.08;
+    margin-bottom: 10px;
+  }
+  .decision-text {
+    color: #57534c;
+    font-size: 15px;
+    line-height: 1.45;
+    font-weight: 780;
+  }
+  .grid.code .decision-text {
+    font-size: 20px;
+    line-height: 1.34;
+    font-weight: 850;
+  }
+  .decision-code {
+    display: inline-block;
+    margin-top: 8px;
+    padding: 5px 9px;
+    border-radius: 9px;
+    background: #111;
+    color: #fff;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: .86em;
+    font-weight: 900;
+  }
+  .logic-tree {
+    border: 1px solid #ded9ce;
+    border-radius: 22px;
+    background: rgba(255,255,255,.9);
+    padding: 24px;
+    display: grid;
+    gap: 0;
+    min-width: 0;
+    min-height: 520px;
+    align-content: center;
+  }
+  .logic-kicker {
+    color: #777168;
+    font-size: 16px;
+    font-weight: 900;
+    margin-bottom: 14px;
+  }
+  .logic-row {
+    display: grid;
+    grid-template-columns: 42px 1fr;
+    gap: 16px;
+    align-items: start;
+  }
+  .logic-dot {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: #111;
+    color: #fff;
+    display: grid;
+    place-items: center;
+    font-size: 17px;
+    font-weight: 950;
+    font-family: "SF Mono", Menlo, monospace;
+  }
+  .logic-row strong {
+    display: block;
+    font-size: 28px;
+    line-height: 1.18;
+    font-weight: 950;
+  }
+  .logic-row span:last-child {
+    display: block;
+    margin-top: 7px;
+    color: #5f5a52;
+    font-size: 18px;
+    font-weight: 850;
+  }
+  .logic-row span.logic-code {
+    display: inline-block;
+    color: #fff;
+    font-size: 16px;
+  }
+  .logic-connector {
+    width: 3px;
+    height: 28px;
+    background: #ded9ce;
+    margin: 8px 0 8px 15px;
+  }
+  .logic-code {
+    display: inline-block;
+    max-width: 100%;
+    margin-top: 8px;
+    padding: 6px 10px;
+    border-radius: 9px;
+    background: #111;
+    color: #fff;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 16px;
+    font-weight: 900;
+    white-space: nowrap;
+  }
+  .logic-branches {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    min-width: 0;
+    margin-top: 22px;
+  }
+  .logic-branch {
+    border-top: 3px solid #ded9ce;
+    padding-top: 14px;
+    min-width: 0;
+  }
+  .logic-branch::before {
+    content: attr(data-label);
+    display: inline-flex;
+    align-items: center;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 999px;
+    background: #eeeae1;
+    color: #5f5a52;
+    font-size: 14px;
+    font-weight: 950;
+    margin-bottom: 10px;
+  }
+  .logic-branch strong {
+    display: block;
+    font-size: 25px;
+    line-height: 1.15;
+    font-weight: 950;
+  }
+  .logic-branch.primary {
+    border-color: #111;
+  }
+  .logic-branch.primary::before {
+    background: #111;
+    color: #fff;
+  }
+  .paper-card .decision-text { color: #57534c; }
+  .toml {
+    margin-top: 10px;
+    background: #fff;
+    border: 1px solid #ded9ce;
+    border-radius: 14px;
+    padding: 12px;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 13px;
+    line-height: 1.42;
+    color: #111;
+    font-weight: 850;
+    white-space: pre-wrap;
+  }
+  .toml .key { color: #6c665d; }
+  .diff-window {
+    background: #fff;
+    border: 1px solid #d0d7de;
+    border-radius: 10px;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 20px;
+    line-height: 1.52;
+    color: #24292f;
+    font-weight: 400;
+    overflow: hidden;
+  }
+  .diff-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 18px;
+    background: #f6f8fa;
+    border-bottom: 1px solid #d0d7de;
+    color: #24292f;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 18px;
+    font-weight: 650;
+  }
+  .diff-header:before {
+    content: "";
+    width: 14px;
+    height: 18px;
+    border: 1.6px solid #57606a;
+    border-radius: 3px;
+    background: #fff;
+  }
+  .diff-body {
+    padding: 12px 0;
+  }
+  .diff-line {
+    display: block;
+    padding: 0 18px;
+    white-space: pre;
+  }
+  .diff-line.add {
+    background: #e6ffec;
+  }
+  .diff-line.del {
+    background: #ffebe9;
+  }
+  .diff-line.ctx {
+    color: #57606a;
+  }
+  .diff-line .mark {
+    display: inline-block;
+    width: 1.35em;
+    color: #57606a;
+    font-weight: 400;
+  }
+  .diff-line.add .mark { color: #1a7f37; }
+  .diff-line.del .mark { color: #cf222e; }
+  .result-arrow {
+    display: grid;
+    place-items: center;
+    color: var(--dim);
+    font-size: 22px;
+    font-weight: 950;
+  }
+  .grid.code .result-arrow {
+    height: 18px;
+    font-size: 24px;
+  }
+  .result {
+    background: #fff;
+    color: #111;
+    border-radius: 18px;
+    padding: 16px;
+    border: 1px solid #ded9ce;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .result strong {
+    font-size: 22px;
+    font-weight: 950;
+  }
+  .result span {
+    color: #6c665d;
+    font-size: 14px;
+    font-weight: 850;
+  }
+  .transport-diagram {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+    min-height: 500px;
+  }
+  .diagram-lane {
+    position: relative;
+    padding: 24px;
+    border: 1px solid #ded9ce;
+    border-radius: 20px;
+    background: #ffffff;
+    overflow: hidden;
+  }
+  .diagram-lane.ws {
+    background: #f6f3eb;
+  }
+  .diagram-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 26px;
+  }
+  .diagram-head strong {
+    font-size: 32px;
+    font-weight: 950;
+  }
+  .diagram-area {
+    position: relative;
+    height: 330px;
+  }
+  .endpoint-row {
+    display: grid;
+    grid-template-columns: 150px 1fr 150px;
+    align-items: center;
+    gap: 18px;
+    margin-bottom: 18px;
+  }
+  .actor {
+    width: 150px;
+    height: 72px;
+    border-radius: 18px;
+    border: 1px solid #ded9ce;
+    background: #fff;
+    display: grid;
+    place-items: center;
+    text-align: center;
+    font-size: 20px;
+    font-weight: 950;
+    line-height: 1.15;
+    box-shadow: 0 10px 30px rgba(44,42,39,.06);
+  }
+  .server { justify-self: end; }
+  .rows {
+    display: grid;
+    gap: 13px;
+    margin-top: 10px;
+  }
+  .packet {
+    display: grid;
+    grid-template-columns: 150px 1fr 150px;
+    gap: 18px;
+    align-items: center;
+    min-height: 39px;
+  }
+  .packet-label {
+    font-size: 14px;
+    font-weight: 900;
+    color: #6f6a62;
+  }
+  .packet-label.left { text-align: right; }
+  .packet-label.right { text-align: left; }
+  .line {
+    position: relative;
+    height: 3px;
+    background: #111;
+  }
+  .line.dashed {
+    background: repeating-linear-gradient(90deg, #111 0 16px, transparent 16px 26px);
+  }
+  .line:after {
+    content: "";
+    position: absolute;
+    right: -2px;
+    top: -6px;
+    border-left: 12px solid #111;
+    border-top: 8px solid transparent;
+    border-bottom: 8px solid transparent;
+  }
+  .line.back:after {
+    right: auto;
+    left: -2px;
+    border-left: 0;
+    border-right: 12px solid #111;
+  }
+  .connection-tube {
+    margin: 15px 150px 10px;
+    min-height: 126px;
+    border: 2px solid #111;
+    border-radius: 999px;
+    position: relative;
+    background:
+      linear-gradient(90deg, transparent 0 49%, rgba(17,17,17,.08) 49% 51%, transparent 51% 100%);
+  }
+  .tube-label {
+    position: absolute;
+    left: 50%;
+    top: -14px;
+    transform: translateX(-50%);
+    border-radius: 999px;
+    padding: 6px 11px;
+    background: #111;
+    color: #fff;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 12px;
+    font-weight: 900;
+    white-space: nowrap;
+  }
+  .tube-msg {
+    position: absolute;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 13px;
+    font-weight: 900;
+    color: #111;
+    background: #f6f3eb;
+    border: 1px solid #ded9ce;
+    border-radius: 999px;
+    padding: 7px 10px;
+  }
+  .tube-msg.m1 { left: 24px; top: 34px; }
+  .tube-msg.m2 { right: 24px; top: 34px; }
+  .tube-msg.m3 { left: 118px; bottom: 20px; }
+  .diagram-note {
+    margin-top: 14px;
+    border: 1px dashed #c9c4ba;
+    border-radius: 16px;
+    padding: 16px 18px;
+    color: #4f4a43;
+    font-size: 18px;
+    line-height: 1.45;
+    font-weight: 850;
+  }
+  .ref-compare {
+    min-height: 620px;
+    border: 1px solid #ded9ce;
+    border-radius: 22px;
+    background: #fff;
+    padding: 26px 34px 22px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 52px;
+    position: relative;
+  }
+  .ref-col {
+    position: relative;
+    min-height: 520px;
+  }
+  .ref-title {
+    text-align: center;
+    font-size: 30px;
+    font-weight: 950;
+    margin-top: 8px;
+  }
+  .ref-icons {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    align-items: end;
+    margin-bottom: 16px;
+  }
+  .ref-person {
+    display: grid;
+    justify-items: center;
+    gap: 10px;
+    font-size: 22px;
+    font-weight: 950;
+  }
+  .laptop {
+    width: 112px;
+    height: 82px;
+    position: relative;
+  }
+  .laptop:before {
+    content: "";
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    top: 0;
+    height: 70px;
+    border: 3px solid #111;
+    border-bottom: 0;
+    border-radius: 8px 8px 0 0;
+  }
+  .laptop:after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 13px;
+    border: 3px solid #111;
+    border-radius: 2px;
+    background: #fff;
+    clip-path: polygon(0 0, 38% 0, 44% 38%, 56% 38%, 62% 0, 100% 0, 100% 100%, 0 100%);
+  }
+  .server-icon {
+    width: 112px;
+    display: grid;
+    gap: 9px;
+  }
+  .server-unit {
+    height: 38px;
+    border: 3px solid #111;
+    border-radius: 9px;
+    position: relative;
+  }
+  .server-unit:before,
+  .server-unit:after {
+    content: "";
+    position: absolute;
+    top: 15px;
+    width: 5px;
+    height: 5px;
+    background: #111;
+    border-radius: 50%;
+  }
+  .server-unit:before { right: 22px; }
+  .server-unit:after { right: 10px; }
+  .server-slots {
+    position: absolute;
+    left: 14px;
+    top: 11px;
+    display: flex;
+    gap: 6px;
+  }
+  .server-slots i {
+    display: block;
+    width: 4px;
+    height: 14px;
+    background: #111;
+  }
+  .timeline {
+    position: relative;
+    height: 360px;
+  }
+  .life {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: #111;
+  }
+  .life.client { left: 72px; }
+  .life.server { right: 72px; }
+  .cycle {
+    position: absolute;
+    right: 26px;
+    width: 26px;
+    background: #51e7e5;
+    border-radius: 2px;
+  }
+  .cycle.short.one { top: 62px; height: 69px; }
+  .cycle.short.two { top: 220px; height: 69px; }
+  .cycle.long { top: 62px; height: 265px; }
+  .msg {
+    position: absolute;
+    left: 72px;
+    right: 72px;
+    height: 34px;
+    z-index: 1;
+  }
+  .msg .arrow-line {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 16px;
+    height: 3px;
+    background: #e9652e;
+  }
+  .msg.to-server .arrow-line:after,
+  .msg.to-client .arrow-line:before {
+    content: "";
+    position: absolute;
+    top: -7px;
+    border-top: 8px solid transparent;
+    border-bottom: 8px solid transparent;
+  }
+  .msg.to-server .arrow-line:after {
+    right: -1px;
+    border-left: 13px solid #e9652e;
+  }
+  .msg.to-client .arrow-line:before {
+    left: -1px;
+    border-right: 13px solid #e9652e;
+  }
+  .msg.bidi .arrow-line:before,
+  .msg.bidi .arrow-line:after {
+    content: "";
+    position: absolute;
+    top: -7px;
+    border-top: 8px solid transparent;
+    border-bottom: 8px solid transparent;
+  }
+  .msg.bidi .arrow-line:before {
+    left: -1px;
+    border-right: 13px solid #e9652e;
+  }
+  .msg.bidi .arrow-line:after {
+    right: -1px;
+    border-left: 13px solid #e9652e;
+  }
+  .msg-box {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    transform: translateX(-50%);
+    background: rgba(255,255,255,.9);
+    border: 2px solid #aaa;
+    border-radius: 4px;
+    padding: 8px 18px;
+    min-width: 136px;
+    text-align: center;
+    font-size: 22px;
+    line-height: 1.1;
+    font-weight: 950;
+    white-space: nowrap;
+    z-index: 3;
+  }
+  .msg-box.multi {
+    min-width: 205px;
+    padding: 18px 18px;
+    min-height: 82px;
+    display: grid;
+    place-items: center;
+  }
+  .m-http-1 { top: 48px; }
+  .m-http-2 { top: 108px; }
+  .m-http-3 { top: 206px; }
+  .m-http-4 { top: 266px; }
+  .m-ws-1 { top: 48px; }
+  .m-ws-2 { top: 108px; }
+  .msg.box-only .arrow-line { display: none; }
+  .m-ws-3 { top: 188px; z-index: 3; }
+  .m-ws-3a { top: 184px; z-index: 2; }
+  .m-ws-3b { top: 213px; z-index: 2; }
+  .m-ws-3c { top: 242px; z-index: 2; }
+  .m-ws-4 { top: 300px; }
+  .legend {
+    position: absolute;
+    left: 50%;
+    bottom: 16px;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 22px;
+    font-weight: 900;
+    white-space: nowrap;
+  }
+  .legend .swatch {
+    width: 26px;
+    height: 26px;
+    background: #51e7e5;
+    border-radius: 2px;
+  }
+  @media (max-width: 980px) {
+    body { padding: 12px; }
+    .stage { min-height: auto; border-radius: 20px; }
+    header { grid-template-columns: 1fr; padding: 24px; }
+    .brand { flex-wrap: wrap; }
+    h1 { font-size: 28px; white-space: normal; }
+    main { padding: 8px 24px 28px; }
+    .scene-title { display: block; }
+    .scene-title .text { font-size: 36px; margin-top: 6px; }
+    .scene-title .sub { margin-top: 8px; font-size: 17px; }
+    .grid.transport, .grid.root, .grid.code, .lanes, .map-row, .split-row { grid-template-columns: 1fr; }
+    .map-row { gap: 12px; }
+    .arrow { width: 3px; height: 44px; margin: 0 auto; background: linear-gradient(180deg, #666, #f3efe5); }
+    .arrow:after {
+      right: auto;
+      left: -6px;
+      top: auto;
+      bottom: -2px;
+      border-top: 13px solid #f3efe5;
+      border-left: 8px solid transparent;
+      border-right: 8px solid transparent;
+      border-bottom: 0;
+    }
+  }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="watermark"><img src="openai-mark-white.svg" alt=""></div>
+    <header>
+      <div class="brand">
+        <h1>Reconnecting 背后的传输层问题</h1>
+      </div>
+      <nav class="tabs" aria-label="演示场景">
+        <button class="tab active" data-scene="transport">请求怎么出去</button>
+        <button class="tab" data-scene="code">源码怎么判断</button>
+        <button class="tab" data-scene="solution">解决方案</button>
+      </nav>
+    </header>
+
+    <main>
+      <section class="scene active" data-panel="transport">
+        <div class="scene-title">
+          <span class="text">同一套 Responses API，两种传输机制</span>
+        </div>
+        <div class="grid transport">
+          <div class="ref-compare">
+            <div class="ref-col">
+              <div class="ref-icons">
+                <div class="ref-person">
+                  <div class="laptop"></div>
+                  <div>Codex</div>
+                </div>
+                <div class="ref-person">
+                  <div class="server-icon">
+                    <div class="server-unit"><span class="server-slots"><i></i><i></i></span></div>
+                    <div class="server-unit"><span class="server-slots"><i></i><i></i></span></div>
+                  </div>
+                  <div>OpenAI API</div>
+                </div>
+              </div>
+              <div class="timeline">
+                <div class="life client"></div>
+                <div class="life server"></div>
+                <div class="cycle short one"></div>
+                <div class="cycle short two"></div>
+                <div class="msg to-server m-http-1"><div class="arrow-line"></div><div class="msg-box">请求</div></div>
+                <div class="msg to-client m-http-2"><div class="arrow-line"></div><div class="msg-box">响应</div></div>
+                <div class="msg to-server m-http-3"><div class="arrow-line"></div><div class="msg-box">请求</div></div>
+                <div class="msg to-client m-http-4"><div class="arrow-line"></div><div class="msg-box">响应</div></div>
+              </div>
+              <div class="ref-title">HTTP Streaming</div>
+            </div>
+
+            <div class="ref-col">
+              <div class="ref-icons">
+                <div class="ref-person">
+                  <div class="laptop"></div>
+                  <div>Codex</div>
+                </div>
+                <div class="ref-person">
+                  <div class="server-icon">
+                    <div class="server-unit"><span class="server-slots"><i></i><i></i></span></div>
+                    <div class="server-unit"><span class="server-slots"><i></i><i></i></span></div>
+                  </div>
+                  <div>OpenAI API</div>
+                </div>
+              </div>
+              <div class="timeline">
+                <div class="life client"></div>
+                <div class="life server"></div>
+                <div class="cycle long"></div>
+                <div class="msg to-server m-ws-1"><div class="arrow-line"></div><div class="msg-box">握手</div></div>
+                <div class="msg to-client m-ws-2"><div class="arrow-line"></div><div class="msg-box">确认</div></div>
+                <div class="msg bidi m-ws-3a"><div class="arrow-line"></div></div>
+                <div class="msg bidi m-ws-3b"><div class="arrow-line"></div></div>
+                <div class="msg bidi m-ws-3c"><div class="arrow-line"></div></div>
+                <div class="msg box-only m-ws-3"><div class="arrow-line"></div><div class="msg-box multi">双向<br>消息</div></div>
+                <div class="msg bidi m-ws-4"><div class="arrow-line"></div><div class="msg-box">连接结束</div></div>
+              </div>
+              <div class="ref-title">WebSocket</div>
+            </div>
+            <div class="legend"><span class="swatch"></span>连接生命周期</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="scene" data-panel="solution">
+        <div class="scene-title">
+          <span class="text">修改 Codex 配置</span>
+        </div>
+        <div class="grid root single">
+          <div class="card paper-card network-map">
+            <div class="diff-window">
+              <div class="diff-header">~/.codex/config.toml</div>
+              <pre class="diff-body"><span class="diff-line del"><span class="mark">-</span>model_provider = "openai"</span><span class="diff-line add"><span class="mark">+</span>model_provider = "openai_http"</span><span class="diff-line ctx"><span class="mark"> </span></span><span class="diff-line add"><span class="mark">+</span>[model_providers.openai_http]</span><span class="diff-line add"><span class="mark">+</span>name = "OpenAI HTTP"</span><span class="diff-line add"><span class="mark">+</span>wire_api = "responses"</span><span class="diff-line add"><span class="mark">+</span>requires_openai_auth = true</span><span class="diff-line add"><span class="mark">+</span>supports_websockets = false</span></pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="scene" data-panel="code">
+        <div class="scene-title">
+          <span class="text">源码里在哪里启用WebSocket</span>
+        </div>
+        <div class="grid code">
+          <div class="card code-panel">
+              <div class="card-h no-transform">codex/codex-rs/core/src/client.rs</div>
+            <div class="card-b">
+              <pre class="code-window"><span class="comment">/// Streams a single model request within the current turn.
+/// The provider wire_api selects the protocol family first.
+/// For Responses, Codex prefers WebSocket when enabled,
+/// otherwise it streams over the HTTP Responses API.</span>
+<span class="kw">pub async fn</span> <span class="fn">stream</span>(...) -&gt; Result&lt;ResponseStream&gt; {
+    <span class="kw">let</span> wire_api = self.client.state.provider.info().<span class="hit">wire_api</span>;
+    <span class="kw">match</span> wire_api {
+        WireApi::Responses =&gt; {
+            <span class="kw">if</span> self.client.<span class="hit">responses_websocket_enabled()</span> {
+                self.stream_responses_websocket(...).await?
+            }
+
+            self.<span class="fn">stream_responses_api</span>(...).await
+        }
+    }
+}
+
+<span class="comment">/// WebSocket use is controlled by provider capability
+/// and session-scoped fallback state.</span>
+<span class="kw">pub fn</span> <span class="fn">responses_websocket_enabled</span>(&amp;self) -&gt; bool {
+    <span class="kw">if</span> !self.state.provider.info().<span class="hit">supports_websockets</span>
+        || self.state.disable_websockets.load(...)
+    {
+        <span class="kw">return</span> false;
+    }
+    true
+}</pre>
+            </div>
+          </div>
+
+          <div class="logic-tree">
+            <div class="logic-kicker">关键逻辑</div>
+            <div class="logic-row">
+              <span class="logic-dot">1</span>
+              <div>
+                <strong>选择 Responses API</strong>
+                <span>来自 provider.info().wire_api</span>
+                <span class="logic-code">wire_api = "responses"</span>
+              </div>
+            </div>
+            <div class="logic-connector"></div>
+            <div class="logic-row">
+              <span class="logic-dot">2</span>
+              <div>
+                <strong>进入判断函数</strong>
+                <span>这里只是入口，还没得出结论</span>
+                <span class="logic-code">responses_websocket_enabled()</span>
+              </div>
+            </div>
+            <div class="logic-connector"></div>
+            <div class="logic-row">
+              <span class="logic-dot">3</span>
+              <div>
+                <strong>读取 provider 能力</strong>
+                <span>看到这里才算判断完 WebSocket 能不能用</span>
+                <span class="logic-code">provider.info().supports_websockets</span>
+              </div>
+            </div>
+            <div class="logic-branches">
+              <div class="logic-branch" data-label="true">
+                <strong>优先尝试 WebSocket</strong>
+                <span class="logic-code">wss://.../responses</span>
+              </div>
+              <div class="logic-branch primary" data-label="false">
+                <strong>直接走 HTTP Streaming</strong>
+                <span class="logic-code">POST /v1/responses</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+<script>
+  const tabs = document.querySelectorAll(".tab");
+  const scenes = document.querySelectorAll(".scene");
+  function activateScene(name) {
+    const tab = document.querySelector(`.tab[data-scene="${name}"]`) || tabs[0];
+    if (!tab) return;
+      tabs.forEach((item) => item.classList.remove("active"));
+      scenes.forEach((scene) => scene.classList.remove("active"));
+      tab.classList.add("active");
+      document.querySelector(`[data-panel="${tab.dataset.scene}"]`).classList.add("active");
+  }
+
+  tabs.forEach((tab) => {
+    tab.addEventListener("click", () => {
+      activateScene(tab.dataset.scene);
+      history.replaceState(null, "", `#${tab.dataset.scene}`);
+    });
+  });
+  activateScene(location.hash.replace("#", "") || "transport");
+</script>
+</body>
+</html>
