@@ -60,13 +60,6 @@
     justify-content: center;
     padding: 30px 34px;
   }
-  .episode {
-    color: #837d73;
-    font-family: "SF Mono", Menlo, monospace;
-    font-size: 14px;
-    font-weight: 850;
-    margin-bottom: 12px;
-  }
   .title {
     font-size: 29px;
     line-height: 1.22;
@@ -93,16 +86,47 @@
     transition: transform .2s ease, color .2s ease;
   }
   a.row:hover .arrow { transform: translateX(4px); color: #111; }
+  .count {
+    position: absolute;
+    left: 10px;
+    bottom: 10px;
+    background: rgba(255, 255, 255, 0.92);
+    -webkit-backdrop-filter: saturate(140%) blur(6px);
+    backdrop-filter: saturate(140%) blur(6px);
+    border-radius: 999px;
+    padding: 5px 11px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    box-shadow: 0 1px 4px rgba(20,20,19,0.10);
+    pointer-events: none;
+    z-index: 1;
+  }
+  .count .num {
+    font-size: 13px;
+    font-weight: 700;
+    color: #141413;
+  }
+  .count .label {
+    font-size: 11px;
+    color: #98886e;
+    font-weight: 500;
+  }
   footer {
     text-align: center;
     margin-top: 72px;
     color: #9a948a;
     font-size: 12px;
   }
+  footer a { color: #111; text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
   @media (max-width: 760px) {
     a.row { grid-template-columns: 1fr; }
     .thumb { border-right: 0; border-bottom: 1px solid #ded9ce; }
     .arrow { display: none; }
+    .count { left: 10px; bottom: auto; top: 10px; }
   }
 </style>
 </head>
@@ -114,18 +138,49 @@
     </header>
 
     <main class="list">
-      <a class="row" href="069_reconnect/visual.html">
+      <a class="row" data-id="069" href="069_reconnect/visual.html">
         <div class="thumb" style="background-image:url('thumbs-tight/069.jpg')"></div>
         <div class="body">
-          <div class="episode">069</div>
           <div class="title">Reconnecting 背后的传输层问题</div>
           <div class="desc">Responses API · WebSocket</div>
         </div>
+        <div class="count"><span class="num">·</span><span class="label">点击</span></div>
         <div class="arrow">→</div>
       </a>
     </main>
 
-    <footer>Codex 工作原理系列视频配套 slides</footer>
+    <footer>
+      源仓库：<a href="https://github.com/zhangchitc/codex">github.com/zhangchitc/codex</a>
+    </footer>
   </div>
+<script>
+(function() {
+  const NS = 'codex-demos-zhangchi';
+  const API = 'https://abacus.jasoncameron.dev';
+  const rows = document.querySelectorAll('a.row[data-id]');
+
+  rows.forEach(async (a) => {
+    const id = a.dataset.id;
+    const numEl = a.querySelector('.count .num');
+    try {
+      const r = await fetch(`${API}/get/${NS}/${id}`);
+      if (r.ok) {
+        const d = await r.json();
+        numEl.textContent = (d && typeof d.value === 'number') ? d.value : 0;
+      } else {
+        numEl.textContent = '0';
+      }
+    } catch (e) {
+      numEl.textContent = '0';
+    }
+
+    a.addEventListener('click', () => {
+      const cur = parseInt(numEl.textContent, 10);
+      if (!isNaN(cur)) numEl.textContent = cur + 1;
+      fetch(`${API}/hit/${NS}/${id}`, { keepalive: true }).catch(() => {});
+    });
+  });
+})();
+</script>
 </body>
 </html>
