@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codex /v1/responses Request / Response Structure</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #f7f7f8;
+    color: #0d0d0d;
+    font-family: 'JetBrains Mono', monospace;
+    padding: 40px;
+    min-height: 100vh;
+  }
+
+  .container {
+    max-width: 1560px;
+    margin: 0 auto;
+  }
+
+  /* ---------- Title ---------- */
+  .title {
+    text-align: center;
+    margin-bottom: 34px;
+  }
+
+  .title .logo-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+
+  .title .logo-row svg {
+    width: 26px;
+    height: 26px;
+    color: #0d0d0d;
+  }
+
+  .title h1 {
+    font-size: 22px;
+    font-weight: 600;
+    color: #0d0d0d;
+    letter-spacing: -0.2px;
+  }
+
+  .title .sub {
+    font-size: 13px;
+    color: #8e8ea0;
+    margin-top: 8px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .title .sub .ep {
+    color: #10a37f;
+    font-weight: 600;
+  }
+
+  /* ---------- Layout ---------- */
+  .columns {
+    display: grid;
+    grid-template-columns: 1.18fr 0.82fr;
+    gap: 26px;
+    align-items: start;
+  }
+
+  .panel {
+    background: #ffffff;
+    border-radius: 14px;
+    border: 1px solid #e6e6e8;
+    overflow: hidden;
+    box-shadow: 0 1px 2px rgba(13, 13, 13, 0.04), 0 8px 24px rgba(13, 13, 13, 0.03);
+  }
+
+  .panel-header {
+    padding: 15px 20px;
+    border-bottom: 1px solid #ececef;
+    font-size: 14px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    background: #fbfbfc;
+  }
+
+  .panel-header .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+  }
+  .panel-header.req .dot { background: #0d0d0d; }
+  .panel-header.res .dot { background: #10a37f; }
+
+  .panel-header.req { color: #0d0d0d; }
+  .panel-header.res { color: #0a7d61; }
+
+  .panel-header .meth {
+    margin-left: auto;
+    font-size: 13.5px;
+    font-weight: 500;
+    color: #6e6e80;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .json-body {
+    padding: 16px 20px;
+    font-size: 13px;
+    line-height: 1.7;
+  }
+
+  /* ---------- JSON syntax — OpenAI/Codex palette ---------- */
+  .brace  { color: #0d0d0d; }
+  .key    { color: #10a37f; }          /* OpenAI green keys */
+  .str    { color: #383842; }
+  .num    { color: #0a7d61; font-weight: 500; }
+  .kw     { color: #a1a1ad; }          /* null, true, false */
+  .punct  { color: #c2c2cc; }
+  .hl     { color: #10a37f; font-weight: 600; }
+
+  /* ---------- Indentation ---------- */
+  .l0 { margin-left: 0; }
+  .l1 { margin-left: 22px; }
+  .l2 { margin-left: 44px; }
+  .l3 { margin-left: 66px; }
+  .l4 { margin-left: 88px; }
+
+  .line {
+    display: flex;
+    align-items: baseline;
+    min-height: 25px;
+    border-radius: 4px;
+    padding: 0 4px;
+  }
+  .line:hover { background: #f5f8f7; }
+
+  .annotation {
+    margin-left: 12px;
+    font-size: 12px;
+    color: #9a9aa6;
+    font-style: italic;
+    font-family: 'Inter', sans-serif;
+    white-space: nowrap;
+  }
+  .annotation.green {
+    color: #10a37f;
+    font-style: normal;
+    font-weight: 500;
+    background: rgba(16, 163, 127, 0.08);
+    padding: 1px 7px;
+    border-radius: 5px;
+    margin-left: auto;   /* 绿色块标注一律右对齐 */
+  }
+
+  .size-tag {
+    margin-left: auto;
+    font-size: 11px;
+    color: #b6b6c0;
+    font-family: 'JetBrains Mono', monospace;
+    white-space: nowrap;
+    padding-left: 12px;
+  }
+
+  .divider {
+    border: none;
+    border-top: 1px dashed #ececef;
+    margin: 9px 0;
+  }
+
+  /* highlighted hello / reply box */
+  .hl-box {
+    background: rgba(16, 163, 127, 0.06);
+    border: 1px solid rgba(16, 163, 127, 0.28);
+    border-radius: 6px;
+    padding: 3px 8px !important;
+  }
+
+  /* tool rows */
+  .tool {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-height: 24px;
+    padding: 0 4px;
+    border-radius: 4px;
+  }
+  .tool:hover { background: #f5f8f7; }
+  .tool .tname { color: #10a37f; font-weight: 600; font-size: 12.5px; }
+  .tool .tdesc { color: #7d7d8a; font-size: 12px; font-family: 'Inter', sans-serif; }
+  .badge {
+    font-size: 10px;
+    font-family: 'Inter', sans-serif;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+  .badge.fn  { background: #eef1f4; color: #6b6b78; }
+  .badge.cus { background: #fff1e8; color: #c2622f; }
+  .badge.bi  { background: rgba(16,163,127,0.12); color: #0a7d61; }
+
+  /* SSE event label */
+  .evt { color: #9a9aa6; font-size: 12px; font-family: 'JetBrains Mono', monospace; }
+
+  /* token summary card */
+  .token-card {
+    margin: 4px 4px 0;
+    padding: 14px 16px;
+    background: #fbfbfc;
+    border: 1px solid #ececef;
+    border-radius: 10px;
+    font-family: 'Inter', sans-serif;
+  }
+  .token-card .row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 13px; padding: 3px 0; color: #4a4a55;
+  }
+  .token-card .row .v { font-family: 'JetBrains Mono', monospace; font-weight: 600; color: #0d0d0d; }
+  .token-card .row .v.green { color: #10a37f; }
+  .token-card .total {
+    margin-top: 8px; padding-top: 10px; border-top: 1px solid #ececef;
+    font-size: 14px; font-weight: 600; color: #0d0d0d;
+  }
+  .token-card .note { margin-top: 8px; font-size: 11.5px; color: #9a9aa6; line-height: 1.5; }
+
+  .footer {
+    text-align: center;
+    margin-top: 30px;
+    font-size: 11px;
+    color: #a1a1ad;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .footer .sep { color: #d4d4dc; margin: 0 8px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="title">
+    <div class="logo-row">
+      <svg viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.5045 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/>
+      </svg>
+      <h1>一句 “hello” 背后的 Responses API 请求结构</h1>
+    </div>
+    <div class="sub">POST chatgpt.com/backend-api/codex/<span class="ep">v1/responses</span></div>
+  </div>
+
+  <div class="columns">
+
+    <!-- ==================== REQUEST ==================== -->
+    <div class="panel">
+      <div class="panel-header req"><span class="dot"></span>Request Body<span class="meth">POST · application/json</span></div>
+      <div class="json-body">
+
+        <div class="line l0"><span class="brace">{</span></div>
+
+        <div class="line l1"><span class="key">"model"</span><span class="punct">: </span><span class="str hl">"gpt-5.5"</span><span class="punct">,</span></div>
+
+        <hr class="divider">
+
+        <!-- instructions -->
+        <div class="line l1"><span class="key">"instructions"</span><span class="punct">: </span><span class="str">"You are Codex, an agent based on GPT-5..."</span><span class="punct">,</span><span class="annotation green">第①块 · 系统提示词</span></div>
+
+        <hr class="divider">
+
+        <!-- input -->
+        <div class="line l1"><span class="key">"input"</span><span class="punct">: [</span></div>
+
+        <!-- developer message -->
+        <div class="line l2"><span class="brace">{</span> <span class="key">"role"</span><span class="punct">: </span><span class="str hl">"developer"</span><span class="punct">, </span><span class="key">"content"</span><span class="punct">: [</span><span class="annotation green">第②块 · 运行时注入</span></div>
+        <div class="line l3"><span class="brace">{</span> <span class="key">"text"</span><span class="punct">: </span><span class="str">"&lt;permissions instructions&gt; ..."</span> <span class="brace">}</span><span class="punct">,</span><span class="annotation">沙箱 / 可写目录 / 审批规则</span></div>
+        <div class="line l3"><span class="brace">{</span> <span class="key">"text"</span><span class="punct">: </span><span class="str">"&lt;collaboration_mode&gt; Default ..."</span> <span class="brace">}</span><span class="punct">,</span><span class="annotation">协作模式</span></div>
+        <div class="line l3"><span class="brace">{</span> <span class="key">"text"</span><span class="punct">: </span><span class="str">"&lt;skills_instructions&gt; ..."</span> <span class="brace">}</span><span class="punct">,</span><span class="annotation">可用 skills 清单</span></div>
+        <div class="line l3"><span class="brace">{</span> <span class="key">"text"</span><span class="punct">: </span><span class="str">"&lt;plugins_instructions&gt; ..."</span> <span class="brace">}</span><span class="annotation">插件</span></div>
+        <div class="line l2"><span class="punct">] },</span></div>
+
+        <!-- user message: agents + env -->
+        <div class="line l2"><span class="brace">{</span> <span class="key">"role"</span><span class="punct">: </span><span class="str hl">"user"</span><span class="punct">, </span><span class="key">"content"</span><span class="punct">: [</span><span class="annotation green">第③块 · 项目上下文</span></div>
+        <div class="line l3"><span class="brace">{</span> <span class="key">"text"</span><span class="punct">: </span><span class="str">"# AGENTS.md instructions ..."</span> <span class="brace">}</span><span class="punct">,</span><span class="annotation">仓库长期规则</span></div>
+        <div class="line l3"><span class="brace">{</span> <span class="key">"text"</span><span class="punct">: </span><span class="str">"&lt;environment_context&gt; ..."</span> <span class="brace">}</span><span class="annotation">cwd / shell / date / tz / 权限</span></div>
+        <div class="line l2"><span class="punct">] },</span></div>
+
+        <!-- user message: hello -->
+        <div class="line l2"><span class="brace">{</span> <span class="key">"role"</span><span class="punct">: </span><span class="str hl">"user"</span><span class="punct">, </span><span class="key">"content"</span><span class="punct">: [</span></div>
+        <div class="line l3 hl-box"><span class="brace">{</span> <span class="key">"type"</span><span class="punct">: </span><span class="str">"input_text"</span><span class="punct">, </span><span class="key">"text"</span><span class="punct">: </span><span class="str hl">"hello"</span> <span class="brace">}</span><span class="annotation green">← 你的真实问题</span></div>
+        <div class="line l2"><span class="punct">] }</span></div>
+
+        <div class="line l1"><span class="punct">],</span></div>
+
+        <hr class="divider">
+
+        <!-- tools -->
+        <div class="line l1"><span class="key">"tools"</span><span class="punct">: [</span><span class="annotation green">第④块 · 14 个工具定义</span></div>
+
+        <div class="line l2"><span class="brace">{</span> <span class="key">"type"</span><span class="punct">: </span><span class="str">"function"</span><span class="punct">, </span><span class="key">"name"</span><span class="punct">: </span><span class="str hl">"shell_command"</span> <span class="brace">}</span><span class="punct">,</span><span class="annotation">跑 shell 命令</span></div>
+        <div class="line l2"><span class="brace">{</span> <span class="key">"type"</span><span class="punct">: </span><span class="str">"custom"</span><span class="punct">, </span><span class="key">"name"</span><span class="punct">: </span><span class="str hl">"apply_patch"</span> <span class="brace">}</span><span class="punct">,</span><span class="annotation">文件增删改查</span></div>
+        <div class="line l2"><span class="brace">{</span> <span class="key">"type"</span><span class="punct">: </span><span class="str">"function"</span><span class="punct">, </span><span class="key">"name"</span><span class="punct">: </span><span class="str hl">"update_plan"</span> <span class="brace">}</span><span class="punct">,</span><span class="annotation">维护任务清单</span></div>
+        <div class="line l2"><span class="brace">{</span> <span class="key">"type"</span><span class="punct">: </span><span class="str hl">"web_search"</span> <span class="brace">}</span><span class="punct">,</span><span class="annotation">联网搜索</span></div>
+        <div class="line l2"><span class="brace">{</span> <span class="key">"type"</span><span class="punct">: </span><span class="str hl">"image_generation"</span> <span class="brace">}</span><span class="punct">,</span><span class="annotation">生成图片</span></div>
+        <div class="line l2"><span class="punct">...</span></div>
+
+        <div class="line l1"><span class="punct">],</span></div>
+
+        <hr class="divider">
+
+        <!-- tail params -->
+        <div class="line l1"><span class="key">"reasoning"</span><span class="punct">: { </span><span class="key">"effort"</span><span class="punct">: </span><span class="str hl">"high"</span><span class="punct"> },</span><span class="annotation">最高推理档</span></div>
+        <div class="line l1"><span class="key">"store"</span><span class="punct">: </span><span class="kw">false</span><span class="punct">,</span><span class="annotation">不在服务端留存</span></div>
+        <div class="line l1"><span class="key">"stream"</span><span class="punct">: </span><span class="kw">true</span><span class="punct">,</span></div>
+        <div class="line l1"><span class="key">"prompt_cache_key"</span><span class="punct">: </span><span class="str kw">"···"</span><span class="annotation">缓存键（已脱敏）</span></div>
+
+        <div class="line l0"><span class="brace">}</span></div>
+      </div>
+    </div>
+
+    <!-- ==================== RESPONSE ==================== -->
+    <div class="panel">
+      <div class="panel-header res"><span class="dot"></span>Response<span class="meth">200 · text/event-stream (SSE)</span></div>
+      <div class="json-body">
+
+        <div class="line l0"><span class="brace">{</span></div>
+        <div class="line l1"><span class="key">"id"</span><span class="punct">: </span><span class="str kw">"resp_···"</span><span class="punct">,</span><span class="annotation">已脱敏</span></div>
+        <div class="line l1"><span class="key">"object"</span><span class="punct">: </span><span class="str">"response"</span><span class="punct">,</span></div>
+        <div class="line l1"><span class="key">"model"</span><span class="punct">: </span><span class="str hl">"gpt-5.5"</span><span class="punct">,</span></div>
+        <div class="line l1"><span class="key">"status"</span><span class="punct">: </span><span class="str hl">"completed"</span><span class="punct">,</span></div>
+
+        <hr class="divider">
+
+        <!-- output -->
+        <div class="line l1"><span class="key">"output"</span><span class="punct">: [</span><span class="annotation green">模型回复</span></div>
+        <div class="line l2"><span class="brace">{</span> <span class="key">"type"</span><span class="punct">: </span><span class="str">"message"</span><span class="punct">, </span><span class="key">"role"</span><span class="punct">: </span><span class="str">"assistant"</span><span class="punct">,</span></div>
+        <div class="line l3"><span class="key">"content"</span><span class="punct">: [{ </span><span class="key">"type"</span><span class="punct">: </span><span class="str">"output_text"</span><span class="punct">,</span></div>
+        <div class="line l4 hl-box"><span class="key">"text"</span><span class="punct">: </span><span class="str hl">"Hello. What would you like to work on?"</span></div>
+        <div class="line l3"><span class="punct">}] }</span></div>
+        <div class="line l1"><span class="punct">],</span></div>
+
+        <hr class="divider">
+
+        <div class="line l1"><span class="key">"reasoning"</span><span class="punct">: { </span><span class="key">"effort"</span><span class="punct">: </span><span class="str">"high"</span><span class="punct">, </span><span class="key">"summary"</span><span class="punct">: </span><span class="kw">null</span><span class="punct"> },</span></div>
+
+        <hr class="divider">
+
+        <!-- usage -->
+        <div class="line l1"><span class="key">"usage"</span><span class="punct">: {</span><span class="annotation green">token使用统计</span></div>
+        <div class="line l2"><span class="key">"input_tokens"</span><span class="punct">: </span><span class="num hl">14,694</span><span class="punct">,</span><span class="annotation">规则+上下文+工具几乎全在这</span></div>
+        <div class="line l2"><span class="key">"input_tokens_details"</span><span class="punct">: {</span></div>
+        <div class="line l3"><span class="key">"cached_tokens"</span><span class="punct">: </span><span class="num hl">2,432</span><span class="annotation">命中缓存的部分</span></div>
+        <div class="line l2"><span class="punct">},</span></div>
+        <div class="line l2"><span class="key">"output_tokens"</span><span class="punct">: </span><span class="num">14</span><span class="punct">,</span><span class="annotation">回复只占 14</span></div>
+        <div class="line l2"><span class="key">"output_tokens_details"</span><span class="punct">: { </span><span class="key">"reasoning_tokens"</span><span class="punct">: </span><span class="num">0</span><span class="punct"> },</span></div>
+        <div class="line l2"><span class="key">"total_tokens"</span><span class="punct">: </span><span class="num hl">14,708</span></div>
+        <div class="line l1"><span class="brace">}</span></div>
+        <div class="line l0"><span class="brace">}</span></div>
+
+        <hr class="divider">
+
+        <!-- token summary card -->
+        <div class="token-card">
+          <div class="row"><span>你输入的 <span style="font-family:'JetBrains Mono',monospace;">hello</span></span><span class="v">≈ 1 token</span></div>
+          <div class="row"><span>instructions + developer + 项目上下文 + tools</span><span class="v green">≈ 14,693 tokens</span></div>
+          <div class="row"><span>模型回复</span><span class="v">14 tokens</span></div>
+          <div class="row total"><span>本次总消耗</span><span class="v">14,708 tokens</span></div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+  <div class="footer">
+    OpenAI Responses API <span class="sep">·</span> Codex 工作原理系列 #070 <span class="sep">·</span> 字段结构与 usage 数字取自实测 trace <span class="sep">·</span> 2026-06-21
+  </div>
+
+</div>
+</body>
+</html>
