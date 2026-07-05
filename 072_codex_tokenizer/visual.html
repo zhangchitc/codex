@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codex 072 · Tokenizer 把文字变成 token 数字</title>
+<link rel="icon" href="data:,">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root{
+    --bg:#0d0d0d;
+    --ink:#f2f3f5;
+    --muted:#9a9aa6;
+    --dim:#6e6e7a;
+    --arrow:#b6b6c4;           /* 流程箭头：比 dim 亮，清楚可见 */
+    --line:rgba(255,255,255,.09);
+    --line-2:rgba(255,255,255,.14);
+    --card:#161618;
+    --card-2:#1b1b1e;
+    --accent:#6aa0ff;          /* OpenAI 蓝灰 */
+    --accent-soft:rgba(106,160,255,.15);
+    --accent-line:rgba(106,160,255,.55);
+    --accent-ink:#cfe0ff;
+    /* Token IDs 专用琥珀色（数字 = 机器表示，醒目区分于绿/蓝/紫） */
+    --id-fill:rgba(240,179,102,.16);
+    --id-line:rgba(240,179,102,.62);
+    --id-div:rgba(240,179,102,.32);
+    --id-ink:#f6c486;
+    /* tokenizer 页彩色 token 高亮（柔和 pastel，深色文字） */
+    --t0:#ffd9b3; --t1:#fff0a8; --t2:#c6ecca; --t3:#bcd9ff; --t4:#e6c9f5; --t5:#ffc9c9;
+    --mono:"JetBrains Mono","SF Mono",Menlo,monospace;
+    --sans:"Inter","PingFang SC",-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;
+  }
+
+  html,body{height:100%;}
+  body{
+    background:
+      radial-gradient(1200px 420px at 50% -8%, rgba(106,160,255,.07), transparent 60%),
+      var(--bg);
+    color:var(--ink);
+    font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;
+    overflow:hidden;
+  }
+
+  .deck{ height:100vh; display:flex; flex-direction:column; }
+
+  /* ---------- top bar (persistent) ---------- */
+  .topbar{
+    flex:0 0 auto;
+    display:flex; align-items:center; justify-content:space-between;
+    gap:24px;
+    padding:20px 46px;
+    border-bottom:1px solid var(--line);
+  }
+  .brand{ display:flex; align-items:center; gap:16px; min-width:0; }
+  .ep{
+    display:inline-flex; align-items:center; height:38px; padding:0 16px;
+    border-radius:999px; background:var(--ink); color:#0d0d0d;
+    font-weight:800; font-size:15px; letter-spacing:.3px; white-space:nowrap;
+  }
+  .brand .ttl{ font-size:20px; font-weight:700; letter-spacing:.2px; color:var(--ink); white-space:nowrap; }
+  .brand .ttl b{ color:var(--accent); font-weight:800; }
+
+  .tabs{ display:flex; gap:6px; padding:5px; border:1px solid var(--line); border-radius:999px; background:rgba(255,255,255,.03); }
+  .tab{
+    appearance:none; border:1px solid transparent; border-radius:999px; cursor:pointer;
+    background:transparent; color:var(--muted);
+    font-family:var(--sans); font-size:15px; font-weight:700;
+    padding:9px 16px; white-space:nowrap; transition:.18s;
+  }
+  .tab:hover{ color:var(--ink); }
+  .tab.active{ color:var(--accent-ink); background:var(--accent-soft); border-color:var(--accent-line); }
+  .tab .n{ font-family:var(--mono); margin-right:6px; opacity:.85; }
+
+  /* ---------- slides ---------- */
+  .stage{ position:relative; flex:1 1 auto; }
+  .slide{
+    position:absolute; inset:0;
+    display:none; flex-direction:column;
+    padding:26px 46px 16px;
+  }
+  .slide.active{ display:flex; }
+  .wrap{ width:100%; max-width:1340px; margin:0 auto; flex:1; display:flex; flex-direction:column;
+         justify-content:flex-start; align-items:center; text-align:center; gap:16px; }
+
+  .kicker{ font-family:var(--mono); font-size:14px; color:var(--accent); letter-spacing:1.5px; font-weight:600; }
+  .head{ font-size:32px; line-height:1.18; font-weight:800; letter-spacing:.2px; }
+  .head .hl{ color:var(--accent); }
+  .sub{ font-size:16px; color:var(--muted); line-height:1.5; max-width:980px; }
+
+  .flow-label{ display:flex; align-items:center; gap:10px; justify-content:center; color:var(--muted); font-size:15px; font-weight:600; }
+  .flow-label .num{ font-family:var(--mono); color:var(--accent); font-weight:700; }
+  .arrow-down{ color:var(--arrow); font-size:22px; line-height:1; text-align:center; }
+  .arrow-down.big{ font-size:30px; font-weight:700; }
+
+  /* token chips (tokenizer-page echo) */
+  .chiprow{ display:flex; flex-wrap:wrap; gap:8px 6px; justify-content:center; align-items:flex-end; }
+  .col{ display:flex; flex-direction:column; align-items:center; gap:7px; }
+  .chip{
+    font-family:var(--mono); font-size:18px; font-weight:600; color:#1a1a1a;
+    background:var(--t0); border-radius:7px; padding:7px 9px; white-space:pre; line-height:1;
+  }
+  .tid{ font-family:var(--mono); font-size:14px; color:var(--muted); font-weight:500; }
+  .col.mark .chip{ outline:2px solid var(--accent); outline-offset:2px; }
+  .col.mark .tid{ color:var(--accent-ink); }
+
+  /* slide 3 — encode 流程图：input → tokenizer(encode) → tokens → token ids */
+  .s3diagram{ display:flex; flex-direction:column; align-items:center; gap:9px; margin-top:34px; }
+  .s3lbl{ color:var(--muted); font-size:15px; font-weight:600; letter-spacing:.3px; }
+  .s3input{ background:rgba(16,185,129,.13); border:1px solid rgba(16,185,129,.55); border-radius:12px;
+            padding:14px 30px; font-size:22px; font-weight:600; color:var(--ink); }
+  .s3inslot{ width:600px; display:flex; justify-content:center; }
+  .s3tkwrap{ display:flex; align-items:center; justify-content:center; gap:16px; }
+  .s3tkbox{ background:var(--accent-soft); border:1px solid var(--accent-line); border-radius:12px;
+            padding:13px 32px; font-size:20px; font-weight:800; color:var(--accent-ink); white-space:nowrap; }
+  .s3tkbox .enc{ font-family:var(--mono); font-weight:600; font-size:15px; opacity:.85; }
+  .s3lookup{ flex:0 0 150px; display:flex; align-items:center; gap:8px; color:var(--muted); font-size:15px; font-weight:600; }
+  .s3lookup .ar{ color:var(--dim); font-size:18px; }
+  .s3fork{ position:relative; width:600px; height:38px; }
+  .s3fork .stem{ position:absolute; top:0; left:50%; transform:translateX(-50%); width:3px; height:15px; background:var(--arrow); }
+  .s3fork .bus{ position:absolute; top:15px; left:50px; right:50px; height:3px; background:var(--arrow); }
+  .s3fork .fdrops{ position:absolute; top:16px; left:0; right:0; display:grid; grid-template-columns:repeat(6,100px); column-gap:0; justify-items:center; }
+  .s3fork .fdrops .fa{ color:var(--arrow); font-size:22px; font-weight:700; line-height:1; }
+  .s3rowwrap{ display:flex; align-items:center; justify-content:center; gap:18px; }
+  .s3rowwrap::after{ content:''; flex:0 0 140px; }
+  .s3rowwrap .rl{ flex:0 0 140px; text-align:right; color:var(--ink); font-size:22px; font-weight:800; letter-spacing:.3px; }
+  .s3bar{ display:flex; width:600px; border:1px solid var(--line-2); border-radius:10px; overflow:hidden; }
+  .s3bar .cell{ flex:0 0 100px; height:48px; display:flex; align-items:center; justify-content:center; font-family:var(--mono); }
+  .tokbar .cell{ font-size:18px; font-weight:600; color:#1a1a1a; }
+  .tokbar .cell + .cell{ border-left:1px solid rgba(0,0,0,.18); }
+  .s3bar.idbar{ border-color:var(--id-line); }
+  .idbar .cell{ font-size:16px; font-weight:700; color:var(--id-ink); background:var(--id-fill); }
+  .idbar .cell + .cell{ border-left:1px solid var(--id-div); }
+  .s3bar .cell.marked{ box-shadow:inset 0 0 0 2px var(--accent); }
+  .idbar .cell.marked{ color:var(--id-ink); font-weight:700; background:var(--id-fill); }
+  .s3drops{ display:grid; grid-template-columns:repeat(6,100px); column-gap:0; justify-items:center; }
+  .s3drops .da{ color:var(--arrow); font-size:22px; font-weight:700; line-height:1; }
+  .s3botlbl{ color:var(--muted); font-size:15px; font-weight:600; margin-top:4px; }
+
+  .textcard{
+    align-self:center; background:var(--card); border:1px solid var(--line-2); border-radius:14px;
+    padding:18px 26px; font-family:var(--mono); font-size:24px; font-weight:500; color:var(--ink);
+  }
+
+  .takeaway{ display:flex; align-items:center; gap:14px; justify-content:center; margin-top:4px; }
+  .takeaway .big{ font-size:22px; font-weight:800; }
+  .pill{
+    font-family:var(--mono); font-size:20px; font-weight:700;
+    background:#000; border:1px solid var(--line-2); color:#fff; padding:8px 16px; border-radius:10px; white-space:nowrap;
+  }
+  .pill .ne{ color:var(--accent); }
+
+  .note{ font-size:15px; color:var(--muted); text-align:center; line-height:1.55; }
+  .note b{ color:var(--ink); font-weight:700; }
+
+  /* ---------- slide 4 — encode / decode 对齐网格 + 虚线连同一模型 ---------- */
+  .t4grid{ position:relative; display:grid; grid-template-columns:repeat(10, auto); column-gap:15px; row-gap:28px; align-items:center; justify-items:center; width:fit-content; margin:40px auto 0; }
+  .t4tag{ justify-self:start; font-size:20px; font-weight:800; color:var(--accent-ink); line-height:1.1; transform:translateX(-28px); }
+  .t4tag .en{ display:block; font-family:var(--mono); font-size:15px; font-weight:600; color:var(--muted); margin-top:4px; }
+  .t4cell{ position:relative; }
+  .t4cell .cap{ position:absolute; top:calc(100% + 8px); left:50%; transform:translateX(-50%); font-size:17px; font-weight:600; color:var(--ink); white-space:nowrap; }
+  .t4cell .cap.up{ top:auto; bottom:calc(100% + 8px); }
+  .fbox{ height:60px; display:flex; align-items:center; justify-content:center; text-align:center; box-sizing:border-box; white-space:nowrap; }
+  .fbox.txt{ background:rgba(16,185,129,.12); border:1px solid rgba(16,185,129,.5); padding:0 22px; border-radius:12px; }
+  .fbox.txt .t{ font-size:18px; font-weight:700; color:var(--ink); }
+  .fbox.tk{ background:var(--accent-soft); border:1px solid var(--accent-line); padding:0 28px; border-radius:999px; }
+  .fbox.tk .t{ font-size:17px; font-weight:800; color:var(--accent-ink); }
+  .fbox.emb{ background:rgba(240,179,102,.14); border:1px solid rgba(240,179,102,.5); padding:0 18px; border-radius:12px; }
+  .fbox.emb .t{ font-size:16px; font-weight:700; color:#f0b366; }
+  .fbox.tf{ width:188px; height:78px; background:linear-gradient(180deg, rgba(159,140,250,.24), rgba(159,140,250,.09)); border:1px solid rgba(159,140,250,.62); border-radius:6px; box-shadow:inset 0 1px 0 rgba(255,255,255,.07); }
+  .fbox.tf .t{ font-size:21px; font-weight:800; color:#ddd2ff; letter-spacing:.5px; }
+  /* 合并成一个跨上下两行的大 Transformer —— 同一个模型 */
+  .t4grid .fbox.tf.span2{ grid-column:10; grid-row:1 / 3; align-self:center; height:280px; flex-direction:column; gap:10px; }
+  .fbox.tf .sub{ font-size:14px; font-weight:600; color:#c2b5ee; letter-spacing:.3px; }
+  .fids{ display:flex; height:60px; border:1px solid var(--id-line); border-radius:8px; overflow:hidden; background:var(--id-fill); }
+  .fids .c{ display:flex; align-items:center; font-family:var(--mono); font-size:14px; font-weight:700; color:var(--id-ink); padding:0 9px; }
+  .fids .c + .c{ border-left:1px solid var(--id-div); }
+  /* 竖排 token id —— 互相分离的小框，每个 token 一个 */
+  .fidsv{ display:flex; flex-direction:column; gap:6px; }
+  .fidsv .c{ height:28px; display:flex; align-items:center; justify-content:center; font-family:var(--mono); font-size:14px; font-weight:700; color:var(--id-ink); background:var(--id-fill); border:1px solid var(--id-line); padding:0 14px; box-sizing:border-box; }
+  .fidsv .c.more{ background:none; border:none; color:var(--muted); letter-spacing:2px; }
+  /* embedding 向量图示 —— 每个 token 一条向量，互相分离，与 Token IDs 逐行对齐 */
+  .femb{ display:flex; flex-direction:column; gap:6px; }
+  .femb .v{ width:84px; height:28px; display:flex; border:1px solid var(--line-2); background:var(--card-2); overflow:hidden; }
+  .femb .v i{ flex:1; display:block; background:rgba(178,178,198,.34); }
+  .femb .v i + i{ border-left:1px solid rgba(0,0,0,.28); }
+  .femb .v.more{ border:none; background:none; align-items:center; justify-content:center; color:var(--muted); font-family:var(--mono); font-size:13.5px; }
+  .farrow{ color:var(--arrow); font-size:28px; font-weight:700; }
+  /* 解码侧从 Transformer 拉回 Token IDs 的长箭头（跨过空出的 embedding 列） */
+  .flongarrow{ grid-column:7 / 10; display:flex; align-items:center; width:100%; }
+  .flongarrow .ah{ flex:0 0 auto; width:0; height:0; border-top:8px solid transparent; border-bottom:8px solid transparent; border-right:14px solid var(--arrow); }
+  .flongarrow .ln{ flex:1; height:3px; background:var(--arrow); margin-left:-1px; }
+  .t4link{ position:absolute; right:94px; top:138px; height:148px; border-left:2px dashed rgba(159,140,250,.75); }
+  .t4link .ll{ position:absolute; left:12px; top:50%; transform:translateY(-50%); font-size:16px; font-weight:700; color:#cbbcf7; white-space:nowrap; }
+  /* Tokenizer 作用范围：虚线框住 文字 ⇄ Tokenizer ⇄ Token IDs（embedding / transformer 在框外，是模型的地盘） */
+  .t4scope{ position:absolute; left:58px; top:-46px; width:624px; height:528px; border:2px dashed var(--accent-line); border-radius:14px; pointer-events:none; }
+  .t4scope .lbl{ position:absolute; top:-11px; left:24px; background:#0d0d0d; padding:0 10px; font-size:15px; font-weight:800; color:var(--accent-ink); white-space:nowrap; }
+
+  /* ---------- slide 5 图例：竖向流程（复用 Tab1）+ 右侧 Vocabulary 词表 ---------- */
+  .vlegwrap{ position:relative; display:flex; align-items:center; justify-content:center; gap:90px; margin:14px auto 0; }
+  .vflow{ display:flex; flex-direction:column; align-items:center; gap:5px; }
+  .vflow .ar{ color:var(--arrow); font-size:18px; font-weight:700; line-height:1; }
+  .vflow .lbox{ height:42px; display:flex; align-items:center; justify-content:center; border-radius:10px; padding:0 18px; font-size:19px; font-weight:700; white-space:nowrap; }
+  .vflow .lbox.green{ background:rgba(16,185,129,.13); border:1px solid rgba(16,185,129,.55); color:var(--ink); font-family:var(--mono); }
+  .vflow .lbox.blue{ background:var(--accent-soft); border:1px solid var(--accent-line); color:var(--accent-ink); font-weight:800; }
+  .vflow .lbar{ display:flex; border:1px solid var(--line-2); border-radius:8px; overflow:hidden; }
+  .vflow .lbar span{ height:40px; display:flex; align-items:center; justify-content:center; font-family:var(--mono); font-size:17px; padding:0 11px; }
+  .vflow .lbar.tok span{ color:#1a1a1a; font-weight:600; }
+  .vflow .lbar.tok span + span{ border-left:1px solid rgba(0,0,0,.18); }
+  .vflow .lbar.id{ border-color:var(--id-line); }
+  .vflow .lbar.id span{ color:var(--id-ink); font-weight:700; background:var(--id-fill); }
+  .vflow .lbar.id span + span{ border-left:1px solid var(--id-div); }
+  /* token 与 token id 合成一个网格，逐列对齐 */
+  .vflow .tokidgrid{ display:grid; grid-template-columns:repeat(6, auto); border:1px solid var(--line-2); border-radius:8px; overflow:hidden; }
+  .vflow .tokidgrid .tc, .vflow .tokidgrid .ic{ display:flex; align-items:center; justify-content:center; font-family:var(--mono); padding:0 11px; }
+  .vflow .tokidgrid .tc{ height:40px; font-size:17px; font-weight:600; color:#1a1a1a; }
+  .vflow .tokidgrid .ic{ height:38px; font-size:16px; font-weight:700; color:var(--id-ink); background:var(--id-fill); border-top:1px solid var(--id-line); }
+  .vflow .tokidgrid .tc:not(:nth-child(6n)){ border-right:1px solid rgba(0,0,0,.18); }
+  .vflow .tokidgrid .ic:not(:nth-child(6n)){ border-right:1px solid var(--id-div); }
+  .vflow .rlbl{ font-size:12px; color:var(--muted); font-weight:600; }
+  .vlink{ position:absolute; display:flex; align-items:center; transform:translateY(-50%); }
+  .vlink .ln{ flex:1; height:2px; background:var(--arrow); }
+  .vlink .ah{ flex:0 0 auto; width:0; height:0; border-top:7px solid transparent; border-bottom:7px solid transparent; border-left:11px solid var(--arrow); }
+  .vlink .lbl{ position:absolute; left:50%; top:-22px; transform:translateX(-50%); color:#b9a8f0; font-size:14px; font-weight:700; white-space:nowrap; }
+  .vocabtbl{ border:1px solid rgba(159,140,250,.55); border-radius:10px; overflow:hidden; background:rgba(159,140,250,.06); box-shadow:0 0 0 3px rgba(159,140,250,.09); }
+  .vocabtbl .vth{ background:rgba(159,140,250,.20); color:#e2d8ff; font-weight:800; font-size:16px; padding:7px 16px; text-align:center; border-bottom:1px solid rgba(159,140,250,.4); }
+  .vocabtbl .vth .s{ font-family:var(--mono); font-size:12.5px; font-weight:600; color:#b9a8f0; }
+  .vocabtbl .vrow{ display:flex; align-items:stretch; border-bottom:1px solid rgba(255,255,255,.06); }
+  .vocabtbl .vrow:last-child{ border-bottom:none; }
+  .vocabtbl .vrow .w{ font-family:var(--mono); font-size:15px; font-weight:600; color:#1a1a1a; padding:4px 0; width:70px; text-align:center; display:flex; align-items:center; justify-content:center; }
+  .vocabtbl .vrow .i{ font-family:var(--mono); font-size:15px; font-weight:700; color:var(--id-ink); background:var(--id-fill); padding:4px 0; width:86px; text-align:center; display:flex; align-items:center; justify-content:center; border-left:1px solid rgba(159,140,250,.35); }
+  .vocabtbl .vrow.other .w{ background:var(--card-2); color:var(--muted); font-weight:500; }
+  .vocabtbl .vrow.other .i{ color:var(--muted); background:rgba(255,255,255,.02); }
+  .vocabtbl .vell{ text-align:center; color:var(--dim); font-family:var(--mono); font-size:15px; line-height:1; padding:5px 0; border-bottom:1px solid rgba(255,255,255,.06); }
+  .vocabtbl .vell:last-child{ border-bottom:none; }
+  .vlegcap{ font-size:16px; color:var(--muted); margin-top:12px; line-height:1.5; }
+  .vlegcap b{ color:var(--ink); font-weight:700; }
+  .vlegcap .vk{ color:#c6b7f5; font-weight:700; }
+  .vsublead{ font-size:19px; font-weight:800; color:var(--ink); margin:16px auto 0; }
+  .vsublead .hl{ color:var(--accent); }
+
+  /* ---------- slide 5 vocab: word-based vs character-based 对比表 ---------- */
+  .vtbl{ border-collapse:separate; border-spacing:0; width:auto; max-width:100%; margin:14px auto 0; table-layout:auto;
+         border:1px solid var(--line-2); border-radius:14px; overflow:hidden; }
+  .vtbl th, .vtbl td{ padding:11px 18px; text-align:left; vertical-align:middle; border-bottom:1px solid var(--line); border-right:1px solid var(--line); }
+  .vtbl tr:last-child td{ border-bottom:none; }
+  .vtbl th:last-child, .vtbl td:last-child{ border-right:none; }
+  .vtbl thead th{ background:rgba(255,255,255,.045); font-family:var(--mono); font-size:19px; font-weight:800; color:var(--ink); }
+  .vtbl thead th .th-s{ display:block; font-family:var(--sans); font-size:13px; font-weight:600; color:var(--muted); margin-top:3px; }
+  .vtbl td.dim, .vtbl th.dim{ background:rgba(255,255,255,.03); font-family:var(--sans); font-weight:700; color:var(--ink); font-size:16px; }
+  .vtbl td{ font-size:16px; color:var(--ink); line-height:1.3; }
+  .vtbl td.good{ background:rgba(16,185,129,.08); }
+  .vtbl td.bad{ background:rgba(255,120,120,.07); }
+  .vtbl td .ic{ font-weight:800; margin-right:8px; }
+  .vtbl td.good .ic{ color:#6ee7a8; }
+  .vtbl td.bad .ic{ color:#ff9d9d; }
+  .vtbl code{ font-family:var(--mono); font-size:14px; color:#ff9d9d; background:rgba(255,120,120,.12); padding:1px 5px; border-radius:5px; }
+  .vtbl .vsplit .tk.ch{ width:19px; padding:6px 0; font-size:14px; }
+  .vtbl .vsplit .cntb{ font-size:12.5px; padding:4px 7px; }
+
+  .vsplit{ display:flex; flex-wrap:wrap; align-items:center; gap:5px; }
+  .vsplit .cntb{ font-family:var(--mono); font-size:14px; font-weight:700; color:var(--accent-ink); background:var(--accent-soft); border:1px solid var(--accent-line); border-radius:7px; padding:5px 9px; margin-right:2px; }
+  .vsplit .tk{ font-family:var(--mono); font-weight:600; color:#1a1a1a; border-radius:7px; padding:7px 9px; font-size:17px; line-height:1; white-space:pre; }
+  .vsplit .tk.ch{ width:21px; padding:8px 0; text-align:center; font-size:15px; }
+
+  .vmid{ display:flex; flex-direction:column; align-items:center; gap:8px; margin:26px auto 0; background:var(--accent-soft); border:1px solid var(--accent-line); border-radius:14px; padding:12px 30px; width:fit-content; }
+  .vmid .vmlbl{ font-size:17px; font-weight:800; color:var(--accent-ink); }
+  .vmid .vmnote{ font-size:14px; color:var(--muted); }
+  .vmid .vmnote b{ color:var(--ink); font-weight:700; }
+  .vmid .vsplit{ gap:7px; }
+  .vmid .vsplit .src{ background:var(--card-2); color:var(--ink); border:1px solid var(--line-2); }
+  .vmid .vsplit .op{ color:var(--arrow); font-family:var(--mono); font-weight:700; font-size:16px; }
+  .vmid .vsplit .cnt{ font-family:var(--mono); font-size:14px; font-weight:700; color:var(--accent-ink); margin-left:2px; }
+
+  /* ---------- slide 6 bpe：左训练 / 右推理，各自竖向走 ---------- */
+  .bpe{ display:flex; align-items:flex-start; justify-content:center; gap:18px; margin-top:20px; }
+  .bcol{ display:flex; flex-direction:column; align-items:center; gap:3px; }
+  .bcolh{ font-size:18px; font-weight:800; color:var(--ink); margin-bottom:8px; text-align:center; white-space:nowrap; }
+  .bcolh .en{ font-family:var(--mono); font-size:13px; color:var(--muted); font-weight:600; }
+  .bcolh .tag{ display:block; font-family:var(--mono); font-size:12.5px; color:var(--muted); font-weight:600; margin-top:3px; }
+  /* 训练：左词表 / 右语料，逐行并排（每步两个状态） */
+  .btraingrid{ display:grid; grid-template-columns:auto auto; column-gap:16px; row-gap:4px; align-items:center; }
+  .btraingrid .gh{ font-size:12px; color:var(--muted); font-weight:700; text-align:center; margin-bottom:2px; }
+  .btraingrid > .bvoc{ justify-self:end; margin-top:0; }
+  .btraingrid > .bstate{ justify-self:center; }
+  .btraingrid > .bvstep{ justify-self:center; }
+  .bstate{ display:flex; flex-direction:column; align-items:center; gap:4px; }
+  .bseq{ display:flex; gap:5px; align-items:center; }
+  .bcap{ font-size:12px; color:var(--dim); text-align:center; white-space:nowrap; }
+  .bcap b{ color:var(--muted); font-weight:700; }
+  .bchip{ font-family:var(--mono); font-weight:700; color:#1a1a1a; border-radius:6px; padding:7px 9px; font-size:17px; line-height:1; white-space:pre; }
+  .bchip.a{ background:var(--t3); } .bchip.b{ background:var(--t1); } .bchip.c{ background:var(--t5); }
+  .bchip.bc{ background:var(--t2); } .bchip.abc{ background:var(--t4); } .bchip.abcbc{ background:var(--t3); }
+  .bchip.src{ background:var(--card-2); color:var(--ink); border:1px solid var(--line-2); }
+  .bchip.dim{ background:#25252b; color:#b4b4be; border:1px solid var(--line-2); }  /* 非本轮合并的 token：中性灰，不抢戏 */
+  .bidchip{ font-family:var(--mono); font-weight:700; color:var(--id-ink); background:var(--id-fill); border:1px solid var(--id-line); border-radius:6px; padding:7px 11px; font-size:17px; line-height:1; }
+  .bvoc{ display:inline-flex; align-items:center; gap:9px; padding:4px 12px; border:1px dashed var(--line-2); border-radius:8px; margin-top:2px; font-family:var(--mono); font-size:14px; }
+  .bvoc .vtok{ color:var(--muted); font-weight:600; }
+  .bvoc .vtok.nw{ color:var(--accent-ink); font-weight:800; }
+  .bvstep{ display:flex; flex-direction:column; align-items:center; gap:1px; padding:2px 0; }
+  .bvstep .ar{ color:var(--arrow); font-size:19px; font-weight:700; line-height:1; }
+  .bvstep .lbl{ font-size:12px; color:var(--muted); font-weight:600; text-align:center; line-height:1.3; max-width:220px; }
+  .bvstep .lbl .g{ color:#7ee7b0; } .bvstep .lbl .r{ color:#ff9d9d; }
+  .bvstep .lbl b{ color:#e7e9ee; }
+  .bmidar{ align-self:center; display:flex; flex-direction:column; align-items:center; gap:2px; color:var(--muted); font-size:12.5px; font-weight:700; }
+  .bmidar .a{ color:var(--arrow); font-size:26px; line-height:1; }
+  .brules{ align-self:center; display:inline-flex; flex-direction:column; border:1px solid var(--accent-line); border-radius:10px; overflow:hidden; background:var(--accent-soft); }
+  .brules .bh{ background:rgba(106,160,255,.20); color:var(--accent-ink); font-weight:800; font-size:14px; padding:6px 16px; text-align:center; border-bottom:1px solid var(--accent-line); }
+  .brule{ display:flex; align-items:center; gap:10px; padding:9px 18px; }
+  .brule + .brule{ border-top:1px solid rgba(255,255,255,.07); }
+  .brule .n{ color:var(--accent-ink); font-weight:800; font-family:var(--mono); font-size:14px; }
+  .brule .rule{ font-family:var(--mono); font-size:15px; font-weight:600; color:var(--ink); letter-spacing:.4px; }
+  .brule .rule .op{ color:var(--arrow); margin:0 3px; }
+  .brule .rule .res{ color:var(--accent-ink); font-weight:800; }
+  .btake{ font-size:16px; color:var(--muted); line-height:1.6; max-width:920px; margin:12px auto 0; text-align:center; }
+  .btake b{ color:var(--ink); font-weight:700; }
+  .btake .unk{ color:#ff9d9d; font-weight:800; }
+  .btake .kw{ color:var(--accent-ink); font-weight:700; }
+
+  /* ---------- footer ---------- */
+  .foot{ flex:0 0 auto; text-align:center; font-family:var(--mono); font-size:12.5px; color:var(--dim); padding:8px 0 14px; }
+  .foot .sep{ color:#3a3a3a; margin:0 8px; }
+</style>
+</head>
+<body>
+<div class="deck">
+
+  <!-- ===== persistent top bar ===== -->
+  <div class="topbar">
+    <div class="brand">
+      <span class="ttl">Tokenizer：文字怎么变成 <b>token</b> 数字</span>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-i="0">什么是 tokenizer</button>
+      <button class="tab" data-i="1">完整链路</button>
+      <button class="tab" data-i="2">词表</button>
+      <button class="tab" data-i="3">BPE</button>
+    </nav>
+  </div>
+
+  <div class="stage">
+
+    <!-- ===================== SLIDE 3 ===================== -->
+    <section class="slide active">
+      <div class="wrap">
+        <div>
+          <div class="head">什么是 tokenizer</div>
+        </div>
+
+        <div class="s3diagram">
+          <div class="s3rowwrap"><span class="rl">输入文本</span><div class="s3inslot"><div class="s3input">全民制作人们大家好</div></div></div>
+          <div class="arrow-down big">↓</div>
+          <div class="s3tkwrap">
+            <div class="s3tkbox">Tokenizer</div>
+          </div>
+          <div class="s3fork">
+            <span class="stem"></span><span class="bus"></span>
+            <div class="fdrops" id="s3fork"></div>
+          </div>
+          <div class="s3rowwrap"><span class="rl">Tokens</span><div class="s3bar tokbar" id="s3chips"></div></div>
+          <div class="s3rowwrap"><span class="rl"></span><div class="s3drops" id="s3drops"></div></div>
+          <div class="s3rowwrap"><span class="rl">Token IDs</span><div class="s3bar idbar" id="s3ids"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== SLIDE 4 ===================== -->
+    <section class="slide">
+      <div class="wrap">
+        <div>
+          <div class="head">Tokenizer 在大模型<span class="hl">推理过程</span>中的位置</div>
+        </div>
+
+        <div class="t4grid">
+          <div class="t4tag">编码<span class="en">Encoding</span></div>
+          <div class="t4cell"><div class="fbox txt"><div class="t">全民制作人们大家好</div></div><div class="cap up">输入文字</div></div>
+          <span class="farrow">→</span>
+          <div class="fbox tk"><div class="t">Tokenizer</div></div>
+          <span class="farrow">→</span>
+          <div class="t4cell"><div class="fidsv"><span class="c">150495</span><span class="c">109300</span><span class="c">1995</span><span class="c">13932</span><span class="c">63641</span><span class="c more">…</span></div><div class="cap up">Token IDs</div></div>
+          <span class="farrow">→</span>
+          <div class="t4cell"><div class="femb"><div class="v"><i></i><i></i><i></i><i></i></div><div class="v"><i></i><i></i><i></i><i></i></div><div class="v"><i></i><i></i><i></i><i></i></div><div class="v"><i></i><i></i><i></i><i></i></div><div class="v"><i></i><i></i><i></i><i></i></div><div class="v more">…</div></div><div class="cap up">Embedding</div></div>
+          <span class="farrow">→</span>
+          <div class="fbox tf span2"><div class="t">Transformer</div></div>
+
+          <div class="t4tag">解码<span class="en">Decoding</span></div>
+          <div class="t4cell"><div class="fbox txt"><div class="t">我是练习时长两年半…</div></div><div class="cap">输出文字</div></div>
+          <span class="farrow">←</span>
+          <div class="fbox tk"><div class="t">Tokenizer</div></div>
+          <span class="farrow">←</span>
+          <div class="t4cell"><div class="fidsv"><span class="c">176389</span><span class="c">77038</span><span class="c">28760</span><span class="c">1728</span><span class="c">11329</span><span class="c more">…</span></div><div class="cap">Token IDs</div></div>
+          <span class="flongarrow"><span class="ah"></span><span class="ln"></span></span>
+
+          <div class="t4scope"><span class="lbl">Tokenizer 作用范围</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== SLIDE 5 ===================== -->
+    <section class="slide">
+      <div class="wrap">
+        <div>
+          <div class="head">Tokenizer 靠一张<span class="hl">词表 Vocabulary</span> 工作</div>
+        </div>
+
+        <div class="vlegwrap">
+          <div class="vflow">
+            <div class="lbox green">全民制作人们大家好</div>
+            <div class="ar">↓</div>
+            <div class="lbox blue">Tokenizer</div>
+            <div class="ar">↓</div>
+            <div class="tokidgrid">
+              <span class="tc" style="background:var(--t0)">全民</span><span class="tc" style="background:var(--t1)">制作</span><span class="tc" style="background:var(--t2)">人</span><span class="tc" style="background:var(--t3)">们</span><span class="tc" style="background:var(--t4)">大家</span><span class="tc" style="background:var(--t5)">好</span>
+              <span class="ic">150495</span><span class="ic">109300</span><span class="ic">1995</span><span class="ic">13932</span><span class="ic">63641</span><span class="ic">8061</span>
+            </div>
+          </div>
+          <div class="vlink" style="top:160px; left:279px; width:238px"><span class="lbl">查表</span><span class="ln"></span><span class="ah"></span></div>
+          <div class="vocabtbl">
+            <div class="vth">Vocabulary <span class="s">词表</span></div>
+            <div class="vrow other"><span class="w">的</span><span class="i">1616</span></div>
+            <div class="vrow"><span class="w" style="background:var(--t2)">人</span><span class="i">1995</span></div>
+            <div class="vrow other"><span class="w">the</span><span class="i">3086</span></div>
+            <div class="vrow"><span class="w" style="background:var(--t5)">好</span><span class="i">8061</span></div>
+            <div class="vrow"><span class="w" style="background:var(--t3)">们</span><span class="i">13932</span></div>
+            <div class="vell">⋮</div>
+            <div class="vrow"><span class="w" style="background:var(--t4)">大家</span><span class="i">63641</span></div>
+            <div class="vrow"><span class="w" style="background:var(--t1)">制作</span><span class="i">109300</span></div>
+            <div class="vrow"><span class="w" style="background:var(--t0)">全民</span><span class="i">150495</span></div>
+            <div class="vrow other"><span class="w">你好</span><span class="i">177519</span></div>
+            <div class="vell">⋮</div>
+          </div>
+        </div>
+        <div class="vlegcap">切成 token 之后，tokenizer 就靠这张有限的<span class="vk">词表</span>，把每个 token 查成一个固定的 id —— 能<b>编码</b>，也能<b>解码</b></div>
+
+        <div class="vsublead">那这张词表怎么设计？两个极端：<span class="hl">整词太大</span>，<span class="hl">单字太碎</span></div>
+
+        <table class="vtbl">
+          <colgroup><col style="width:148px"><col><col></colgroup>
+          <thead>
+            <tr>
+              <th class="dim">维度</th>
+              <th>Word-based<span class="th-s">一个词一个 token</span></th>
+              <th>Character-based<span class="th-s">一个字符一个 token</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="dim">切分示例</td>
+              <td><div class="vsplit" id="wbSplit"></div></td>
+              <td><div class="vsplit" id="cbSplit"></div></td>
+            </tr>
+            <tr>
+              <td class="dim">单 token 语义</td>
+              <td class="good"><span class="ic">✓</span>丰富、完整</td>
+              <td class="bad"><span class="ic">✕</span>几乎没有</td>
+            </tr>
+            <tr>
+              <td class="dim">序列长度</td>
+              <td class="good"><span class="ic">✓</span>短，attention 算得快</td>
+              <td class="bad"><span class="ic">✕</span>极长，计算量随长度平方涨</td>
+            </tr>
+            <tr>
+              <td class="dim">未知词 OOV</td>
+              <td class="bad"><span class="ic">✕</span>遇到新词就 <code>[UNK]</code>，信息丢失</td>
+              <td class="good"><span class="ic">✓</span>100% 覆盖，几乎没有 <code>[UNK]</code></td>
+            </tr>
+            <tr>
+              <td class="dim">词表大小</td>
+              <td class="bad"><span class="ic">✕</span>极大 · 几十万 ~ 上百万</td>
+              <td class="good"><span class="ic">✓</span>极小 · 几十 ~ 几千</td>
+            </tr>
+          </tbody>
+        </table>
+
+      </div>
+    </section>
+
+    <!-- ===================== SLIDE 6 ===================== -->
+    <section class="slide">
+      <div class="wrap">
+        <div>
+          <div class="head">Byte Pair Encoding：不断<span class="hl">合并</span>经常一起出现的<span class="hl">字符</span></div>
+        </div>
+
+        <div class="vmid">
+          <span class="vmlbl">折中办法 = Subword 子词</span>
+          <div class="vsplit"><span class="tk" style="background:var(--t3)">un</span><span class="tk" style="background:var(--t2)">predict</span><span class="tk" style="background:var(--t5)">able</span></div>
+          <span class="vmnote">常见词<b>整词保留</b>，罕见词<b>拆成小片</b> —— 词表不失控，又几乎能表示任何文本</span>
+        </div>
+
+        <div class="bpe">
+          <!-- 训练（左，竖向） -->
+          <div class="bcol">
+            <div class="bcolh">① 训练 <span class="en">Training</span></div>
+            <div class="bstate"><div class="bseq"><span class="bchip src">abcbcabc</span></div></div>
+            <div class="bvstep"><span class="ar">↓</span><span class="lbl">打碎成字母，建立基础词表</span></div>
+            <div class="bstate"><div class="bseq"><span class="bchip dim">a</span><span class="bchip dim">b</span><span class="bchip dim">c</span><span class="bchip dim">b</span><span class="bchip dim">c</span><span class="bchip dim">a</span><span class="bchip dim">b</span><span class="bchip dim">c</span></div></div>
+            <div class="bvstep"><span class="ar">↓</span><span class="lbl"><b>b·c</b> 挨一起 <b>3 次</b>·最多 → 合并</span></div>
+            <div class="bstate"><div class="bseq"><span class="bchip dim">a</span><span class="bchip bc">bc</span><span class="bchip bc">bc</span><span class="bchip dim">a</span><span class="bchip bc">bc</span></div></div>
+            <div class="bvstep"><span class="ar">↓</span><span class="lbl"><b>a·bc</b> 挨一起 <b>2 次</b>·最多 → 合并</span></div>
+            <div class="bstate"><div class="bseq"><span class="bchip abc">abc</span><span class="bchip dim">bc</span><span class="bchip abc">abc</span></div></div>
+            <div class="bvstep"><span class="ar">↓</span><span class="lbl">剩 <b>abc·bc</b>、<b>bc·abc</b> 各 1 次·平局 → 合靠前</span></div>
+            <div class="bstate"><div class="bseq"><span class="bchip abcbc">abcbc</span><span class="bchip dim">abc</span></div></div>
+          </div>
+
+          <div class="bmidar"><span class="a">→</span>学出</div>
+
+          <div class="brules">
+            <div class="bh">合并规则表</div>
+            <div class="brule"><span class="n">①</span><span class="rule">b <span class="op">+</span> c <span class="op">→</span> <span class="res">bc</span></span></div>
+            <div class="brule"><span class="n">②</span><span class="rule">a <span class="op">+</span> bc <span class="op">→</span> <span class="res">abc</span></span></div>
+            <div class="brule"><span class="n">③</span><span class="rule">abc <span class="op">+</span> bc <span class="op">→</span> <span class="res">abcbc</span></span></div>
+          </div>
+
+          <div class="bmidar"><span class="a">→</span>套用</div>
+
+          <!-- 推理（右，竖向） -->
+          <div class="bcol">
+            <div class="bcolh">② 推理 <span class="en">Inference</span></div>
+            <div class="bstate"><div class="bseq"><span class="bchip src">cbcabc</span></div></div>
+            <div class="bvstep"><span class="ar">↓</span><span class="lbl">打碎成字符</span></div>
+            <div class="bstate"><div class="bseq"><span class="bchip dim">c</span><span class="bchip dim">b</span><span class="bchip dim">c</span><span class="bchip dim">a</span><span class="bchip dim">b</span><span class="bchip dim">c</span></div></div>
+            <div class="bvstep"><span class="ar">↓</span><span class="lbl">规则① b+c→bc · <span class="g">两处 b c 都合</span></span></div>
+            <div class="bstate"><div class="bseq"><span class="bchip dim">c</span><span class="bchip bc">bc</span><span class="bchip dim">a</span><span class="bchip bc">bc</span></div></div>
+            <div class="bvstep"><span class="ar">↓</span><span class="lbl">规则② a+bc→abc · <span class="g">a 后跟 bc，合</span></span></div>
+            <div class="bstate"><div class="bseq"><span class="bchip dim">c</span><span class="bchip dim">bc</span><span class="bchip abc">abc</span></div><div class="bcap"><b>最终切分</b></div></div>
+            <div class="bvstep"><span class="ar">↓</span><span class="lbl">查词表 id</span></div>
+            <div class="bstate"><div class="bseq"><span class="bidchip">2</span><span class="bidchip">3</span><span class="bidchip">4</span></div><div class="bcap">交给模型 · 合并了 3 次</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <div class="foot">
+    Codex 工作原理系列 #072 <span class="sep">·</span> token 边界与 id 实测自 platform.openai.com/tokenizer（o200k_base）
+  </div>
+</div>
+
+<script>
+  // ----- token data (real, o200k_base) -----
+  const PAL = ['t0','t1','t2','t3','t4','t5'];
+  function pal(i){ return 'var(--'+PAL[i % PAL.length]+')'; }
+
+  // slide 3: "Hello. What would you like to work on in the Codex repo?"
+  const S3 = [
+    ['全民',150495],['制作',109300],['人',1995],['们',13932],['大家',63641],['好',8061]
+  ];
+  (function(){
+    const chips=document.getElementById('s3chips');
+    const ids=document.getElementById('s3ids');
+    const fork=document.getElementById('s3fork');
+    const drops=document.getElementById('s3drops');
+    const mk=i=>false;   // 不再高亮任何 token（人/们 的注释已删）
+    S3.forEach(([t,id],i)=>{
+      const f=document.createElement('div'); f.className='fa'; f.textContent='↓'; fork.appendChild(f);
+      const c=document.createElement('div'); c.className='cell'+(mk(i)?' marked':''); c.style.background=pal(i); c.textContent=t; chips.appendChild(c);
+      const d=document.createElement('div'); d.className='da'; d.textContent='↓'; drops.appendChild(d);
+      const b=document.createElement('div'); b.className='cell'+(mk(i)?' marked':''); b.textContent=id; ids.appendChild(b);
+    });
+  })();
+
+  // slide 5: 同一个词 unbelievable 在三种切法下（word / character / subword），token 数对比
+  (function(){
+    function build(id, toks, ch, count){
+      const el=document.getElementById(id);
+      if(count){ const b=document.createElement('span'); b.className='cntb'; b.textContent=toks.length+' token'; el.appendChild(b); }
+      toks.forEach((t,i)=>{
+        const c=document.createElement('span'); c.className='tk'+(ch?' ch':''); c.style.background=pal(i); c.textContent=t; el.appendChild(c);
+      });
+    }
+    build('wbSplit', ['unpredictable']);
+    build('cbSplit', ['u','n','p','r','e','d','i','c','t','a','b','l','e'], true);
+  })();
+
+  // slide 6 (BPE abcbcabc/cbcabc 走查) 是纯静态 HTML，无需 JS
+
+  // ----- nav -----
+  const tabs = [...document.querySelectorAll('.tab')];
+  const slides = [...document.querySelectorAll('.slide')];
+  function go(i){
+    i = (i+slides.length)%slides.length;
+    tabs.forEach((t,k)=>t.classList.toggle('active',k===i));
+    slides.forEach((s,k)=>s.classList.toggle('active',k===i));
+    cur=i;
+  }
+  let cur=0;
+  tabs.forEach((t,i)=>t.addEventListener('click',()=>go(i)));
+  document.addEventListener('keydown',e=>{
+    if(e.key==='ArrowRight'||e.key===' ') go(cur+1);
+    else if(e.key==='ArrowLeft') go(cur-1);
+    else if(['1','2','3','4'].includes(e.key)) go(+e.key-1);
+  });
+</script>
+</body>
+</html>
