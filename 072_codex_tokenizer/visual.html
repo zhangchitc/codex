@@ -82,9 +82,10 @@
     position:absolute; inset:0;
     display:none; flex-direction:column;
     padding:26px 46px 16px;
+    overflow-y:auto; overflow-x:hidden;   /* 窗口比 1080p 矮时可滚动看到底部；1080p 录制下内容不溢出、不出现滚动条 */
   }
   .slide.active{ display:flex; }
-  .wrap{ width:100%; max-width:1340px; margin:0 auto; flex:1; display:flex; flex-direction:column;
+  .wrap{ width:100%; max-width:1340px; margin:0 auto; flex:1 0 auto; display:flex; flex-direction:column;
          justify-content:flex-start; align-items:center; text-align:center; gap:16px; }
 
   .kicker{ font-family:var(--mono); font-size:14px; color:var(--accent); letter-spacing:1.5px; font-weight:600; }
