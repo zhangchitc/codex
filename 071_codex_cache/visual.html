@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codex 071 · Codex 的前缀缓存如何节省token</title>
+<link rel="icon" href="data:,">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+  * { box-sizing:border-box; margin:0; padding:0; }
+
+  :root{
+    --bg:#f7f7f8; --card:#ffffff; --card-head:#fbfbfc;
+    --ink:#0d0d0d; --muted:#6e6e80; --dim:#8e8ea0;
+    --line:#e6e6e8; --line-2:#ececef; --arrow:#c2c2cc;
+    --accent:#10a37f; --accent-deep:#0a7d61; --accent-soft:rgba(16,163,127,.08); --accent-line:rgba(16,163,127,.28);
+    --miss:#d64545; --miss-deep:#b3382e; --miss-soft:rgba(214,69,69,.08); --miss-line:rgba(214,69,69,.30);
+    --stk-line:rgba(16,163,127,.30);
+    --brk-n:#cfd2d6;
+    --mono:"JetBrains Mono","SF Mono",Menlo,monospace;
+    --sans:"Inter","PingFang SC",-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;
+  }
+
+  html,body{ height:100%; }
+  body{ background:var(--bg); color:var(--ink); font-family:var(--sans); -webkit-font-smoothing:antialiased; overflow:hidden; }
+  .deck{ height:100vh; display:flex; flex-direction:column; }
+
+  /* 顶栏（持久） */
+  .topbar{ flex:0 0 auto; display:flex; align-items:center; justify-content:space-between;
+           gap:24px; padding:20px 46px; border-bottom:1px solid var(--line); }
+  .brand .ttl{ font-size:20px; font-weight:700; color:var(--ink); white-space:nowrap; }
+  .brand .ttl b{ color:var(--accent); font-weight:800; }
+  .tabs{ display:flex; gap:6px; padding:5px; border:1px solid var(--line); border-radius:999px; background:#fff; }
+  .tab{ appearance:none; border:1px solid transparent; border-radius:999px; cursor:pointer;
+        background:transparent; color:var(--muted); font-family:var(--sans); font-size:15px; font-weight:700;
+        padding:9px 16px; white-space:nowrap; transition:.18s; }
+  .tab:hover{ color:var(--ink); }
+  .tab.active{ color:var(--accent-deep); background:var(--accent-soft); border-color:var(--accent-line); }
+
+  /* 舞台 + slide */
+  .stage{ position:relative; flex:1 1 auto; }
+  .slide{ position:absolute; inset:0; display:none; flex-direction:column; padding:26px 46px 16px;
+          overflow-y:auto; overflow-x:hidden; }
+  .slide.active{ display:flex; }
+  .wrap{ width:100%; max-width:1340px; margin:0 auto; flex:1 0 auto; display:flex; flex-direction:column;
+         align-items:center; text-align:center; gap:18px; }
+
+  .head{ font-size:34px; line-height:1.2; font-weight:800; letter-spacing:-.2px; }
+  .head .hl{ color:var(--accent); }
+
+  .foot{ flex:0 0 auto; text-align:center; font-family:var(--mono); font-size:14px; color:var(--dim); padding:8px 0 14px; }
+  .foot .sep{ color:#d4d4dc; margin:0 8px; }
+
+  /* ===== 角色图例 ===== */
+  .legend{ display:flex; gap:32px; align-items:center; justify-content:center; font-size:17px; color:var(--muted); margin-top:2px; }
+  .legend .lb{ font-weight:700; color:var(--ink); }
+  .legend .it{ display:flex; align-items:center; gap:7px; }
+  .sw{ width:18px; height:18px; border-radius:50%; border:1.5px solid var(--accent-line); }
+  .sw.sys{ background:rgba(16,163,127,.42); }
+  .sw.dev{ background:repeating-linear-gradient(45deg, rgba(16,163,127,.5) 0 3px, rgba(16,163,127,.12) 3px 6px); }
+  .sw.usr{ background:#fff; }
+
+  /* ===== 前缀结构图（仿 OpenAI Snapshot 1）===== */
+  .diagram{ display:grid;
+    grid-template-columns:210px 24px 792px;
+    grid-template-rows:repeat(5, 106px);
+    column-gap:16px; margin:12px auto 0; align-items:stretch; }
+
+  /* 堆叠的 prompt 段：连续无缝，靠角色填充区分 */
+  .seg{ grid-column:3; display:flex; align-items:center; gap:16px; padding:0 28px; text-align:left;
+        border:1px solid var(--stk-line); border-top:none; }
+  .seg.top{ border-top:1px solid var(--stk-line); border-radius:12px 12px 0 0; }
+  .seg.bot{ border-radius:0 0 12px 12px; }
+  .seg.sys1{ background:rgba(16,163,127,.40); }
+  .seg.sys2{ background:rgba(16,163,127,.24); }
+  .seg.dev { background:repeating-linear-gradient(45deg, rgba(16,163,127,.20) 0 5px, rgba(16,163,127,.05) 5px 10px); }
+  .seg.usr { background:#ffffff; }
+  .seg .fld{ font-family:var(--mono); font-weight:700; font-size:22px; color:var(--ink); white-space:nowrap; }
+  .seg .fld .role{ color:var(--accent-deep); }
+  .seg .say{ font-size:18.5px; color:#3a3a44; line-height:1.35; }
+  .seg .say .m{ font-family:var(--mono); color:var(--accent-deep); font-size:17px; }
+  .seg .say .q{ color:var(--muted); }
+
+  /* 左右括号连接件 */
+  .brk{ position:relative; }
+  .lbrk{ grid-column:2; border:2px solid var(--brk-n); border-right:none; border-radius:12px 0 0 12px; margin:7px 0; }
+  .lbrk::after{ content:''; position:absolute; left:-14px; top:50%; width:14px; height:2px; background:var(--brk-n); }
+
+  /* 括号标签 */
+  .llbl{ grid-column:1; display:flex; flex-direction:column; justify-content:center; align-items:flex-end; text-align:right; gap:3px; }
+  .lblt{ font-size:19px; font-weight:800; color:var(--ink); }
+  .lbln{ font-size:15px; color:var(--muted); line-height:1.4; }
+
+  /* ===== Tab 2/3：Automatic Prefix Caching ===== */
+  .sub{ font-family:var(--sans); font-size:16px; color:var(--muted); margin-top:-6px; }
+  .sub b{ color:var(--accent-deep); font-weight:700; }
+
+  /* APC：token 切块（标签在上，pill token，虚线分隔含两端）*/
+  .apc{ display:grid; grid-template-columns:auto auto auto; align-items:center;
+        column-gap:0; width:max-content; margin:10px auto 0; }
+  .bcell{ display:flex; flex-direction:column; align-items:center; gap:12px;
+          padding:0 14px; border-left:3px dashed var(--accent); }
+  .bcell.c1{ grid-column:1; }
+  .bcell.c2{ grid-column:2; }
+  .bcell.c3{ grid-column:3; border-right:3px dashed var(--accent); }
+  .blab{ font-family:var(--mono); font-weight:700; font-size:18px; color:var(--accent-deep); }
+  .bpills{ display:flex; gap:8px; }
+  .pill{ font-family:var(--mono); font-weight:600; font-size:21px; color:#26303a; background:#fff;
+         border:1px solid var(--accent-line); border-radius:7px; padding:8px 14px;
+         box-shadow:0 2px 6px rgba(13,13,13,.05); }
+
+  .hcformula{ font-family:var(--mono); font-size:22px; font-weight:700; color:var(--muted); margin:16px auto 0; }
+  .hcformula .k{ color:var(--accent-deep); }
+  .hcformula .t{ color:#26303a; }
+  .hcnote{ font-family:var(--sans); font-size:19.5px; color:var(--ink); margin:18px auto 0;
+           background:var(--accent-soft); border:1px solid var(--accent-line); border-radius:12px;
+           padding:14px 28px; line-height:1.5; box-shadow:0 8px 24px rgba(13,13,13,.03); }
+  .hcnote b{ color:var(--accent-deep); font-weight:800; }
+
+  /* KV Cache 键值表 */
+  .kvtable{ border-collapse:separate; border-spacing:0; margin:0; background:#fff;
+            border:1px solid var(--line-2); border-radius:14px; overflow:hidden; box-shadow:0 8px 24px rgba(13,13,13,.03); }
+  .kvtable th{ font-family:var(--sans); font-weight:700; font-size:15px; color:var(--muted);
+               padding:13px 26px; text-align:center; background:var(--card-head); border-bottom:1px solid var(--line-2); }
+  .kvtable td{ padding:16px 26px; border-bottom:1px solid var(--line-2); text-align:left; }
+  .kvtable tr:last-child td{ border-bottom:none; }
+  .kvtable .kcell{ font-family:var(--mono); font-weight:700; font-size:19px; color:var(--accent-deep);
+                   background:var(--accent-soft); border-right:1px solid var(--line-2); white-space:nowrap; }
+  .kvmini{ display:flex; align-items:center; gap:32px; }
+  .kvm{ display:flex; flex-direction:column; align-items:center; gap:7px; }
+  .kvm .lbl{ font-family:var(--mono); font-weight:800; font-size:16px; }
+  .kvm .lbl.k{ color:#0284c7; }
+  .kvm .lbl.v{ color:#ea580c; }
+  .kvgrid{ display:grid; gap:3px; }
+  .kvgrid .c{ width:18px; height:18px; border-radius:3px; }
+  .kvgrid .c.k{ background:#38bdf8; }
+  .kvgrid .c.v{ background:#ff8a3d; }
+  .kvtable .tcell{ border-right:1px solid var(--line-2); }
+  .kvwrap{ display:flex; align-items:stretch; justify-content:center; gap:26px; margin:20px auto 0; width:max-content; }
+  .annos{ display:flex; flex-direction:column; }
+  .anno-head{ flex:0 0 46px; }
+  .anno{ flex:1 1 0; display:flex; flex-direction:column; justify-content:center;
+         font-family:var(--mono); font-size:15px; color:#26303a; line-height:1.6; white-space:nowrap; }
+  .anno .asub{ font-size:13px; color:var(--dim); margin-top:3px; }
+
+  /* KV Cache 横向：每列一个 Block，token → hash → ↓ → KV → 注释，跟上方 token 对齐 */
+  .kvflow{ display:grid; grid-template-columns:auto auto auto; column-gap:0; width:max-content; margin:16px auto 0; align-items:start; }
+  .kvhash{ justify-self:center; font-family:var(--mono); font-weight:700; font-size:17px; color:var(--accent-deep);
+           background:var(--accent-soft); border:1px solid var(--accent-line); border-radius:8px; padding:8px 16px; margin-top:2px; }
+  .kvarrow{ justify-self:center; font-size:22px; color:var(--accent); line-height:1; margin:9px 0; }
+  .kvcell{ justify-self:center; }
+  .kvanno{ justify-self:center; font-family:var(--mono); font-size:13.5px; color:var(--dim); line-height:1.55; margin-top:14px; text-align:center; }
+  .kvcol{ border-left:3px dashed var(--accent); pointer-events:none; align-self:stretch; }
+  .kvcol.last{ border-right:3px dashed var(--accent); }
+  .kvflow .bcell{ border:none; }
+  .tkpill{ display:inline-block; font-family:var(--mono); font-weight:600; font-size:16px; color:#26303a;
+           background:#fff; border:1px solid var(--accent-line); border-radius:6px; padding:5px 10px; margin:2px 3px; }
+
+  /* hash 链图：node 计算 hash，token 从下方喂入，hash 斜连到下一个 node */
+  .hashchain{ width:100%; max-width:1180px; margin:10px auto 0; display:block; }
+  .hc-node{ fill:rgba(16,163,127,.13); stroke:var(--accent); stroke-width:2.5; }
+  .hc-hash{ fill:var(--accent-deep); font-family:var(--mono); font-weight:700; font-size:20px; }
+  .hc-out{ fill:var(--accent-deep); font-family:var(--mono); font-weight:700; font-size:16px; }
+  .hc-in{ fill:#26303a; font-family:var(--mono); font-weight:600; font-size:16px; }
+  .hc-pill{ fill:#fff; stroke:var(--accent-line); stroke-width:1; }
+  .hc-ptok{ fill:#26303a; font-family:var(--mono); font-weight:600; font-size:16px; }
+  .hc-mut{ fill:var(--muted); font-family:var(--mono); font-size:15px; }
+  .hc-arrow{ stroke:#4a4a55; stroke-width:1.8; fill:none; stroke-linejoin:round; stroke-linecap:round; }
+  .hc-note{ fill:var(--accent); font-family:var(--sans); font-weight:700; font-size:15px; }
+  .hc-garrow{ stroke:var(--accent); stroke-width:2; fill:none; }
+  .promptline{ font-family:var(--mono); font-size:20px; color:var(--muted); }
+  .promptline b{ color:var(--accent-deep); font-weight:700; }
+  .promptline .qs{ color:var(--accent-deep); }
+
+  /* Tab 3：512 阶梯 */
+  .ladder{ display:flex; align-items:flex-end; justify-content:center; gap:10px; margin-top:8px; }
+  .ladder .step{ display:flex; flex-direction:column; align-items:center; gap:12px; }
+  .ladder .val{ font-family:var(--mono); font-weight:700; font-size:25px; color:var(--accent-deep); }
+  .ladder .col{ width:128px; background:var(--accent-soft); border:1px solid var(--accent-line);
+                border-bottom:none; border-radius:10px 10px 0 0; }
+  .ladder .up{ font-family:var(--mono); font-weight:700; font-size:15px; color:var(--accent); padding-bottom:16px; }
+  .baseline{ width:min(820px,92%); height:2px; background:var(--line-2); margin:0 auto; }
+  .axis{ font-family:var(--mono); font-size:13px; color:var(--dim); margin-top:8px; }
+  .note{ display:flex; gap:16px; justify-content:center; flex-wrap:wrap; margin-top:14px; }
+  .note .chip{ font-family:var(--mono); font-size:15px; padding:11px 16px; border-radius:11px;
+               border:1px solid var(--line-2); background:#fff; color:#383842;
+               box-shadow:0 8px 24px rgba(13,13,13,.03); }
+  .note .chip b{ color:var(--accent-deep); font-weight:700; }
+  .note .chip .mut{ color:var(--muted); }
+
+  /* ===== Tab 4：读取缓存（复用 tab3 的 kvflow，绿=命中 / 红=未命中）===== */
+  .kvcol.miss{ border-left-color:var(--miss); }
+  .kvcol.miss.last{ border-right-color:var(--miss); }
+  .kvhash.miss{ color:var(--miss-deep); background:var(--miss-soft); border-color:var(--miss-line); }
+  .kvarrow.miss{ color:var(--miss); }
+  .blab.miss{ color:var(--miss-deep); }
+  .bpills .pill.chg{ color:var(--miss-deep); border-color:var(--miss-line); background:var(--miss-soft); }
+  .kvanno.hit{ color:var(--accent-deep); font-weight:700; }
+  .kvanno.miss{ color:var(--miss-deep); font-weight:700; }
+  .kvanno b{ font-weight:800; }
+  .cacheres{ border-radius:12px; padding:14px 20px; display:flex; align-items:center; justify-content:center;
+             gap:14px; min-height:96px; }
+  .cacheres.hit{ border:1.5px solid var(--accent-line); background:var(--accent-soft); }
+  .cacheres.miss{ border:1.5px dashed var(--miss-line); background:var(--miss-soft); }
+  .cacheres .cmark{ font-family:var(--mono); font-weight:800; font-size:28px; line-height:1; }
+  .cacheres.hit .cmark{ color:var(--accent-deep); }
+  .cacheres.miss .cmark{ color:var(--miss-deep); }
+  .cacheres .ctxt{ font-family:var(--mono); font-weight:700; font-size:15px; line-height:1.55; text-align:left; }
+  .cacheres.miss .ctxt{ color:var(--miss-deep); }
+  .hl-miss{ color:var(--miss-deep); }
+</style>
+</head>
+<body>
+<div class="deck">
+  <div class="topbar">
+    <div class="brand"><span class="ttl">Prompt Cache：Codex 的<b>前缀缓存</b></span></div>
+    <nav class="tabs">
+      <button class="tab active" data-i="0">前缀结构</button>
+      <button class="tab" data-i="1">APC</button>
+      <button class="tab" data-i="2">缓存写入</button>
+      <button class="tab" data-i="3">读取命中</button>
+    </nav>
+  </div>
+
+  <div class="stage">
+    <section class="slide active">
+      <div class="wrap">
+        <div class="head">Codex里Prompt cache的<span class="hl">前缀结构</span></div>
+
+        <div class="legend">
+          <span class="lb">Role 角色：</span>
+          <span class="it"><span class="sw sys"></span>System 系统</span>
+          <span class="it"><span class="sw dev"></span>Developer 开发者</span>
+          <span class="it"><span class="sw usr"></span>User 用户</span>
+        </div>
+
+        <div class="diagram">
+          <!-- 5 段 prompt，从上到下拼成完整前缀 -->
+          <div class="seg sys1 top" style="grid-row:1">
+            <span class="fld">instructions</span>
+            <span class="say">系统提示词 · <span class="q">“You are Codex…”</span></span>
+          </div>
+          <div class="seg sys2" style="grid-row:2">
+            <span class="fld">tools</span>
+            <span class="say">工具定义 · <span class="m">shell · apply_patch · update_plan</span> …</span>
+          </div>
+          <div class="seg dev" style="grid-row:3">
+            <span class="fld">input · <span class="role">developer</span></span>
+            <span class="say"><span class="m">&lt;permissions&gt;</span> 权限与审批 · <span class="m">&lt;skills&gt;</span> 可用技能清单</span>
+          </div>
+          <div class="seg usr" style="grid-row:4">
+            <span class="fld">input · <span class="role">user</span></span>
+            <span class="say">注入上下文 · <span class="m">AGENTS.md · &lt;environment_context&gt;</span></span>
+          </div>
+          <div class="seg usr bot" style="grid-row:5">
+            <span class="fld">input · <span class="role">user</span></span>
+            <span class="say">用户对话 · <span class="q">“Hello” → “fine” → “thank you”</span></span>
+          </div>
+
+          <!-- 左侧：谁组装、顺序谁控制 -->
+          <div class="brk lbrk" style="grid-row:1 / 3"></div>
+          <div class="llbl" style="grid-row:1 / 3">
+            <span class="lblt">server 组装的开头</span>
+            <span class="lbln">顺序跨请求稳定</span>
+          </div>
+          <div class="brk lbrk" style="grid-row:3 / 6"></div>
+          <div class="llbl" style="grid-row:3 / 6">
+            <span class="lblt">input 数组</span>
+            <span class="lbln">顺序由客户端控制</span>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="wrap">
+        <div class="head"><span class="hl">Automatic Prefix Caching</span>：把提示词切成一个个<span class="hl">Block</span></div>
+
+        <div class="promptline">假设 <b>block_size = 4</b>，提示词 = <span class="qs">“里面个个都是人才，说话又好听，我超喜欢”</span></div>
+
+        <!-- token 块与写入条共用列宽，条形对齐上方 token -->
+        <div class="apc">
+          <div class="bcell c1">
+            <div class="blab">Block 0</div>
+            <div class="bpills"><span class="pill">里面</span><span class="pill">个个</span><span class="pill">都是</span><span class="pill">人才</span></div>
+          </div>
+          <div class="bcell c2">
+            <div class="blab">Block 1</div>
+            <div class="bpills"><span class="pill">，</span><span class="pill">说话</span><span class="pill">又</span><span class="pill">好听</span></div>
+          </div>
+          <div class="bcell c3">
+            <div class="blab">Block 2</div>
+            <div class="bpills"><span class="pill">，</span><span class="pill">我</span><span class="pill">超</span><span class="pill">喜欢</span></div>
+          </div>
+        </div>
+
+        <!-- hash 链：每个 block 的 hash = sha256(上个 hash, 本块 token)，逐块串联 -->
+        <svg class="hashchain" viewBox="0 0 1240 300" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ah" markerWidth="10" markerHeight="10" refX="7.5" refY="3.5" orient="auto">
+              <path d="M0,0 L8,3.5 L0,7 Z" fill="#4a4a55"/>
+            </marker>
+            <marker id="ahg" markerWidth="10" markerHeight="10" refX="7.5" refY="3.5" orient="auto">
+              <path d="M0,0 L8,3.5 L0,7 Z" fill="#10a37f"/>
+            </marker>
+          </defs>
+
+          <!-- none_hash 入口 -->
+          <text x="150" y="171" class="hc-mut">none_hash</text>
+          <line x1="240" y1="165" x2="280" y2="165" class="hc-arrow" marker-end="url(#ah)"/>
+
+          <!-- Node 1 -->
+          <circle cx="330" cy="165" r="46" class="hc-node"/>
+          <text x="330" y="172" text-anchor="middle" class="hc-hash">hash</text>
+          <line x1="330" y1="117" x2="330" y2="94" class="hc-arrow" marker-end="url(#ah)"/>
+          <text x="330" y="80" text-anchor="middle" class="hc-out">hash(Block 0)</text>
+          <rect x="233" y="252" width="44" height="30" rx="6" class="hc-pill"/><text x="255" y="272" text-anchor="middle" class="hc-ptok">里面</text>
+          <rect x="283" y="252" width="44" height="30" rx="6" class="hc-pill"/><text x="305" y="272" text-anchor="middle" class="hc-ptok">个个</text>
+          <rect x="333" y="252" width="44" height="30" rx="6" class="hc-pill"/><text x="355" y="272" text-anchor="middle" class="hc-ptok">都是</text>
+          <rect x="383" y="252" width="44" height="30" rx="6" class="hc-pill"/><text x="405" y="272" text-anchor="middle" class="hc-ptok">人才</text>
+          <line x1="330" y1="250" x2="330" y2="214" class="hc-arrow" marker-end="url(#ah)"/>
+
+          <!-- Node 2 -->
+          <circle cx="630" cy="165" r="46" class="hc-node"/>
+          <text x="630" y="172" text-anchor="middle" class="hc-hash">hash</text>
+          <line x1="630" y1="117" x2="630" y2="94" class="hc-arrow" marker-end="url(#ah)"/>
+          <text x="630" y="80" text-anchor="middle" class="hc-out">hash(Block 1)</text>
+          <rect x="549" y="252" width="28" height="30" rx="6" class="hc-pill"/><text x="563" y="272" text-anchor="middle" class="hc-ptok">，</text>
+          <rect x="583" y="252" width="44" height="30" rx="6" class="hc-pill"/><text x="605" y="272" text-anchor="middle" class="hc-ptok">说话</text>
+          <rect x="633" y="252" width="28" height="30" rx="6" class="hc-pill"/><text x="647" y="272" text-anchor="middle" class="hc-ptok">又</text>
+          <rect x="667" y="252" width="44" height="30" rx="6" class="hc-pill"/><text x="689" y="272" text-anchor="middle" class="hc-ptok">好听</text>
+          <line x1="630" y1="250" x2="630" y2="214" class="hc-arrow" marker-end="url(#ah)"/>
+
+          <!-- Node 3 -->
+          <circle cx="930" cy="165" r="46" class="hc-node"/>
+          <text x="930" y="172" text-anchor="middle" class="hc-hash">hash</text>
+          <line x1="930" y1="117" x2="930" y2="94" class="hc-arrow" marker-end="url(#ah)"/>
+          <text x="930" y="80" text-anchor="middle" class="hc-out">hash(Block 2)</text>
+          <rect x="857" y="252" width="28" height="30" rx="6" class="hc-pill"/><text x="871" y="272" text-anchor="middle" class="hc-ptok">，</text>
+          <rect x="891" y="252" width="28" height="30" rx="6" class="hc-pill"/><text x="905" y="272" text-anchor="middle" class="hc-ptok">我</text>
+          <rect x="925" y="252" width="28" height="30" rx="6" class="hc-pill"/><text x="939" y="272" text-anchor="middle" class="hc-ptok">超</text>
+          <rect x="959" y="252" width="44" height="30" rx="6" class="hc-pill"/><text x="981" y="272" text-anchor="middle" class="hc-ptok">喜欢</text>
+          <line x1="930" y1="250" x2="930" y2="214" class="hc-arrow" marker-end="url(#ah)"/>
+
+          <!-- 链：hash(Block N) 先斜下、再水平连到下一个 node -->
+          <path d="M 400 88 L 505 165 L 582 165" class="hc-arrow" marker-end="url(#ah)"/>
+          <path d="M 700 88 L 805 165 L 882 165" class="hc-arrow" marker-end="url(#ah)"/>
+
+        </svg>
+
+        <div class="hcformula"><span class="k">hash(Block n)</span> = hash(<span class="k">Block(n - 1)</span>, <span class="t">tokens(n)</span>)</div>
+
+        <div class="hcnote">两个请求，只要某个 Block 的 <b>hash 对上了</b>，就说明从开头一直到这个 Block 的<b>前缀完全相同</b>。</div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="wrap">
+        <div class="head">缓存是一张键值表：<span class="hl">key = hash</span>，<span class="hl">value = KV Cache</span></div>
+
+        <div class="kvflow">
+          <div class="kvcol" style="grid-row:1; grid-column:1;"></div>
+          <div class="kvcol" style="grid-row:1; grid-column:2;"></div>
+          <div class="kvcol last" style="grid-row:1; grid-column:3;"></div>
+          <div class="kvcol" style="grid-row:3 / 7; grid-column:1;"></div>
+          <div class="kvcol" style="grid-row:3 / 7; grid-column:2;"></div>
+          <div class="kvcol last" style="grid-row:3 / 7; grid-column:3;"></div>
+
+          <div class="bcell c1" style="grid-row:1;"><div class="blab">Block 0</div><div class="bpills"><span class="pill">里面</span><span class="pill">个个</span><span class="pill">都是</span><span class="pill">人才</span></div></div>
+          <div class="bcell c2" style="grid-row:1;"><div class="blab">Block 1</div><div class="bpills"><span class="pill">，</span><span class="pill">说话</span><span class="pill">又</span><span class="pill">好听</span></div></div>
+          <div class="bcell c3" style="grid-row:1;"><div class="blab">Block 2</div><div class="bpills"><span class="pill">，</span><span class="pill">我</span><span class="pill">超</span><span class="pill">喜欢</span></div></div>
+
+          <div class="hcnote" style="grid-row:2; grid-column:1 / -1; justify-self:center; margin:46px 0 44px;">切成 3 个 <b>Block</b>，就往缓存里写入 <b>3 条 cache entry</b>。</div>
+
+          <div class="kvhash" style="grid-row:3; grid-column:1;">hash(Block 0)</div>
+          <div class="kvhash" style="grid-row:3; grid-column:2;">hash(Block 1)</div>
+          <div class="kvhash" style="grid-row:3; grid-column:3;">hash(Block 2)</div>
+
+          <div class="kvarrow" style="grid-row:4; grid-column:1;">↓</div>
+          <div class="kvarrow" style="grid-row:4; grid-column:2;">↓</div>
+          <div class="kvarrow" style="grid-row:4; grid-column:3;">↓</div>
+
+          <div class="kvcell" style="grid-row:5; grid-column:1;"><div class="kvmini">
+            <div class="kvm"><span class="lbl k">K⊤</span><div class="kvgrid" data-r="3" data-c="4" data-t="k"></div></div>
+            <div class="kvm"><span class="lbl v">V</span><div class="kvgrid" data-r="4" data-c="3" data-t="v"></div></div>
+          </div></div>
+          <div class="kvcell" style="grid-row:5; grid-column:2;"><div class="kvmini">
+            <div class="kvm"><span class="lbl k">K⊤</span><div class="kvgrid" data-r="3" data-c="4" data-t="k"></div></div>
+            <div class="kvm"><span class="lbl v">V</span><div class="kvgrid" data-r="4" data-c="3" data-t="v"></div></div>
+          </div></div>
+          <div class="kvcell" style="grid-row:5; grid-column:3;"><div class="kvmini">
+            <div class="kvm"><span class="lbl k">K⊤</span><div class="kvgrid" data-r="3" data-c="4" data-t="k"></div></div>
+            <div class="kvm"><span class="lbl v">V</span><div class="kvgrid" data-r="4" data-c="3" data-t="v"></div></div>
+          </div></div>
+
+          <div class="kvanno" style="grid-row:6; grid-column:1;">Block 0 里 4 个 token 的 K、V 矩阵</div>
+          <div class="kvanno" style="grid-row:6; grid-column:2;">Block 1 里 4 个 token 的 K、V 矩阵</div>
+          <div class="kvanno" style="grid-row:6; grid-column:3;">Block 2 里 4 个 token 的 K、V 矩阵</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="wrap">
+        <div class="head">读取缓存：<span class="hl">相同前缀</span>的 Block 直接<span class="hl">复用 KV Cache</span></div>
+        <div class="promptline">新请求 = <span class="qs">“里面个个都是人才，说话又好听，我不想走”</span></div>
+
+        <div class="kvflow">
+          <div class="kvcol" style="grid-row:1; grid-column:1;"></div>
+          <div class="kvcol" style="grid-row:1; grid-column:2;"></div>
+          <div class="kvcol miss last" style="grid-row:1; grid-column:3;"></div>
+          <div class="kvcol" style="grid-row:3 / 7; grid-column:1;"></div>
+          <div class="kvcol" style="grid-row:3 / 7; grid-column:2;"></div>
+          <div class="kvcol miss last" style="grid-row:3 / 7; grid-column:3;"></div>
+
+          <div class="bcell c1" style="grid-row:1;"><div class="blab">Block 0</div><div class="bpills"><span class="pill">里面</span><span class="pill">个个</span><span class="pill">都是</span><span class="pill">人才</span></div></div>
+          <div class="bcell c2" style="grid-row:1;"><div class="blab">Block 1</div><div class="bpills"><span class="pill">，</span><span class="pill">说话</span><span class="pill">又</span><span class="pill">好听</span></div></div>
+          <div class="bcell c3" style="grid-row:1;"><div class="blab miss">Block 2</div><div class="bpills"><span class="pill chg">，</span><span class="pill chg">我</span><span class="pill chg">不想</span><span class="pill chg">走</span></div></div>
+
+          <div class="hcnote" style="grid-row:2; grid-column:1 / -1; justify-self:center; margin:46px 0 44px;">逐块算 hash 拿去缓存表里查：<b>对上就命中</b>，把 KV Cache 取出来复用；<b>对不上就未命中</b>，整块重算。</div>
+
+          <div class="kvhash" style="grid-row:3; grid-column:1;">hash(Block 0)</div>
+          <div class="kvhash" style="grid-row:3; grid-column:2;">hash(Block 1)</div>
+          <div class="kvhash miss" style="grid-row:3; grid-column:3;">hash(Block 2)</div>
+
+          <div class="kvarrow" style="grid-row:4; grid-column:1;">↓ 查表</div>
+          <div class="kvarrow" style="grid-row:4; grid-column:2;">↓ 查表</div>
+          <div class="kvarrow miss" style="grid-row:4; grid-column:3;">↓ 查表</div>
+
+          <div class="kvcell" style="grid-row:5; grid-column:1;"><div class="cacheres hit">
+            <span class="cmark">✓</span>
+            <div class="kvmini">
+              <div class="kvm"><span class="lbl k">K⊤</span><div class="kvgrid" data-r="3" data-c="4" data-t="k"></div></div>
+              <div class="kvm"><span class="lbl v">V</span><div class="kvgrid" data-r="4" data-c="3" data-t="v"></div></div>
+            </div>
+          </div></div>
+          <div class="kvcell" style="grid-row:5; grid-column:2;"><div class="cacheres hit">
+            <span class="cmark">✓</span>
+            <div class="kvmini">
+              <div class="kvm"><span class="lbl k">K⊤</span><div class="kvgrid" data-r="3" data-c="4" data-t="k"></div></div>
+              <div class="kvm"><span class="lbl v">V</span><div class="kvgrid" data-r="4" data-c="3" data-t="v"></div></div>
+            </div>
+          </div></div>
+          <div class="kvcell" style="grid-row:5; grid-column:3;"><div class="cacheres miss">
+            <span class="cmark">✗</span>
+            <span class="ctxt">缓存里没有<br>整块重算 KV</span>
+          </div></div>
+
+          <div class="kvanno hit" style="grid-row:6; grid-column:1;">命中 · <b>取出复用</b></div>
+          <div class="kvanno hit" style="grid-row:6; grid-column:2;">命中 · <b>取出复用</b></div>
+          <div class="kvanno miss" style="grid-row:6; grid-column:3;">未命中 · <b>从这里往后重算</b></div>
+        </div>
+
+        <div class="hcnote" style="margin-top:28px;">所以我们在 usage 里看到的缓存命中，相差都是以 <b>Block（512 token）倍数</b>为单位。</div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+  // 填充 KV Cache 的 K/V 矩阵格子
+  document.querySelectorAll('.kvgrid').forEach(g=>{
+    const r=+g.dataset.r, c=+g.dataset.c, t=g.dataset.t;
+    g.style.gridTemplateColumns='repeat('+c+',18px)';
+    for(let i=0;i<r*c;i++){ const d=document.createElement('div'); d.className='c '+t; g.appendChild(d); }
+  });
+
+  const tabs=[...document.querySelectorAll('.tab')], slides=[...document.querySelectorAll('.slide')]; let cur=0;
+  function go(i){ i=(i+slides.length)%slides.length; tabs.forEach((t,k)=>t.classList.toggle('active',k===i));
+    slides.forEach((s,k)=>s.classList.toggle('active',k===i)); cur=i; }
+  tabs.forEach((t,i)=>t.addEventListener('click',()=>go(i)));
+  document.addEventListener('keydown',e=>{ if(e.key==='ArrowRight'||e.key===' ')go(cur+1);
+    else if(e.key==='ArrowLeft')go(cur-1); else if(/^[1-9]$/.test(e.key))go(+e.key-1); });
+</script>
+</body>
+</html>

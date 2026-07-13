@@ -21,4 +21,5 @@
 
 - `069_reconnect/visual.html`：Reconnecting 背后的传输层问题。
 - `070_codex_trace/structure_diagram.html`：一句 hello 背后的 Responses API 请求结构。
+- `071_codex_cache/visual.html`：Codex 的前缀缓存如何节省token。
 - `072_codex_tokenizer/visual.html`：文字如何变成token。
