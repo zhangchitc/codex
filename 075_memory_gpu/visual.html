@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codex 075 · KV Cache 到底占多少显存</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body);"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+  *{ box-sizing:border-box; margin:0; padding:0; }
+
+  :root{
+    --bg:#0d0d0d; --ink:#f2f3f5; --muted:#9a9aa6; --dim:#6e6e7a;
+    --arrow:#b6b6c4;
+    --line:rgba(255,255,255,.09); --line-2:rgba(255,255,255,.14);
+    --card:#161618; --card-2:#1b1b1e;
+    --accent:#6aa0ff; --accent-soft:rgba(106,160,255,.15);
+    --accent-line:rgba(106,160,255,.55); --accent-ink:#cfe0ff;
+    /* Q/K/V 语义色（沿用 063，跨期一致）*/
+    --q:#a78bfa;  --q-soft:rgba(167,139,250,.13); --q-line:rgba(167,139,250,.6);
+    --k:#38bdf8;  --k-soft:rgba(56,189,248,.13);  --k-line:rgba(56,189,248,.6);
+    --v:#ff8a3d;  --v-soft:rgba(255,138,61,.13);  --v-line:rgba(255,138,61,.6);
+    /* 字节 / 显存数字 = 琥珀（机器数字）*/
+    --num:#f6c486; --num-soft:rgba(240,179,102,.14); --num-line:rgba(240,179,102,.6);
+    --green:#10b981; --green-soft:rgba(16,185,129,.13); --green-line:rgba(16,185,129,.6);
+    /* 权重矩阵 Wᴼ = 实心板岩蓝（结构权重，醒目且区别于 head 数据）*/
+    --wo:#7f8ec2; --wo-line:rgba(88,101,152,.95);
+    /* 每个 head 一个颜色（整个 head 同色）：薄荷粉彩 粉 · 金 · 薄荷 · 薰衣草 */
+    --hA:#f4a6c2; --hB:#f1cd86; --hC:#8fdcc9; --hD:#c6b6ee;
+    --mono:"JetBrains Mono","SF Mono",Menlo,monospace;
+    --sans:"Inter","PingFang SC",-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;
+  }
+
+  html,body{ height:100%; }
+  body{
+    background:
+      radial-gradient(1200px 420px at 50% -8%, rgba(106,160,255,.07), transparent 60%),
+      var(--bg);
+    color:var(--ink); font-family:var(--sans);
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+
+  .deck{ height:100vh; display:flex; flex-direction:column; }
+
+  /* 顶栏 */
+  .topbar{ flex:0 0 auto; display:flex; align-items:center; justify-content:space-between;
+           gap:24px; padding:18px 46px; border-bottom:1px solid var(--line); }
+  .brand .ttl{ font-size:20px; font-weight:700; color:var(--ink); white-space:nowrap; }
+  .brand .ttl b{ color:var(--accent); font-weight:800; }
+  .tabs{ display:flex; gap:6px; padding:5px; border:1px solid var(--line);
+         border-radius:999px; background:rgba(255,255,255,.03); }
+  .tab{ appearance:none; border:1px solid transparent; border-radius:999px; cursor:pointer;
+        background:transparent; color:var(--muted); font-family:var(--sans);
+        font-size:15px; font-weight:700; padding:9px 16px; white-space:nowrap; transition:.18s; }
+  .tab:hover{ color:var(--ink); }
+  .tab.active{ color:var(--accent-ink); background:var(--accent-soft); border-color:var(--accent-line); }
+
+  /* 舞台 */
+  .stage{ position:relative; flex:1 1 auto; }
+  .slide{ position:absolute; inset:0; display:none; flex-direction:column;
+          padding:26px 46px 14px;
+          overflow-y:auto; overflow-x:hidden; }
+  .slide.active{ display:flex; }
+  .wrap{ width:100%; max-width:1340px; margin:0 auto; flex:1 0 auto;
+         display:flex; flex-direction:column; justify-content:flex-start;
+         align-items:center; text-align:center; gap:22px; }
+
+  .head{ font-size:31px; line-height:1.2; font-weight:800; }
+  .head .hl{ color:var(--accent); }
+  .head .hl-k{ color:var(--k); } .head .hl-v{ color:var(--v); } .head .hl-q{ color:var(--q); }
+  .head .hl-n{ color:var(--num); }
+  .sub{ font-size:16px; color:var(--muted); line-height:1.5; max-width:1000px; }
+  .sub b{ font-family:var(--mono); color:var(--ink); font-weight:700; }
+  .sub .hl-k{ color:var(--k); font-weight:700; } .sub .hl-v{ color:var(--v); font-weight:700; }
+
+
+  /* ============ 通用：向量 / mini K·V 方块 ============ */
+  .vec{ display:flex; gap:3px; }
+  .vec span{ width:15px; height:26px; border-radius:3px; }
+  .vec.q span{ background:var(--q); } .vec.k span{ background:var(--k); } .vec.v span{ background:var(--v); }
+  .dimtag{ font-family:var(--mono); font-size:13px; color:var(--dim); }
+
+  .mini{ width:34px; height:34px; border-radius:7px; display:flex; align-items:center;
+         justify-content:center; font-family:var(--mono); font-weight:800; font-size:16px; }
+  .mini.k{ background:var(--k-soft); border:1.5px solid var(--k-line); color:var(--k); }
+  .mini.v{ background:var(--v-soft); border:1.5px solid var(--v-line); color:var(--v); }
+
+  .num{ font-family:var(--mono); font-weight:800; color:var(--num); }
+  .eq{ font-family:var(--mono); font-weight:700; color:var(--arrow); font-size:22px; }
+
+  /* ============ PAGE 1 : 单头单层 KV 矩阵复习（借鉴 063 tab3）============ */
+  .p1formula{ margin-top:2px; }
+  .p1formula .katex{ font-size:1.75em; color:var(--ink); }
+
+  .mtxflow{ display:flex; align-items:flex-start; justify-content:center; gap:12px; margin-top:2px; }
+  .mtx{ display:flex; flex-direction:column; align-items:center; gap:9px; font-family:var(--mono); }
+  .mtx .sym{ font-size:19px; font-weight:800; height:24px; display:flex; align-items:center; }
+  .mtx .sym.q{ color:var(--q); } .mtx .sym.k{ color:var(--k); } .mtx .sym.v{ color:var(--v); }
+  .mtx .sym.s{ color:#aab2c0; } .mtx .sym.o{ color:var(--green); }
+  .mtx .garea{ height:129px; display:flex; align-items:center; }   /* 6 行 = 最高，短矩阵在此居中 */
+  .mtx .g{ display:grid; gap:3px; }
+  .mtx .g .cell{ width:19px; height:19px; border-radius:3px; }
+  .cell.cq{ background:var(--q); } .cell.ck{ background:var(--k); } .cell.cv{ background:var(--v); }
+  .cell.cs{ background:#5b6472; } .cell.co{ background:var(--green); }
+  .mtx .dim{ font-size:14px; font-weight:600; color:var(--dim); margin-top:2px; }   /* 次要：Q / scores / Output */
+  .mtx .dim.hero{ font-size:27px; font-weight:800; letter-spacing:.5px; margin-top:6px;
+    padding:5px 16px; border-radius:11px; }                                          /* 强调：K / V 矩阵大小 */
+  .mtx .dim.hero.k{ color:var(--k); background:var(--k-soft); border:1.5px solid var(--k-line); }
+  .mtx .dim.hero.v{ color:var(--v); background:var(--v-soft); border:1.5px solid var(--v-line); }
+  .mflop{ height:129px; margin-top:33px; display:flex; align-items:center;   /* 与 garea 顶端(sym 24 + gap 9)对齐并居中 */
+          font-size:24px; color:var(--dim); font-weight:700; }
+
+  /* ============ PAGE 2 : 多头（8 个 head 竖排，复用 Tab1 矩阵流）============ */
+  .mh{ display:flex; flex-direction:column; gap:28px; margin-top:6px; }
+  .mhrow{ display:flex; align-items:center; }
+  .mh .mhhead{ margin-bottom:-16px; }   /* 表头名字行离矩阵近一点 */
+  .mhlbl{ flex:0 0 92px; text-align:right; padding-right:18px;
+          font-family:var(--mono); font-size:16px; font-weight:800; color:var(--muted); }
+  .mhcol{ display:flex; align-items:center; justify-content:center; }
+  .mhcol.cw-s{ flex:0 0 70px; } .mhcol.cw-w{ flex:0 0 106px; }
+  .mhop{ flex:0 0 26px; text-align:center; font-family:var(--mono);
+         font-size:17px; font-weight:700; color:var(--dim); }
+  /* softmax( Q × Kᵀ ) 包裹：明显的标签 + SVG 完整圆括号（LaTeX 风）*/
+  .mhsm{ flex:0 0 68px; text-align:center; font-family:var(--mono);
+         font-size:16px; font-weight:600; color:var(--ink); }
+  .mhparen{ flex:0 0 22px; display:flex; align-items:center; justify-content:center; }
+  .mhparen svg{ display:block; }
+  .mg{ display:grid; gap:2px; }
+  .mg .cell{ width:16px; height:16px; border-radius:3px; }
+  .mhell .mhlbl{ color:var(--dim); }
+  .mhell .ell{ font-size:26px; font-weight:800; color:var(--dim); line-height:1; }
+  .mhname{ display:flex; flex-direction:column; align-items:center; gap:4px; font-family:var(--mono); }
+  .mhname .nm{ font-size:15px; font-weight:800; }
+  .mhname .sz{ font-size:15px; font-weight:700; color:var(--dim); }
+  .mhname.q .nm{ color:var(--muted); } .mhname.k .nm{ color:var(--k); }
+  .mhname.s .nm{ color:#aab2c0; } .mhname.v .nm{ color:var(--v); } .mhname.o .nm{ color:var(--muted); }
+  .mhname.k .sz, .mhname.v .sz{ font-size:15px; font-weight:800; padding:2px 9px; border-radius:6px; }
+  .mhname.k .sz{ color:var(--k); background:var(--k-soft); border:1px solid var(--k-line); }
+  .mhname.v .sz{ color:var(--v); background:var(--v-soft); border:1px solid var(--v-line); }
+
+  /* —— Tab2 收尾：拼接 8 个 head 的 Output，再乘 Wᴼ —— */
+  .cc-step{ margin-top:20px; }
+  .cc-cap{ text-align:center; font-size:15.5px; color:var(--muted); margin-bottom:16px; line-height:1.6; }
+  .cc-cap .g{ color:var(--green); font-weight:700; }
+  .cc-cap .wo{ color:var(--wo); font-weight:700; font-family:var(--mono); }
+  .cc-cap b{ color:var(--ink); font-family:var(--mono); font-weight:700; }
+  .cc-flow{ display:flex; align-items:center; justify-content:center; gap:10px; }
+  .cc-item{ display:flex; flex-direction:column; align-items:center; gap:9px; }
+  .cc-op{ font-family:var(--mono); font-size:22px; font-weight:700; color:var(--dim); }
+  .cc-nm{ font-family:var(--mono); font-size:13px; font-weight:800; }
+  .cc-nm.wo{ color:var(--wo); } .cc-nm.out{ color:var(--green); }
+  .cc-sz{ font-family:var(--mono); font-size:15px; font-weight:700; color:var(--dim); visibility:hidden; }
+  .p2dim{ position:absolute; transform:translateX(-50%); font-family:var(--mono); font-size:15px; font-weight:700; color:var(--dim); white-space:nowrap; z-index:6; }
+  .ccgrid{ display:grid; gap:2px; }                            /* 格子与上面 head 矩阵完全一致 */
+  .ccgrid .cell{ width:16px; height:16px; border-radius:3px; }
+  .cell.cgn{ background:var(--green); }                        /* 数据：绿色实心 */
+  .cell.cwo{ background:var(--wo); border:1px solid var(--wo-line); }    /* 权重：实心板岩蓝 */
+  /* concat：一个统一颜色的连续矩阵，用 head 颜色的虚线框圈出每段（同一个矩阵）*/
+  .concatg{ position:relative; }
+  .cell.ccat{ background:#aab0be; }
+  .cc-frame{ position:absolute; top:-22px; height:150px; border:2.5px dashed; border-radius:6px; box-sizing:border-box; }
+  .cc-flbl{ position:absolute; top:-44px; text-align:center; font-family:var(--mono); font-size:12px; font-weight:700; }
+  /* Wᴼ：8d × d 高瘦权重矩阵（把拼接的 8d 投影回 d 维），纵向省略表示 8d 行 */
+  .wo-col{ display:flex; flex-direction:column; align-items:center; gap:4px; }
+  .wo-vell{ font-family:var(--mono); font-size:18px; font-weight:800; color:var(--dim); line-height:.5; }
+  /* 每个 head 一个颜色（染 Output cell + 对应拼接段）*/
+  .cell.cha{ background:var(--hA); } .cell.chb{ background:var(--hB); } .cell.chc{ background:var(--hC); } .cell.chd{ background:var(--hD); }
+  .cc-blk .lbl.la{ color:var(--hA); } .cc-blk .lbl.lb{ color:var(--hB); } .cc-blk .lbl.lc{ color:var(--hC); } .cc-blk .lbl.ld{ color:var(--hD); }
+  .mhlbl.hl-cha{ color:var(--hA); } .mhlbl.hl-chb{ color:var(--hB); } .mhlbl.hl-chc{ color:var(--hC); } .mhlbl.hl-chd{ color:var(--hD); }
+
+  /* Tab2 两列：heads 在左，concat×Wᴼ=result 接在右边 */
+  .p2grid{ position:relative; display:flex; align-items:center; justify-content:center; gap:120px; margin-top:6px; }
+  .p2grid .mh{ margin-top:0; flex:0 0 auto; }
+  .merge{ display:flex; flex-direction:column; align-items:center; gap:14px; flex:0 0 auto; }
+  .merge .mtitle{ font-size:16px; color:var(--muted); text-align:center; max-width:480px; line-height:1.55; }
+  .cc-concat-item{ position:relative; }
+  .cc-concat-item .mtitle{ position:absolute; left:50%; bottom:100%; transform:translateX(-50%); margin-bottom:54px; white-space:nowrap; }
+  .merge .mtitle b{ color:var(--ink); font-family:var(--mono); font-weight:700; }
+  .merge .mtitle .wo{ color:var(--wo); font-weight:700; font-family:var(--mono); }
+  .p2arrows{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:visible; z-index:6; }
+
+  /* ============ PAGE 3 : 多层 Decoder 架构 ============ */
+  .dstack{ position:relative; display:flex; justify-content:center; align-items:flex-start;
+    gap:82px; margin-top:2px; padding:52px 0 58px; }
+  .dblk{ position:relative; z-index:2; width:196px; box-sizing:border-box;
+    display:flex; flex-direction:column; gap:0; padding:16px 14px 34px 36px;
+    border-radius:15px; background:#22232b; border:1.5px solid rgba(255,255,255,.22);
+    box-shadow:0 8px 26px rgba(0,0,0,.45); }
+  .dbox{ border-radius:9px; text-align:center; font-family:var(--sans); color:#17171c;
+    display:flex; align-items:center; justify-content:center; line-height:1.16; font-weight:800; }
+  .dbox.mha{ background:#ffc47d; padding:9px 6px; font-size:13px; margin-top:8px;
+    position:relative; z-index:3;
+    box-shadow:0 0 30px 7px rgba(255,190,120,.85), 0 0 10px 1px rgba(255,214,158,.95); }  /* MHA 提亮 + 更强暖色光晕 */
+  .dbox.an, .dbox.ff{ opacity:.62; }                            /* 聚光：非 MHA 模块调暗（不太暗），突出 MHA */
+  .dbox.ff{  background:#a6d1ee; padding:14px 6px; font-size:14px; margin:8px 0 26px; }
+  .dbox.an{  background:#e2e6a2; padding:7px 6px; font-size:12px; font-weight:700; color:#3a3a1e; }
+  .p3arrows{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none;
+    overflow:visible; z-index:4; }
+  .dio{ position:absolute; z-index:5; transform:translate(-50%,-50%);
+    padding:8px 18px; border-radius:10px; background:#c3b2ee; color:#1d1636;
+    font-weight:800; font-size:15px; font-family:var(--sans); white-space:nowrap;
+    border:1px solid rgba(180,164,224,.9); }
+  .dlbls{ display:flex; justify-content:center; gap:82px; margin-top:4px; }
+  .dlbls .dl{ width:196px; text-align:center; font-family:var(--mono); font-size:14px;
+    font-weight:700; color:var(--muted); }
+  .p1kv3{ margin-top:22px; }
+  /* Tab1 底部：KV Cache 大小公式 */
+  .p1kv{ display:flex; flex-direction:column; align-items:center; gap:15px; margin-top:30px; }
+  .p1kv2{ margin-top:14px; }
+  .p1kvcap{ font-size:16px; color:var(--muted); }
+  .p1kvcap b{ color:var(--ink); font-family:var(--mono); font-weight:700; }
+  .p1kvcap .kk{ color:var(--k); font-weight:700; } .p1kvcap .vv{ color:var(--v); font-weight:700; }
+  .p3math .eq{ color:var(--dim); }
+  .p1kvf{ display:flex; align-items:center; gap:12px; background:var(--card); border:1px solid var(--line-2);
+          border-radius:16px; padding:20px 36px; font-family:var(--mono); font-size:28px; }
+  .p1kvf .lbl{ color:var(--ink); font-weight:700; } .p1kvf .eq,.p1kvf .mul{ color:var(--dim); }
+  .p1kvf .term{ color:var(--ink); font-weight:800; }
+  .p1kvf .term.two{ color:var(--num); }
+  .p1kvf .term.be{ color:var(--muted); font-size:20px; font-weight:600; }
+  .p1kvsub{ display:flex; flex-direction:column; align-items:flex-start; gap:7px; margin-top:4px;
+            font-size:14.5px; color:var(--dim); font-family:var(--mono); }
+  .p1kvsub b{ color:var(--muted); font-weight:700; } .p1kvsub .two{ color:var(--num); font-weight:700; }
+
+  /* ============ PAGE 4 : MHA / GQA / MQA（省显存的开关）============ */
+  .attn-grid{ display:flex; justify-content:center; align-items:flex-start; gap:64px; margin-top:6px; }
+  .attn-col{ display:flex; flex-direction:column; align-items:center; gap:14px; }
+  .attn-vtitle{ font-size:16px; font-weight:800; color:var(--ink); white-space:nowrap; text-align:center; line-height:1.4; }
+  .attn-vtitle .ab{ font-family:var(--mono); color:var(--dim); font-weight:700; font-size:14px; }
+  .attn-diagram{ position:relative; }
+  .attn-diagram svg{ position:absolute; left:0; top:0; pointer-events:none; overflow:visible; z-index:1; }
+  .attn-box{ position:absolute; border-radius:5px; z-index:2; box-sizing:border-box; }   /* 空心竖条，照抄参考图 */
+  .attn-box.q{ background:#d3e1f4; border:2px solid #7fa1d0; }   /* Queries：淡蓝 */
+  .attn-box.k{ background:#f5cccc; border:2px solid #d98785; }   /* Keys：淡粉 */
+  .attn-box.v{ background:#f8e6c0; border:2px solid #e0a83e; }   /* Values：淡黄 */
+  .attn-rowlbl{ position:absolute; left:-96px; width:80px; text-align:right; transform:translateY(-50%);
+                white-space:nowrap; z-index:2; font-family:var(--sans); font-size:15px; font-weight:700; }
+  .attn-rowlbl.v{ color:#e6bd6a; } .attn-rowlbl.k{ color:#e29b99; } .attn-rowlbl.q{ color:#9bb8de; }
+  .attn-desc{ text-align:center; font-size:14px; color:var(--muted); line-height:1.55; max-width:280px; }
+  .attn-desc b{ color:var(--ink); font-weight:700; }
+  .attn-kv{ font-family:var(--mono); font-size:14px; font-weight:700; padding:6px 14px; border-radius:10px;
+            display:flex; align-items:center; gap:8px; }
+  .attn-kv .n{ font-size:19px; font-weight:800; }
+  .attn-kv.full{ background:var(--card-2); border:1.5px solid var(--line-2); color:var(--muted); }
+  .attn-kv.full .n{ color:var(--ink); }
+  .attn-kv.mid{ background:var(--num-soft); border:1.5px solid var(--num-line); color:var(--num); }
+  .attn-kv.min{ background:var(--green-soft); border:1.5px solid var(--green-line); color:var(--green); }
+  .p1kv4{ margin-top:24px; }
+  .p1kvf .term.hkv{ color:var(--green); font-weight:800; }
+  .p1kvf .term.hkv sub{ font-size:.55em; font-weight:700; }
+  .p1kvsub2 sub{ font-size:.72em; }
+</style>
+</head>
+<body>
+<div class="deck">
+  <div class="topbar">
+    <div class="brand"><span class="ttl">KV Cache 到底占多少显存</span></div>
+    <nav class="tabs">
+      <button class="tab active" data-i="0">① 朴素注意力</button>
+      <button class="tab" data-i="1">② 多头注意力</button>
+      <button class="tab" data-i="2">③ 多层 Decoder</button>
+      <button class="tab" data-i="3">④ MQA·GQA</button>
+    </nav>
+  </div>
+
+  <div class="stage">
+
+    <!-- ===================== PAGE 1 ===================== -->
+    <section class="slide active">
+      <div class="wrap">
+        <div class="head"><span class="hl">朴素注意力</span>：从上下文中找到当前最相关的token内容</div>
+
+        <div class="p1formula">
+          \[\text{Attention}\!\left(\textcolor{#a78bfa}{Q},\textcolor{#38bdf8}{K},\textcolor{#ff8a3d}{V}\right)=\text{softmax}\!\left(\frac{\textcolor{#a78bfa}{Q}\textcolor{#38bdf8}{K^{\top}}}{\sqrt{d_k}}\right)\textcolor{#ff8a3d}{V}\]
+        </div>
+
+        <div class="mtxflow">
+          <div class="mtx">
+            <div class="sym q">Q</div>
+            <div class="garea"><div class="g" id="g-q"></div></div>
+            <div class="dim">n × d</div>
+          </div>
+          <div class="mflop">×</div>
+          <div class="mtx">
+            <div class="sym k">Kᵀ</div>
+            <div class="garea"><div class="g" id="g-kt"></div></div>
+            <div class="dim hero k">d × n</div>
+          </div>
+          <div class="mflop">=</div>
+          <div class="mtx">
+            <div class="sym s">scores</div>
+            <div class="garea"><div class="g" id="g-score"></div></div>
+            <div class="dim">n × n</div>
+          </div>
+          <div class="mflop">×</div>
+          <div class="mtx">
+            <div class="sym v">V</div>
+            <div class="garea"><div class="g" id="g-v"></div></div>
+            <div class="dim hero v">n × d</div>
+          </div>
+          <div class="mflop">=</div>
+          <div class="mtx">
+            <div class="sym o">Output</div>
+            <div class="garea"><div class="g" id="g-out"></div></div>
+            <div class="dim">n × d</div>
+          </div>
+        </div>
+
+        <div class="p1kv">
+          <div class="p1kvf">
+            <span class="lbl">KV&nbsp;Cache占用</span>
+            <span class="eq">=</span>
+            <span class="term two">2</span><span class="mul">×</span>
+            <span class="term">n</span><span class="mul">×</span>
+            <span class="term">d</span><span class="mul">×</span>
+            <span class="term be">bytes&nbsp;per&nbsp;element</span>
+          </div>
+          <div class="sub p1kvsub2">假设提示词有 <b>n</b> 个 token、每个 token 向量 <b>d</b> 维</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== PAGE 2 ===================== -->
+    <section class="slide">
+      <div class="wrap">
+        <div class="head"><span class="hl">多头注意力</span>：从多个角度同时找到最相关的token信息</div>
+        <div class="sub">朴素注意力的局限：模型每次只能从一个角度衡量token之间的相关性，而语言里的关系是多种多样的</div>
+
+        <div class="p2grid">
+          <div class="mh" id="mh"></div>
+
+          <div class="merge" id="cc">
+            <div class="cc-flow">
+              <div class="cc-item cc-concat-item">
+                <div class="mtitle">把每个 head 的 Output 合并</div>
+                <div class="concatg" id="cc-concat"></div>
+              </div>
+              <div class="cc-op">×</div>
+              <div class="cc-item">
+                <div class="cc-nm wo">Wᴼ</div>
+                <div id="cc-wo"></div>
+                <div class="cc-sz">4d × d</div>
+              </div>
+              <div class="cc-op">=</div>
+              <div class="cc-item">
+                <div class="cc-nm out">Output</div>
+                <div id="cc-out"></div>
+                <div class="cc-sz">n × d</div>
+              </div>
+            </div>
+          </div>
+
+          <svg class="p2arrows" id="p2ar"></svg>
+        </div>
+
+        <div class="p1kv p1kv2">
+          <div class="p1kvf">
+            <span class="lbl">KV&nbsp;Cache占用</span>
+            <span class="eq">=</span>
+            <span class="term two">2</span><span class="mul">×</span>
+            <span class="term">n</span><span class="mul">×</span>
+            <span class="term">d</span><span class="mul">×</span>
+            <span class="term two">h</span><span class="mul">×</span>
+            <span class="term be">bytes&nbsp;per&nbsp;element</span>
+          </div>
+          <div class="sub p1kvsub2">假设提示词有 <b>n</b> 个 token、每个 token 向量 <b>d</b> 维、注意力头数为 <b>h</b></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== PAGE 3 ===================== -->
+    <section class="slide">
+      <div class="wrap">
+        <div class="head"><span class="hl">多层 Decoder</span>：一层层逐步提炼抽象token信息</div>
+        <div class="sub">单层注意力的局限：每个token只来得及和上下文做一次信息融合，能理解到的概念太表面</div>
+
+        <div class="dstack" id="dstack">
+          <div class="dblk">
+            <div class="dbox an" data-r="an2">Add &amp; Norm</div>
+            <div class="dbox ff">Feed<br>Forward</div>
+            <div class="dbox an" data-r="an1">Add &amp; Norm</div>
+            <div class="dbox mha">Masked<br>Multi-Head<br>Attention</div>
+          </div>
+          <div class="dblk">
+            <div class="dbox an" data-r="an2">Add &amp; Norm</div>
+            <div class="dbox ff">Feed<br>Forward</div>
+            <div class="dbox an" data-r="an1">Add &amp; Norm</div>
+            <div class="dbox mha">Masked<br>Multi-Head<br>Attention</div>
+          </div>
+          <div class="dblk">
+            <div class="dbox an" data-r="an2">Add &amp; Norm</div>
+            <div class="dbox ff">Feed<br>Forward</div>
+            <div class="dbox an" data-r="an1">Add &amp; Norm</div>
+            <div class="dbox mha">Masked<br>Multi-Head<br>Attention</div>
+          </div>
+          <div class="dblk">
+            <div class="dbox an" data-r="an2">Add &amp; Norm</div>
+            <div class="dbox ff">Feed<br>Forward</div>
+            <div class="dbox an" data-r="an1">Add &amp; Norm</div>
+            <div class="dbox mha">Masked<br>Multi-Head<br>Attention</div>
+          </div>
+          <div class="dio" id="d-in">Input</div>
+          <div class="dio" id="d-out">Output</div>
+          <svg class="p3arrows" id="p3ar"></svg>
+        </div>
+        <div class="dlbls">
+          <div class="dl">第 1 层</div>
+          <div class="dl">第 2 层</div>
+          <div class="dl">第 3 层</div>
+          <div class="dl">第 4 层</div>
+        </div>
+
+        <div class="p1kv p1kv3">
+          <div class="p1kvf">
+            <span class="lbl">KV&nbsp;Cache占用</span>
+            <span class="eq">=</span>
+            <span class="term two">2</span><span class="mul">×</span>
+            <span class="term">n</span><span class="mul">×</span>
+            <span class="term">d</span><span class="mul">×</span>
+            <span class="term two">h</span><span class="mul">×</span>
+            <span class="term two">L</span><span class="mul">×</span>
+            <span class="term be">bytes&nbsp;per&nbsp;element</span>
+          </div>
+          <div class="sub p1kvsub2">假设提示词有 <b>n</b> 个 token、每个 token 向量 <b>d</b> 维、注意力头数为 <b>h</b>、Decoder 层数为 <b>L</b></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== PAGE 4 ===================== -->
+    <section class="slide">
+      <div class="wrap">
+        <div class="head"><span class="hl">MQA/GQA</span>：让多个注意力头共享 K、V</div>
+        <div class="sub">MHA 每个头都存自己的 K、V，显存开销太大</div>
+
+        <div class="attn-grid">
+          <div class="attn-col">
+            <div class="attn-vtitle">Multi-Head Attention<br><span class="ab">(MHA)</span></div>
+            <div class="attn-diagram" id="diag-mha"></div>
+            <div class="attn-desc">每个 <b>Q</b> 头都有<b>独立</b>的 K、V</div>
+            <div class="attn-kv full">KV 头数 <span class="n">8</span> · 满额</div>
+          </div>
+          <div class="attn-col">
+            <div class="attn-vtitle">Multi-Query Attention<br><span class="ab">(MQA)</span></div>
+            <div class="attn-diagram" id="diag-mqa"></div>
+            <div class="attn-desc">所有 <b>Q</b> 头<b>共享</b>同一套 K、V</div>
+            <div class="attn-kv mid">KV 头数 <span class="n">1</span> · 只剩 1/8</div>
+          </div>
+          <div class="attn-col">
+            <div class="attn-vtitle">Grouped-Query Attention<br><span class="ab">(GQA)</span></div>
+            <div class="attn-diagram" id="diag-gqa"></div>
+            <div class="attn-desc"><b>Q</b> 头<b>分组</b>，同组共享一套 K、V</div>
+            <div class="attn-kv min">KV 头数 <span class="n">4</span> · 减半</div>
+          </div>
+        </div>
+
+        <div class="p1kv p1kv4">
+          <div class="p1kvf">
+            <span class="lbl">KV&nbsp;Cache占用</span>
+            <span class="eq">=</span>
+            <span class="term two">2</span><span class="mul">×</span>
+            <span class="term">n</span><span class="mul">×</span>
+            <span class="term">d</span><span class="mul">×</span>
+            <span class="term hkv">h<sub>kv</sub></span><span class="mul">×</span>
+            <span class="term two">L</span><span class="mul">×</span>
+            <span class="term be">bytes&nbsp;per&nbsp;element</span>
+          </div>
+          <div class="sub p1kvsub2">把注意力头数 <b>h</b> 换成真正存储的 K、V 头数 <b>h<sub>kv</sub></b></div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script>
+  const tabs=[...document.querySelectorAll('.tab')];
+  const slides=[...document.querySelectorAll('.slide')];
+  let cur=0;
+  function go(i){
+    i=(i+slides.length)%slides.length;
+    tabs.forEach((t,k)=>t.classList.toggle('active',k===i));
+    slides.forEach((s,k)=>s.classList.toggle('active',k===i));
+    cur=i;
+    if(i===1) requestAnimationFrame(()=>{ drawP2Arrows(); placeP2Dims(); });   // Tab2 显示后再量坐标画箭头/标注
+    if(i===2) requestAnimationFrame(drawP3);                                    // Tab3 显示后画 Decoder 架构箭头
+  }
+  tabs.forEach((t,i)=>t.addEventListener('click',()=>go(i)));
+  document.addEventListener('keydown',e=>{
+    if(e.key==='ArrowRight'||e.key===' ') go(cur+1);
+    else if(e.key==='ArrowLeft') go(cur-1);
+    else if(/^[1-9]$/.test(e.key)) go(+e.key-1);
+  });
+
+  // ---- Tab1 矩阵网格（借鉴 063 tab3，n=6 · d=4 示意）----
+  function grid(id,rows,cols,cls){
+    const el=document.getElementById(id); if(!el) return;
+    el.style.gridTemplateColumns='repeat('+cols+',19px)';
+    for(let i=0;i<rows*cols;i++){
+      const c=document.createElement('div'); c.className='cell '+cls; el.appendChild(c);
+    }
+  }
+  grid('g-q',6,4,'cq');      // Q  n×d
+  grid('g-kt',4,6,'ck');     // Kᵀ d×n
+  grid('g-score',6,6,'cs');  // scores n×n
+  grid('g-v',6,4,'cv');      // V  n×d
+  grid('g-out',6,4,'co');    // Output n×d
+
+  // ---- Tab2 多头：8 个 head 竖排，每行复用 Tab1 的矩阵流 ----
+  (function(){
+    const mh=document.getElementById('mh'); if(!mh) return;
+    const COLS=[
+      {sm:1},                                                     // softmax
+      {paren:'('},                                                // softmax( …
+      {nm:'Q',      sz:'n×d', c:'q', cls:'cq', r:6, k:4, w:'cw-s'},
+      {op:'×'},
+      {nm:'Kᵀ',     sz:'d×n', c:'k', cls:'ck', r:4, k:6, w:'cw-w'},
+      {paren:')'},                                                // … )
+      {op:'×'},
+      {nm:'V',      sz:'n×d', c:'v', cls:'cv', r:6, k:4, w:'cw-s'},
+      {op:'='},
+      {nm:'Output', sz:'n×d', c:'o', cls:'co', r:6, k:4, w:'cw-s'},
+    ];
+    // 表头行：矩阵名 + 大小（K、V 大小加色框强调）
+    const hrow=document.createElement('div'); hrow.className='mhrow mhhead';
+    const hlbl=document.createElement('div'); hlbl.className='mhlbl'; hrow.appendChild(hlbl);  // 左侧留空占位（对齐用）
+    COLS.forEach(col=>{
+      if(col.op){ const o=document.createElement('div'); o.className='mhop'; hrow.appendChild(o); return; }
+      if(col.sm){ const s=document.createElement('div'); s.style.flex='0 0 68px'; hrow.appendChild(s); return; }      // 占位对齐
+      if(col.paren){ const p=document.createElement('div'); p.style.flex='0 0 22px'; hrow.appendChild(p); return; }   // 占位对齐
+      const cell=document.createElement('div'); cell.className='mhcol '+col.w;
+      const nm=document.createElement('div'); nm.className='mhname '+col.c;
+      nm.innerHTML='<div class="nm">'+col.nm+'</div>';   // 只留矩阵名，维数移到底部
+      cell.appendChild(nm); hrow.appendChild(cell);
+    });
+    mh.appendChild(hrow);
+    // 画 head 0 ~ head 3（不用省略号）；整个 head 用一个颜色（Q/Kᵀ/V/Output 同色）
+    const HCLS={0:'cha',1:'chb',2:'chc',3:'chd'};
+    function makeRow(h){
+      const row=document.createElement('div'); row.className='mhrow';
+      const lbl=document.createElement('div'); lbl.className='mhlbl hl-'+HCLS[h]; lbl.textContent='head '+h; row.appendChild(lbl);
+      COLS.forEach(col=>{
+        if(col.op){ const o=document.createElement('div'); o.className='mhop'; o.textContent=col.op; row.appendChild(o); return; }
+        if(col.sm){ const s=document.createElement('div'); s.className='mhsm'; s.textContent='softmax'; row.appendChild(s); return; }
+        if(col.paren){ const p=document.createElement('div'); p.className='mhparen'; const open=col.paren==='(';
+          p.innerHTML='<svg width="18" height="114" viewBox="0 0 18 114"><path d="'+(open?'M14 4 Q3 57 14 110':'M4 4 Q15 57 4 110')+'" fill="none" stroke="#c7c8d0" stroke-width="2.6" stroke-linecap="round"/></svg>';
+          row.appendChild(p); return; }
+        const cell=document.createElement('div'); cell.className='mhcol '+col.w;
+        const g=document.createElement('div'); g.className='mg';
+        g.style.gridTemplateColumns='repeat('+col.k+',16px)';
+        for(let i=0;i<col.r*col.k;i++){ const c=document.createElement('div'); c.className='cell '+HCLS[h]; g.appendChild(c); }
+        if(col.c==='o') g.id='out-'+h;                 // 供箭头定位
+        cell.appendChild(g); row.appendChild(cell);
+      });
+      return row;
+    }
+    function makeEllipsis(){
+      const row=document.createElement('div'); row.className='mhrow mhell';
+      const lbl=document.createElement('div'); lbl.className='mhlbl'; lbl.textContent='⋮'; row.appendChild(lbl);
+      COLS.forEach(col=>{
+        if(col.op){ const o=document.createElement('div'); o.className='mhop'; row.appendChild(o); return; }
+        const cell=document.createElement('div'); cell.className='mhcol '+col.w;
+        cell.innerHTML='<span class="ell">⋮</span>';
+        row.appendChild(cell);
+      });
+      return row;
+    }
+    mh.appendChild(makeRow(0));
+    mh.appendChild(makeRow(1));
+    mh.appendChild(makeRow(2));
+    mh.appendChild(makeRow(3));
+    // 底部行：各矩阵的维数信息（K、V 的大小加色框强调）
+    const frow=document.createElement('div'); frow.className='mhrow';
+    frow.appendChild(Object.assign(document.createElement('div'),{className:'mhlbl'}));
+    COLS.forEach(col=>{
+      if(col.op){ const o=document.createElement('div'); o.className='mhop'; frow.appendChild(o); return; }
+      if(col.sm){ const s=document.createElement('div'); s.style.flex='0 0 68px'; frow.appendChild(s); return; }
+      if(col.paren){ const p=document.createElement('div'); p.style.flex='0 0 22px'; frow.appendChild(p); return; }
+      const cell=document.createElement('div'); cell.className='mhcol '+col.w;
+      const nm=document.createElement('div'); nm.className='mhname '+col.c;
+      nm.innerHTML='<div class="sz">'+col.sz+'</div>';
+      cell.appendChild(nm); frow.appendChild(cell);
+    });
+    mh.appendChild(frow);
+  })();
+
+  // ---- Tab2 收尾：拼接 8 个 head 的 Output，再乘 Wᴼ 投影回 d 维 ----
+  (function(){
+    const cc=document.getElementById('cc'); if(!cc) return;
+    function grid(rows,cols,cls){ const g=document.createElement('div'); g.className='ccgrid';
+      g.style.gridTemplateColumns='repeat('+cols+',16px)';
+      for(let i=0;i<rows*cols;i++){ const c=document.createElement('div'); c.className='cell '+cls; g.appendChild(c);} return g; }
+    function ell(){ const e=document.createElement('div'); e.className='cc-hell'; e.textContent='⋯'; return e; }
+    // concat：一整个统一颜色的连续矩阵（6×16），用 head 颜色的虚线框圈出每段（同一个矩阵）
+    const cg=cc.querySelector('#cc-concat');
+    cg.appendChild(grid(6,16,'ccat'));
+    const COLW=18, SEGW=4*16+3*2;                 // 列距18px；每段 4 列 = 70px
+    [{h:0,c:'#f4a6c2'},{h:1,c:'#f1cd86'},{h:2,c:'#8fdcc9'},{h:3,c:'#c6b6ee'}].forEach((b,i)=>{
+      const x0=i*4*COLW;
+      const fr=document.createElement('div'); fr.className='cc-frame'; fr.id='band-'+b.h;
+      fr.style.left=(x0+4)+'px'; fr.style.width=(SEGW-8)+'px'; fr.style.borderColor=b.c;  // 比 4 列稍窄，段间留缝
+      cg.appendChild(fr);
+      const lb=document.createElement('div'); lb.className='cc-flbl'; lb.textContent='head '+b.h;
+      lb.style.left=x0+'px'; lb.style.width=SEGW+'px'; lb.style.color=b.c;
+      cg.appendChild(lb);
+    });
+    // Wᴼ：4d × d 空心权重方块（4 个 head → 4d=16 行），把拼接投影回 d 维
+    const wo=cc.querySelector('#cc-wo'); wo.className='wo-col';
+    wo.appendChild(grid(16,4,'cwo'));
+    // Output：n × d，投影回 d 维（和一个 head 的 Output 一样大小）
+    cc.querySelector('#cc-out').appendChild(grid(6,4,'cgn'));
+  })();
+
+  // ---- Tab4：MHA / MQA / GQA 结构图（照抄参考图：左侧行标 V/K/Q · 空心竖条 · 虚线只连 K→Q）----
+  (function(){
+    const BW=22, BH=66, PITCH=33, yV=0, yK=82, yQ=190;         // 竖长条 + 三行位置（V 顶 / K 中 / Q 底）
+    const NS='http://www.w3.org/2000/svg';
+    function build(id, nQ, groups, labels){
+      const host=document.getElementById(id); if(!host) return;
+      const W=nQ*PITCH, H=yQ+BH;
+      host.style.width=W+'px'; host.style.height=H+'px';
+      const qx=i=>i*PITCH+PITCH/2;                              // 第 i 个 Q 头的中心 x
+      const units=[]; let start=0;                             // 每个 KV 单元覆盖的 Q 头分组
+      groups.forEach(g=>{ const idxs=[]; for(let j=0;j<g;j++) idxs.push(start+j);
+        const cx=idxs.reduce((s,k)=>s+qx(k),0)/idxs.length; units.push({cx,idxs}); start+=g; });
+      // 虚线连线：只连 K 底 → Q 顶（V 直接叠在 K 上方、不连线，照抄参考图）
+      const svg=document.createElementNS(NS,'svg');
+      svg.setAttribute('viewBox','0 0 '+W+' '+H); svg.style.width=W+'px'; svg.style.height=H+'px';
+      const line=(x1,y1,x2,y2)=>{ const l=document.createElementNS(NS,'line');
+        l.setAttribute('x1',x1); l.setAttribute('y1',y1); l.setAttribute('x2',x2); l.setAttribute('y2',y2);
+        l.setAttribute('stroke','#8c9099'); l.setAttribute('stroke-width','1.4'); l.setAttribute('stroke-dasharray','3 3'); svg.appendChild(l); };
+      units.forEach(u=>{ u.idxs.forEach(i=>line(qx(i),yQ,u.cx,yK+BH)); });
+      host.appendChild(svg);
+      const box=(cls,cx,y)=>{ const b=document.createElement('div'); b.className='attn-box '+cls;
+        b.style.left=(cx-BW/2)+'px'; b.style.top=y+'px'; b.style.width=BW+'px'; b.style.height=BH+'px';
+        host.appendChild(b); };
+      units.forEach(u=>{ box('v',u.cx,yV); box('k',u.cx,yK); });
+      for(let i=0;i<nQ;i++) box('q',qx(i),yQ);
+      // 左侧行标 V / K / Q（只在最左的 MHA 栏加，三栏行高一致、视觉贯穿三列）
+      if(labels){ [['Values','v',yV],['Keys','k',yK],['Queries','q',yQ]].forEach(([t,c,y])=>{
+        const lb=document.createElement('div'); lb.className='attn-rowlbl '+c;
+        lb.textContent=t; lb.style.top=(y+BH/2)+'px'; host.appendChild(lb); }); }
+    }
+    build('diag-mha',8,[1,1,1,1,1,1,1,1], true);   // 每头独立：8 套 KV
+    build('diag-mqa',8,[8], false);                // 全体共享：1 套 KV
+    build('diag-gqa',8,[2,2,2,2], false);          // 分 4 组：4 套 KV
+  })();
+
+  // ---- 箭头：每个 head 的 Output → 绕到拼接段下方，统一从底部朝上指入该色段 ----
+  function drawP2Arrows(){
+    const svg=document.getElementById('p2ar'); if(!svg) return;
+    const gr=svg.parentElement.getBoundingClientRect(); if(!gr.width) return;
+    const NS='http://www.w3.org/2000/svg';
+    svg.setAttribute('viewBox','0 0 '+gr.width+' '+gr.height);
+    while(svg.firstChild) svg.removeChild(svg.firstChild);
+    const defs=[['out-0','band-0','#f4a6c2'],['out-1','band-1','#f1cd86'],['out-2','band-2','#8fdcc9'],['out-3','band-3','#c6b6ee']];
+    const items=defs.map(([a,b,color])=>{ const ea=document.getElementById(a), eb=document.getElementById(b); if(!ea||!eb) return null;
+      const ra=ea.getBoundingClientRect(), rb=eb.getBoundingClientRect();
+      return {color, x1:ra.right-gr.left, y1:ra.top-gr.top+ra.height/2,
+              bx:rb.left-gr.left+rb.width/2, bl:rb.left-gr.left, bb:rb.bottom-gr.top}; }).filter(Boolean);
+    if(!items.length) return;
+    const x1=items[0].x1;                                   // 四个 Output 右缘同一 x
+    const cl=Math.min(...items.map(it=>it.bl));             // 拼接块左缘
+    const bbMax=Math.max(...items.map(it=>it.bb));          // 色段底边
+    const laneStart=x1+16, laneEnd=cl-14;
+    items.forEach((it,i)=>{
+      const yb=it.bb-1;                                                  // 终点：色段底部（略进入）
+      let pts;
+      if(i===items.length-1){                                           // 最后一条：输出本就在最下方，直接往右再往上
+        pts=[[it.x1,it.y1],[it.bx,it.y1],[it.bx,yb]];
+      }else{                                                            // 上面三条：往下走到横轨再进入（横轨压低一点）
+        const lane=laneStart+(laneEnd-laneStart)*(items.length-i)/(items.length+1);
+        const rail=bbMax+28+i*26;
+        pts=[[it.x1,it.y1],[lane,it.y1],[lane,rail],[it.bx,rail],[it.bx,yb]];
+      }
+      const pl=document.createElementNS(NS,'polyline');
+      pl.setAttribute('points', pts.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' '));
+      pl.setAttribute('fill','none'); pl.setAttribute('stroke',it.color);
+      pl.setAttribute('stroke-width','2.2'); pl.setAttribute('opacity','.92');
+      pl.setAttribute('stroke-linejoin','miter'); pl.setAttribute('stroke-linecap','butt');
+      svg.appendChild(pl);
+      const ah=document.createElementNS(NS,'path');                      // 箭头：朝上指入色段底部
+      ah.setAttribute('d','M '+(it.bx-5)+' '+(yb+7)+' L '+(it.bx+5)+' '+(yb+7)+' L '+it.bx+' '+(yb-2)+' Z');
+      ah.setAttribute('fill',it.color); ah.setAttribute('opacity','.92');
+      svg.appendChild(ah);
+    });
+  }
+  function placeP2Dims(){                                    // 维数标注贴各自矩阵下方（concat 下方有箭头，放到箭头下）
+    const grid=document.querySelector('.p2grid'); if(!grid) return;
+    const gr=grid.getBoundingClientRect(); if(!gr.width) return;
+    const svg=document.getElementById('p2ar');
+    let arrowMaxY=0;                                          // 箭头最深处（grid 坐标系）
+    if(svg) svg.querySelectorAll('polyline').forEach(p=>{ p.getAttribute('points').split(' ').forEach(pt=>{ const y=parseFloat(pt.split(',')[1]); if(y>arrowMaxY) arrowMaxY=y; }); });
+    [['cc-concat','n × 4d'],['cc-wo','4d × d'],['cc-out','n × d']].forEach(([id,txt])=>{
+      const m=document.getElementById(id); if(!m) return;
+      const r=m.getBoundingClientRect();
+      let lbl=grid.querySelector('.p2dim[data-for="'+id+'"]');
+      if(!lbl){ lbl=document.createElement('div'); lbl.className='p2dim'; lbl.setAttribute('data-for',id); grid.appendChild(lbl); }
+      lbl.textContent=txt;
+      lbl.style.left=(r.left-gr.left+r.width/2)+'px';
+      const matBottom=r.bottom-gr.top;
+      lbl.style.top=(id==='cc-concat' ? Math.max(matBottom,arrowMaxY)+12 : matBottom+9)+'px';
+    });
+  }
+  function drawP3(){                                          // Tab3 多层 Decoder 架构：残差回路 + 层间连线
+    const svg=document.getElementById('p3ar'); if(!svg) return;
+    const host=svg.parentElement; const gr=host.getBoundingClientRect(); if(!gr.width) return;
+    const NS='http://www.w3.org/2000/svg', A='#b6b6c4';
+    svg.setAttribute('viewBox','0 0 '+gr.width+' '+gr.height);
+    while(svg.firstChild) svg.removeChild(svg.firstChild);
+    const rel=el=>{ const r=el.getBoundingClientRect(); return {l:r.left-gr.left,r:r.right-gr.left,t:r.top-gr.top,b:r.bottom-gr.top,cx:r.left-gr.left+r.width/2,cy:r.top-gr.top+r.height/2}; };
+    const L=(pts,w)=>{ const p=document.createElementNS(NS,'polyline'); p.setAttribute('points',pts.map(a=>a[0].toFixed(1)+','+a[1].toFixed(1)).join(' ')); p.setAttribute('fill','none'); p.setAttribute('stroke',A); p.setAttribute('stroke-width',w||2); p.setAttribute('stroke-linejoin','round'); p.setAttribute('stroke-linecap','round'); svg.appendChild(p); };
+    const H=(x,y,dir)=>{ const s=5; let d; if(dir==='up')d='M '+(x-s)+' '+(y+7)+' L '+(x+s)+' '+(y+7)+' L '+x+' '+(y-1)+' Z'; else if(dir==='down')d='M '+(x-s)+' '+(y-7)+' L '+(x+s)+' '+(y-7)+' L '+x+' '+(y+1)+' Z'; else d='M '+(x-7)+' '+(y-s)+' L '+(x-7)+' '+(y+s)+' L '+(x+1)+' '+y+' Z'; const p=document.createElementNS(NS,'path'); p.setAttribute('d',d); p.setAttribute('fill',A); svg.appendChild(p); };
+    const B=[...document.querySelectorAll('#dstack .dblk')].map(b=>({box:rel(b),mha:rel(b.querySelector('.mha')),ff:rel(b.querySelector('.ff')),an1:rel(b.querySelector('[data-r="an1"]')),an2:rel(b.querySelector('[data-r="an2"]'))}));
+    if(!B.length) return;
+    const railY=Math.min(...B.map(b=>b.box.t))-30;              // 顶轨
+    const bottomY=Math.max(...B.map(b=>b.box.b))+44;            // 底轨 = Input 水平线：层间下探到这里再右转上行
+    B.forEach((b,i)=>{
+      const cx=b.mha.cx, lane=b.box.l+14;                       // cx 对齐方块中心（非卡片中心）
+      const busY=b.mha.b+14;                                     // 输入分配横条：输入上行→横条→3 路竖直进 MHA（Q/K/V）
+      const sp=Math.round((b.mha.r-b.mha.l)/2*0.66);             // 三路间距：按 MHA 框宽拉开
+      L([[cx,b.box.b],[cx,busY]]);
+      L([[cx-sp,busY],[cx+sp,busY]]);
+      [-sp,0,sp].forEach(dx=>{ L([[cx+dx,busY],[cx+dx,b.mha.b]]); H(cx+dx,b.mha.b,'up'); });
+      L([[cx,b.mha.t],[cx,b.an1.b]]); H(cx,b.an1.b,'up');        // 内部主干
+      L([[cx,b.an1.t],[cx,b.ff.b]]);  H(cx,b.ff.b,'up');
+      L([[cx,b.ff.t],[cx,b.an2.b]]);  H(cx,b.an2.b,'up');
+      const tap1=busY+6;                                         // 残差 tap 上移，远离箱底
+      L([[cx,tap1],[lane,tap1],[lane,b.an1.cy],[b.an1.l,b.an1.cy]]); H(b.an1.l,b.an1.cy,'right');  // 残差1 绕 MHA
+      const midA=(b.an1.t+b.ff.b)/2;
+      L([[cx,midA],[lane,midA],[lane,b.an2.cy],[b.an2.l,b.an2.cy]]); H(b.an2.l,b.an2.cy,'right');            // 残差2 绕 FF
+      if(i<B.length-1){                                          // 层间：本层顶 → 顶轨(→) → 下探底轨 → 右转 → 上行进下一层
+        const nb=B[i+1], gapX=(b.box.r+nb.box.l)/2;
+        L([[cx,b.an2.t],[cx,railY],[gapX,railY],[gapX,bottomY],[nb.mha.cx,bottomY],[nb.mha.cx,nb.box.b]]);
+        H((cx+gapX)/2,railY,'right');
+      }
+    });
+    const din=document.getElementById('d-in'), dout=document.getElementById('d-out');
+    if(din){ const b0=B[0]; din.style.left=b0.mha.cx+'px'; din.style.top=bottomY+'px'; const r=rel(din); L([[b0.mha.cx,r.t],[b0.mha.cx,b0.box.b]]); }
+    if(dout){ const bl=B[B.length-1]; dout.style.left=bl.mha.cx+'px'; dout.style.top=(bl.box.t-36)+'px'; const r=rel(dout); L([[bl.mha.cx,bl.an2.t],[bl.mha.cx,r.b]]); H(bl.mha.cx,r.b,'up'); }
+  }
+  window.addEventListener('resize',()=>{ if(cur===1){ drawP2Arrows(); placeP2Dims(); } else if(cur===2){ drawP3(); } });
+</script>
+</body>
+</html>
