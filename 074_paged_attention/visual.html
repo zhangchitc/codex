@@ -1,0 +1,1470 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codex 074 · Paged Attention</title>
+<link rel="icon" href="data:,">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+  *{ box-sizing:border-box; margin:0; padding:0; }
+
+  :root{
+    --bg:#0d0d0d; --ink:#f2f3f5; --muted:#9a9aa6; --dim:#6e6e7a;
+    --arrow:#b6b6c4;
+    --line:rgba(255,255,255,.09); --line-2:rgba(255,255,255,.14);
+    --card:#161618; --card-2:#1b1b1e;
+    --accent:#6aa0ff; --accent-soft:rgba(106,160,255,.15);
+    --accent-line:rgba(106,160,255,.55); --accent-ink:#cfe0ff;
+    --id-fill:rgba(240,179,102,.16); --id-line:rgba(240,179,102,.62);
+    --id-ink:#f6c486;                                   /* 编号：帧号 / block_id */
+    --green:#10b981; --green-soft:rgba(16,185,129,.12); --green-line:rgba(16,185,129,.6);
+    --k:#38bdf8; --v:#ff8a3d;                           /* K、V 语义色（沿用 063/075，跨期一致） */
+    --hash:#b9a8ff; --hash-soft:rgba(159,140,250,.14); --hash-line:rgba(159,140,250,.6);
+    --t0:#ffd9b3; --t1:#fff0a8; --t2:#c6ecca; --t3:#bcd9ff; --t4:#e6c9f5; --t5:#ffc9c9;
+    --mono:"JetBrains Mono","SF Mono",Menlo,monospace;
+    --sans:"Inter","PingFang SC",-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;
+  }
+
+  html,body{ height:100%; }
+  body{
+    background:
+      radial-gradient(1200px 420px at 50% -8%, rgba(106,160,255,.07), transparent 60%),
+      var(--bg);
+    color:var(--ink); font-family:var(--sans);
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+
+  .deck{ height:100vh; display:flex; flex-direction:column; }
+
+  /* 顶栏 */
+  .topbar{ flex:0 0 auto; display:flex; align-items:center; justify-content:space-between;
+           gap:24px; padding:18px 46px; border-bottom:1px solid var(--line); }
+  .brand .ttl{ font-size:20px; font-weight:700; color:var(--ink); white-space:nowrap; }
+  .brand .ttl b{ color:var(--accent); font-weight:800; }
+  .tabs{ display:flex; gap:6px; padding:5px; border:1px solid var(--line);
+         border-radius:999px; background:rgba(255,255,255,.03); }
+  .tab{ appearance:none; border:1px solid transparent; border-radius:999px; cursor:pointer;
+        background:transparent; color:var(--muted); font-family:var(--sans);
+        font-size:15px; font-weight:700; padding:9px 16px; white-space:nowrap; transition:.18s; }
+  .tab:hover{ color:var(--ink); }
+  .tab.active{ color:var(--accent-ink); background:var(--accent-soft); border-color:var(--accent-line); }
+
+  /* 舞台 */
+  .stage{ position:relative; flex:1 1 auto; }
+  .slide{ position:absolute; inset:0; display:none; flex-direction:column;
+          padding:24px 46px 520px;
+          overflow-y:auto; overflow-x:hidden; }
+  .slide.active{ display:flex; }
+  .wrap{ width:100%; max-width:1500px; margin:0 auto; flex:1 0 auto;
+         display:flex; flex-direction:column; justify-content:flex-start;
+         align-items:center; text-align:center; gap:22px; }
+
+  .head{ font-size:33px; line-height:1.2; font-weight:800; }
+  .head .hl{ color:var(--accent); }
+  .sub{ font-size:18px; color:var(--muted); line-height:1.5; max-width:1020px; }
+  .sub b{ font-family:var(--mono); color:var(--ink); font-weight:700; }
+
+  /* ============ Tab1：显存碎片（内部 + 外部）============ */
+  .fragwrap{ width:100%; max-width:960px; margin-top:4px; display:flex; flex-direction:column; }
+  .fragrow{ display:flex; align-items:flex-start; gap:28px; text-align:left; padding:30px 0; }
+  .fraglbl{ width:196px; flex:0 0 auto; display:flex; flex-direction:column; justify-content:center; gap:5px; }
+  .fraglbl .ft{ font-size:23px; font-weight:800; color:var(--ink); }
+  .fraglbl .fe{ font-family:var(--mono); font-size:15px; font-weight:700; color:var(--dim); letter-spacing:.3px; }
+  .fraglbl .fd{ font-size:16px; color:var(--muted); line-height:1.5; margin-top:3px; }
+  .fragbar{ flex:1 1 auto; display:flex; flex-direction:column; gap:12px; min-width:0; }
+  /* 内部碎片：定长块，块内 已用(绿) | 浪费(红斜纹) */
+  .ifrag{ display:flex; gap:16px; }
+  .iblk{ flex:1 1 0; min-width:0; }
+  .iblk .bar{ display:flex; height:86px; border-radius:9px; overflow:hidden; border:1px solid var(--line-2); }
+  .iblk .used{ background:rgba(16,185,129,.30); border-right:1px dashed rgba(16,185,129,.85); flex:0 0 auto;
+               display:flex; align-items:center; justify-content:center; color:#7cecc0;
+               font-weight:800; font-family:var(--mono); font-size:16px; }
+  .iblk .waste{ flex:1 1 auto;
+                background:repeating-linear-gradient(45deg, rgba(248,113,113,.44) 0 9px, rgba(248,113,113,.16) 9px 18px);
+                display:flex; align-items:center; justify-content:center; color:#ffb3b3; font-weight:800; font-size:16px; }
+  .iblk .cap{ margin-top:8px; text-align:center; font-family:var(--mono); font-size:16px; font-weight:700; color:var(--muted); }
+  /* 外部碎片：变长块并排 占用(绿) + 空闲(虚线) */
+  .efrag{ display:flex; gap:9px; height:86px; }
+  .eseg{ border-radius:9px; display:flex; align-items:center; justify-content:center; text-align:center;
+         font-family:var(--mono); font-size:17px; font-weight:800; line-height:1.25; min-width:0; }
+  .eseg.alloc{ background:rgba(16,185,129,.30); border:1px solid rgba(16,185,129,.85); color:#7cecc0; }
+  .eseg.freeb{ background:rgba(255,255,255,.07); border:1.6px dashed rgba(255,255,255,.34); color:#b9b9c4; font-weight:700; }
+  .enew{ display:flex; align-items:center; justify-content:center; gap:18px; }
+  .enewbox{ border:2px solid #f87171; border-radius:10px; padding:11px 22px; color:#f7b2b2; font-weight:800;
+            font-size:18px; background:rgba(248,113,113,.07); white-space:nowrap; }
+  .enote{ font-size:15px; color:var(--muted); }
+  .enote b{ color:var(--ink); font-weight:700; }
+  .fragfoot{ margin-top:8px; font-size:18px; font-weight:700; color:var(--muted); }
+  .fragfoot b{ color:var(--accent); font-weight:800; }
+
+  /* ============ 三栏映射图（Tab1 / Tab3 共用）============ */
+  .mapwrap{ position:relative; }
+  .mapsvg{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:visible; z-index:5; }
+  .cols{ display:flex; align-items:flex-start; justify-content:center; gap:32px; }
+  .col{ display:flex; flex-direction:column; align-items:center; gap:12px; }
+  .col.gc{ margin-left:44px; }   /* 表→格子之间留出折线走廊 */
+  .colhead{ height:26px; display:flex; align-items:center; font-size:16px; font-weight:800; color:var(--ink); }
+  .colhead.tb{ font-family:var(--mono); color:var(--accent-ink); }
+  .colcap{ font-size:15px; font-weight:700; color:var(--muted); }
+  .colcap b{ color:var(--ink); }
+  .midarr{ align-self:flex-start; margin-top:170px; color:var(--arrow); font-size:26px; font-weight:700; }
+  .midarr.m3{ margin-top:134px; }
+
+  /* 左：逻辑视角（连续堆叠，无缝 = 连续） */
+  .stack{ display:flex; flex-direction:column; border-radius:12px; overflow:hidden;
+          border:1.5px solid rgba(0,0,0,.3); }
+  .stack .pg{ height:72px; display:flex; align-items:center; justify-content:center; gap:10px;
+              font-family:var(--mono); font-weight:800; font-size:16px; color:#1a1a1a; padding:0 16px; }
+  .stack .pg + .pg{ border-top:1px solid rgba(0,0,0,.22); }
+  .stack.w250 .pg{ width:250px; }
+  .stack .pg .lt{ background:rgba(0,0,0,.14); border-radius:6px; padding:2px 8px;
+                  font-size:14px; font-weight:700; white-space:nowrap; }
+  .stack .pg .tx{ font-size:15px; font-weight:700; letter-spacing:.5px; white-space:nowrap; }
+  .stack .pg .es{ width:14px; height:14px; border:1.5px dashed rgba(0,0,0,.42); border-radius:4px; }
+
+  /* 中：映射表 */
+  .maptbl{ border:1.5px solid var(--accent-line); border-radius:12px; overflow:hidden;
+           background:var(--card); box-shadow:0 0 0 3px var(--accent-soft); }
+  .maptbl .mrow{ display:flex; align-items:center; height:72px; padding:0 18px; gap:12px; }
+  .maptbl .mrow + .mrow{ border-top:1px solid var(--line); }
+  .maptbl .sw{ width:14px; height:14px; border-radius:4px; flex:0 0 auto; }
+  .maptbl .ln{ font-family:var(--mono); font-size:15px; font-weight:700; color:var(--ink);
+               width:86px; text-align:left; white-space:nowrap; }
+  .maptbl .ma{ color:var(--arrow); font-size:18px; font-weight:700; }
+  .pnum{ font-family:var(--mono); font-weight:800; font-size:16px; color:var(--id-ink); background:var(--id-fill);
+         border:1px solid var(--id-line); border-radius:8px; padding:3px 12px; white-space:nowrap; }
+
+  /* 右：物理格子 */
+  .memgrid{ display:grid; gap:10px; }
+  .gcell{ height:72px; border-radius:10px; display:flex; align-items:center; justify-content:center;
+          font-family:var(--mono); font-weight:800; font-size:19px; }
+  .gcell.free{ border:1.5px dashed rgba(255,255,255,.2); color:var(--dim); font-weight:600; }
+  .gcell.occ{ background:#232329; border:1px solid var(--line); color:#63636e; }
+  .gcell.ours{ color:#1a1a1a; }
+
+  .legend{ display:flex; gap:24px; align-items:center; justify-content:center;
+           font-size:14px; color:var(--muted); }
+  .legend .it{ display:flex; gap:8px; align-items:center; }
+  .legend .sw{ width:14px; height:14px; border-radius:4px; }
+  .legend .sw.multi{ background:linear-gradient(90deg,var(--t0) 0 33%,var(--t1) 33% 66%,var(--t2) 66% 100%); }
+  .legend .sw.t4{ background:var(--t4); }
+  .legend .sw.occ{ background:#232329; border:1px solid var(--line-2); }
+  .legend .sw.free{ border:1.5px dashed rgba(255,255,255,.3); }
+
+  /* ============ Tab1：Physical Block ============ */
+  /* 两层结构：CPU 索引（KVCacheBlock 双向链表） ↕ GPU 真实显存（第 i 块） */
+  .pool2{ display:grid; grid-template-columns:auto auto auto; column-gap:30px; row-gap:30px;
+          align-items:center; justify-content:center; position:relative; }
+  .poolsvg{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none;
+            overflow:visible; z-index:5; }
+  .zonelbl{ text-align:right; }
+  .zonelbl .zl1{ font-family:var(--mono); font-size:27px; font-weight:800; color:var(--ink); letter-spacing:1px; }
+  .zonelbl .zl2{ font-size:14px; font-weight:700; color:var(--muted); margin-top:5px; }
+  .p2box{ border:1.5px dashed rgba(255,255,255,.22); border-radius:14px; background:rgba(255,255,255,.035);
+          padding:12px 20px 14px; display:flex; flex-direction:column; gap:10px; }
+  .p2box.cpubox{ padding:20px 22px; }
+  .p2box.gpubox{ padding:116px 126px 26px 24px; }
+  .wt{ color:var(--ink); font-weight:700; }
+  .p2row{ display:flex; align-items:center; }
+  .plbl{ width:88px; text-align:right; padding-right:10px; font-family:var(--mono);
+         font-size:15px; font-weight:700; color:var(--muted); flex:0 0 auto; }
+  .chaincol{ display:flex; flex-direction:column; gap:12px; align-items:flex-start; }
+  .qcap{ font-size:16px; color:var(--muted); padding-left:2px; }
+  .qcap .mn{ font-family:var(--mono); color:var(--ink); font-weight:800; }
+  .pnode{ width:90px; height:58px; border-radius:10px; background:var(--id-fill); border:1.5px solid var(--id-line);
+          display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px;
+          font-family:var(--mono); color:var(--id-ink); }
+  .pnode .n1{ font-size:15px; font-weight:600; opacity:.72; }
+  .pnode .n2{ font-size:20px; font-weight:800; }
+  .plink{ width:36px; display:flex; align-items:center; justify-content:center; flex:0 0 auto; }
+  .plink svg{ display:block; overflow:visible; }
+  .plink .sh{ stroke:var(--arrow); stroke-width:2.6; stroke-linecap:round; }
+  .plink .hd{ fill:none; stroke:var(--arrow); stroke-width:2.6; stroke-linecap:round; stroke-linejoin:round; }
+  .gpubox{ position:relative; }
+  /* L 层堆叠：最前一层完整显示格子，背后几片偏移板露出边缘 = 其余各层 */
+  .gpustack{ position:relative; }
+  .lyback{ position:absolute; inset:0; border-radius:12px;
+           background:linear-gradient(180deg,#22252f,#191b22);
+           border:1px solid rgba(255,255,255,.09); border-top-color:rgba(255,255,255,.14); }
+  .lybtag{ position:absolute; top:8px; right:16px; font-family:var(--mono);
+           font-size:13px; font-weight:800; color:var(--muted); }
+  .lyrow{ position:relative; background:linear-gradient(180deg,#30343f,#252833);
+          border:1px solid rgba(255,255,255,.14); border-top-color:rgba(255,255,255,.22);
+          border-radius:12px; padding:10px 16px;
+          box-shadow:0 10px 22px rgba(0,0,0,.5); }
+  .lyrow .plbl{ color:var(--ink); }
+  /* 右侧大括号：把整摞偏移板括起来 = 共 L 层 */
+  .lbrace{ position:absolute; pointer-events:none; overflow:visible; z-index:7; }
+  .llbl{ position:absolute; font-family:var(--mono); font-size:15px; font-weight:700;
+         color:var(--muted); white-space:nowrap; z-index:7; }
+  .llbl .lln{ color:var(--ink); font-weight:800; font-size:18px; }
+  /* 物理块行下方：横向计数 = num_blocks 个 Block（与右侧「L 层」纵向呼应）*/
+  .blkcap{ margin-top:14px; text-align:center; font-size:16px; font-weight:700; color:var(--muted); }
+  .blkcap .mn{ font-family:var(--mono); color:var(--id-ink); font-weight:800; }
+  /* 底部总结：L × num_blocks × block_size × 2 × num_kv_heads × head_dim = 显存占用 */
+  .kvsum{ margin-top:40px; display:flex; align-items:center; gap:16px; flex-wrap:wrap; justify-content:center;
+          padding:16px 30px; border:1px solid rgba(255,255,255,.14); border-radius:14px; background:rgba(255,255,255,.03); }
+  .kvsum .lbl{ font-size:17px; font-weight:700; color:var(--muted); }
+  .kvsum .expr{ font-family:var(--mono); font-size:21px; font-weight:800; color:var(--ink);
+                display:inline-flex; align-items:center; gap:9px; flex-wrap:wrap; justify-content:center; }
+  .kvsum .op{ color:var(--dim); font-weight:600; }
+  .kvsum .L{ color:var(--accent-ink); }
+  .kvsum .nb{ color:var(--id-ink); }
+  .kvsum .two{ color:var(--id-ink); background:var(--id-fill); border:1px solid var(--id-line); border-radius:6px; padding:0 9px; }
+
+  /* ============ Tab2：前缀共享（Block Table 指向同一物理块）============ */
+  .shwrap{ position:relative; width:100%; margin-top:8px; }
+  .shsvg{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:visible; z-index:3; }
+  .shcols{ display:flex; justify-content:center; align-items:stretch; gap:76px; }
+  .shcol{ display:flex; flex-direction:column; gap:16px; }
+  .shhd{ font-size:15px; font-weight:800; color:var(--ink); text-align:center; }
+  .shhd .en{ display:block; font-family:var(--mono); font-size:12px; font-weight:600; color:var(--dim); margin-top:3px; }
+  .shbody{ flex:1; display:flex; flex-direction:column; justify-content:center; gap:24px; }
+  /* 一个 block = 标签 + 4 个格子（block_size = 4），沿用动画的格子样式 */
+  .shrow{ position:relative; display:flex; align-items:center; gap:9px; }
+  .shrlab{ font-family:var(--mono); font-size:13px; font-weight:700; color:var(--muted); width:56px; text-align:right; white-space:nowrap; flex:0 0 auto; }
+  .shcells{ display:flex; border-radius:4px; }
+  .shc{ width:56px; height:44px; display:flex; align-items:center; justify-content:center; text-align:center;
+        font-family:var(--mono); font-size:13px; font-weight:700; line-height:1.05; padding:0 3px;
+        border:1px solid var(--line-2); margin-left:-1px; color:var(--id-ink); }
+  .shc:first-child{ margin-left:0; }
+  .shc.fill{ background:var(--id-fill); border-color:var(--id-line); }
+  .shc.empty{ background:rgba(255,255,255,.015); color:transparent; }
+  .shc.fr{ background:rgba(255,255,255,.015); border:1px dashed var(--line-2); color:transparent; }
+  .shrow.hi .shcells{ box-shadow:0 0 0 2.5px rgba(240,179,102,.42); }
+  .prompt{ display:flex; flex-direction:column; gap:9px; }
+  .pmlbl{ font-family:var(--mono); font-size:14px; font-weight:800; color:var(--muted); padding-left:2px; }
+  .pblocks{ display:flex; flex-direction:column; gap:9px; }
+  .bttbl{ display:flex; flex-direction:column; gap:26px; }
+  .btline{ display:flex; align-items:center; gap:10px; font-family:var(--mono); font-size:19px; font-weight:800; }
+  .btk{ color:var(--ink); width:16px; text-align:center; }
+  .btar{ color:var(--arrow); font-size:16px; }
+  .btv{ color:var(--muted); }
+  .btv b{ color:var(--muted); font-weight:800; }
+  .btv b.s{ color:var(--id-ink); }
+  .refbadge{ position:absolute; left:100%; top:50%; transform:translate(13px,-50%); white-space:nowrap;
+             font-family:var(--mono); font-size:13px; font-weight:800; color:var(--id-ink);
+             background:var(--id-fill); border:1px solid var(--id-line); border-radius:7px; padding:4px 11px; }
+  .pdots{ text-align:center; color:var(--dim); font-size:20px; font-weight:800; letter-spacing:2px; padding-left:65px; }
+  .shfoot{ margin-top:26px; font-size:18px; font-weight:700; color:var(--muted); }
+  .shfoot b{ color:var(--green); font-weight:800; }
+  .pmlbl{ font-family:var(--mono); font-size:14px; font-weight:800; color:var(--muted); margin-bottom:8px; padding-left:2px; }
+  .bttitle{ font-family:var(--mono); font-size:14px; font-weight:800; color:var(--muted); margin-bottom:8px; }
+  .grow.shd .gcells{ box-shadow:0 0 0 2.5px rgba(240,179,102,.5); border-radius:3px; }
+  .lblkbox{ width:138px; height:48px; display:flex; align-items:center; justify-content:center;
+            font-family:var(--mono); font-size:17px; font-weight:700; letter-spacing:.5px; color:var(--id-ink);
+            background:var(--id-fill); border:1px solid var(--id-line); }
+  .promptrow{ display:flex; align-items:center; gap:12px; }
+  .pmlbl2{ font-family:var(--mono); font-size:17px; font-weight:800; color:var(--muted); white-space:nowrap; margin-right:4px; }
+  .lblk{ display:flex; flex-direction:column; gap:6px; align-items:center; }
+  .lbn{ font-family:var(--mono); font-size:12px; font-weight:700; color:var(--muted); }
+
+  /* ============ Tab2（废弃·生成过程动画的样式，部分为 Tab3 复用）============ */
+  .genstep{ font-family:var(--mono); font-size:18px; font-weight:800; color:var(--accent-ink);
+            background:var(--accent-soft); border:1px solid var(--accent-line); border-radius:8px;
+            padding:7px 18px; align-self:center; }
+  .seqinfo{ display:flex; align-items:center; gap:16px; }
+  .seqbadge{ width:50px; height:50px; border-radius:50%; flex:0 0 auto; display:flex; align-items:center; justify-content:center;
+             font-family:var(--mono); font-size:14px; font-weight:800; color:var(--id-ink);
+             background:var(--id-fill); border:1.5px solid var(--id-line); line-height:1.1; text-align:center; }
+  .seqtxt{ text-align:left; font-size:16px; color:var(--ink); line-height:1.65; }
+  .seqtxt .sk{ font-weight:800; }
+  .seqtxt .gc{ color:var(--id-ink); font-family:var(--mono); font-weight:800; }
+  .genwrap{ position:relative; display:flex; align-items:flex-start; justify-content:center; gap:60px; margin-top:6px; }
+  .gencol{ display:flex; flex-direction:column; align-items:center; gap:12px; }
+  .gencol.gtbl{ margin-top:26px; }
+  .gcolttl{ font-size:18px; font-weight:700; color:var(--muted); }
+  .gcolttl b{ color:#ef8a6a; font-weight:800; }
+  .ggrid{ display:flex; flex-direction:column; }
+  .grow{ display:flex; align-items:center; position:relative; }
+  .grow .glab{ width:82px; text-align:right; padding-right:15px; white-space:nowrap; font-family:var(--mono); font-size:16px; font-weight:700; color:var(--muted); flex:0 0 auto; }
+  .grow .gcells{ display:flex; }
+  .gcell2{ width:54px; height:44px; display:flex; align-items:center; justify-content:center; text-align:center;
+           font-family:var(--mono); font-size:18px; font-weight:700; line-height:1.05; color:var(--id-ink);
+           border:1px solid var(--line-2); margin:-0.5px 0 0 -0.5px; word-break:break-word; padding:0 3px; }
+  .gcell2.empty{ color:transparent; background:rgba(255,255,255,.015); }
+  .gcell2.filled{ background:var(--id-fill); }
+  .gcell2.newtok{ background:rgba(240,179,102,.5); color:#2a2010; }
+  .grow.alloc .gcells{ outline:2px dashed var(--accent); outline-offset:2px; border-radius:3px; }
+  .alloctag{ position:absolute; left:100%; top:50%; transform:translate(12px,-50%); white-space:nowrap;
+             font-size:14px; font-weight:800; font-style:italic; color:var(--accent-ink);
+             background:var(--accent-soft); border:1px solid var(--accent-line); border-radius:7px; padding:5px 12px; }
+  .btbl{ display:flex; flex-direction:column; border:1.6px solid rgba(255,255,255,.42);
+         border-radius:10px; overflow:hidden; background:var(--card); }
+  .btrow{ display:flex; }
+  .btcell{ width:104px; padding:11px 8px; text-align:center; font-family:var(--mono); font-size:17px; font-weight:700;
+           color:var(--ink); border-right:1px solid rgba(255,255,255,.28);
+           border-top:1px solid rgba(255,255,255,.28); line-height:1.15; }
+  .btrow:first-child .btcell{ border-top:none; }
+  .btcell:last-child{ border-right:none; }
+  .btrow.hd{ background:rgba(255,255,255,.06); }
+  .btrow.hd .btcell{ color:var(--muted); font-weight:800; font-size:15px; }
+  .btcell.chg{ background:rgba(240,179,102,.32); color:var(--id-ink); }
+  .gensvg{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:visible; z-index:1; }
+  .pgcell{ width:90px; height:42px; background:#2b2f3a; border:2px solid rgba(255,255,255,.34);
+           display:flex; align-items:center; justify-content:center;
+           font-family:var(--mono); font-size:17px; font-weight:700; color:#c2c9d6; }
+  .pell{ width:40px; text-align:center; color:var(--dim); font-size:20px; font-weight:800; }
+  .pgell{ width:24px; height:42px; display:flex; align-items:center; justify-content:center;
+          color:var(--dim); font-size:15px; font-weight:800; }
+  .lyell{ text-align:center; color:var(--dim); font-size:22px; font-weight:800; line-height:.6;
+          padding-left:88px; }
+  .blksvg{ position:absolute; left:0; top:0; pointer-events:none; overflow:visible; z-index:9; }
+  .pvsp{ width:6px; flex:0 0 auto; }
+
+  .wrap.roomy{ gap:24px; }
+
+  /* 放大一格：块内部的 shape —— K、V 两片堆成同一个 Tensor */
+  .zoombox{ border:2px dashed var(--id-line); border-radius:14px; padding:18px 24px 20px;
+            display:flex; flex-direction:column; gap:16px; align-items:flex-start; }
+  .zt{ font-size:16px; font-weight:800; color:var(--ink); }
+  .zt b{ font-family:var(--mono); color:var(--id-ink); font-weight:800; }
+  /* 立体堆叠：两片无缝上下拼，右下加厚度底板 = 一摞 */
+  .zstack{ display:flex; flex-direction:column; }
+  .ztensor{ width:380px; height:50px; display:flex; align-items:center; gap:11px; padding:0 16px;
+            font-family:var(--mono); font-size:15px; font-weight:700; white-space:nowrap; }
+  .ztensor .zl{ font-size:18px; font-weight:800; }
+  .ztensor.k{ background:rgba(56,189,248,.15); border:1.5px solid rgba(56,189,248,.6);
+              border-radius:0; color:var(--k); }
+  .ztensor.k .zl{ color:var(--k); }
+  .ztensor.v{ background:rgba(255,138,61,.15); border:1.5px solid rgba(255,138,61,.6);
+              border-top:none; border-radius:0; color:var(--v); }
+  .ztensor.v .zl{ color:var(--v); }
+  .zshape{ font-family:var(--mono); font-size:16px; font-weight:700; color:var(--muted); padding-left:2px; }
+  .zshape .hi{ color:var(--id-ink); font-weight:800; }
+
+  .codebox{ background:#1d1f28; border:1px solid rgba(255,255,255,.13); border-radius:12px;
+            overflow:hidden; text-align:left; box-shadow:0 10px 30px rgba(0,0,0,.45); }
+  .codebox .cbar{ display:flex; align-items:center; gap:8px; padding:9px 16px;
+                  background:#272a36; border-bottom:1px solid rgba(255,255,255,.09); }
+  .cbar .d{ width:12px; height:12px; border-radius:50%; }
+  .cbar .d.r{ background:#ff5f57; } .cbar .d.y{ background:#febc2e; } .cbar .d.g{ background:#28c840; }
+  .cbar .fname{ margin-left:10px; font-family:var(--mono); font-size:14px; color:#9aa3b5; }
+  .codebox pre{ margin:0; padding:15px 24px 17px; font-family:var(--mono); font-size:15px;
+                line-height:1.6; color:#8b93a6; }
+  .codebox .dec{ color:#7d8598; }                                 /* @dataclass */
+  .codebox .cmt{ color:#98a2b3; }                                 /* # 中文注释 */
+  .codebox .kw{ color:var(--accent); font-weight:700; }           /* class / None */
+  .codebox .cls{ color:var(--ink); font-weight:800; }             /* 类名 */
+  .codebox .f-id{ color:var(--id-ink); font-weight:700; }
+  .codebox .f-ref{ color:var(--green); font-weight:700; }
+  .codebox .f-hash{ color:var(--hash); font-weight:700; }
+  .codebox .f-ptr{ color:var(--muted); font-weight:700; }
+
+
+  /* ============ Tab3 底部：前缀命中共享 ============ */
+  .share{ display:flex; align-items:center; justify-content:center; gap:34px; padding:16px 30px;
+          border:1.5px solid var(--green-line); background:rgba(16,185,129,.05); border-radius:16px; }
+  .share .bt{ display:flex; flex-direction:column; gap:9px; align-items:center; }
+  .share .btt{ font-size:15px; font-weight:800; color:var(--ink); }
+  .share .btt b{ color:var(--green); }
+  .minitbl{ border:1.5px solid var(--line-2); border-radius:10px; overflow:hidden; background:var(--card); }
+  .minitbl .mrow{ display:flex; align-items:center; height:46px; padding:0 14px; gap:10px; }
+  .minitbl .mrow + .mrow{ border-top:1px solid var(--line); }
+  .minitbl .mrow.hit{ background:var(--green-soft); }
+  .minitbl .sw{ width:12px; height:12px; border-radius:3px; flex:0 0 auto; }
+  .minitbl .ln{ font-family:var(--mono); font-size:14px; font-weight:700; color:var(--ink); width:70px; text-align:left; }
+  .minitbl .ma{ color:var(--arrow); font-size:15px; font-weight:700; }
+  .minitbl .pnum{ font-size:14px; padding:2px 9px; }
+  .minitbl .ck{ color:var(--green); font-weight:800; font-size:16px; width:18px; }
+  .share .bigarr{ color:var(--arrow); font-size:30px; font-weight:700; }
+  .share .msg{ text-align:left; display:flex; flex-direction:column; gap:12px; }
+  .share .m1{ font-size:19px; font-weight:800; color:var(--ink); line-height:1.45; }
+  .share .m1 b{ color:var(--green); }
+  .share .mp{ display:flex; gap:12px; }
+  .gpill{ font-family:var(--mono); font-weight:800; font-size:15px; color:var(--green);
+          background:var(--green-soft); border:1px solid var(--green-line); border-radius:8px; padding:6px 14px; }
+
+  /* ============ Tab4：Block hashing（满 block 链式 hash，移植 071，深色 + hash 紫）============ */
+  .promptline{ font-family:var(--mono); font-size:19px; color:var(--muted); }
+  .promptline b{ color:var(--accent-ink); font-weight:700; }
+  .promptline .qs{ color:var(--id-ink); }
+  .apcrow{ display:flex; align-items:center; justify-content:center; gap:22px; margin:10px auto 0; }
+  .apclbl{ font-size:17px; font-weight:800; color:var(--muted); white-space:nowrap; }
+  .apc{ display:grid; grid-template-columns:auto auto auto; align-items:center; column-gap:0; width:max-content; }
+  .bcell{ display:flex; flex-direction:column; align-items:center; gap:12px; padding:0 16px; border-left:3px dashed var(--hash-line); }
+  .bcell.c3{ border-right:3px dashed var(--hash-line); }
+  .blab{ font-family:var(--mono); font-weight:700; font-size:17px; color:var(--hash); }
+  .bpills{ display:flex; gap:8px; }
+  .pill{ font-family:var(--mono); font-weight:600; font-size:16px; color:var(--id-ink);
+         background:var(--id-fill); border:1px solid var(--id-line); border-radius:7px; padding:7px 12px; }
+  .hashchain{ width:100%; max-width:1180px; margin:6px auto 0; display:block; }
+  .hc-node{ fill:var(--hash-soft); stroke:var(--hash); stroke-width:2.5; }
+  .hc-hash{ fill:var(--hash); font-family:var(--mono); font-weight:700; font-size:20px; }
+  .hc-out{ fill:var(--hash); font-family:var(--mono); font-weight:700; font-size:16px; }
+  .hc-pill{ fill:var(--id-fill); stroke:var(--id-line); stroke-width:1; }
+  .hc-ptok{ fill:var(--id-ink); font-family:var(--mono); font-weight:600; font-size:16px; }
+  .hc-mut{ fill:var(--muted); font-family:var(--mono); font-size:15px; }
+  .hc-arrow{ stroke:var(--arrow); stroke-width:1.8; fill:none; stroke-linejoin:round; stroke-linecap:round; }
+  .hcformula{ font-family:var(--mono); font-size:22px; font-weight:700; color:var(--muted); margin:14px auto 0; }
+  .hcformula .k{ color:var(--hash); }
+  .hcformula .t{ color:var(--id-ink); }
+  .hcnote{ font-family:var(--sans); font-size:18px; color:var(--ink); margin:16px auto 0; max-width:900px;
+           background:var(--hash-soft); border:1px solid var(--hash-line); border-radius:12px; padding:13px 26px; line-height:1.5; }
+  .hcnote b{ color:var(--hash); font-weight:800; }
+
+  /* ============ Tab5：数据结构（两段源码）============ */
+  .ds2{ display:flex; align-items:flex-start; justify-content:center; gap:44px; width:100%; margin-top:26px; }
+  .dsleft{ display:flex; flex-direction:row; align-items:flex-start; gap:44px; width:max-content; }
+  .ds2 .codebox{ width:max-content; }
+  .dscol{ display:flex; flex-direction:column; gap:11px; }
+  .dscap{ font-size:17px; font-weight:800; color:var(--ink); text-align:left; }
+  .dscap .h{ color:var(--hash); font-family:var(--mono); }
+  .dscap .a{ color:var(--id-ink); font-family:var(--mono); }
+
+  /* ============ Tab6：两个请求先后进来，一张表逐行对照 ============ */
+  .tl{ --r0:#6aa0ff; --r1:#ff8a3d; --r2:#ff8ab3; --hit:#10b981; --miss:#ff7a6b;
+       /* 表格线单独调，比全局 --line 更实，投屏才看得清 */
+       --tl-line:rgba(255,255,255,.20); --tl-line-2:rgba(255,255,255,.32);
+       display:grid; grid-template-columns:238px 1fr 1fr; width:max-content; max-width:1500px;
+       margin:10px auto 0; text-align:left; border:2px solid var(--tl-line-2); border-radius:14px; overflow:hidden; }
+  .tlc{ padding:13px 28px; border-bottom:1px solid var(--tl-line); display:flex; flex-direction:column;
+        align-items:center; }
+  .tlc.lb{ background:rgba(255,255,255,.055); font-family:var(--mono); font-size:15px; font-weight:800;
+           letter-spacing:.4px; color:var(--ink); display:flex; align-items:center; justify-content:center; }
+  /* 多行 tline 作为一个整体居中，组内保持左对齐（等号列不散） */
+  .tstack{ display:flex; flex-direction:column; }
+  .tlc.lb{ border-right:1px solid var(--tl-line); }
+  .tlc.c1, .tlhd.c1{ border-left:2px solid var(--tl-line-2); }
+  .tl > .tlc:nth-last-child(-n+3){ border-bottom:none; }
+  .tlhd{ padding:14px 28px; border-bottom:2px solid var(--tl-line-2); background:rgba(255,255,255,.04);
+         font-family:var(--mono); font-size:18px; font-weight:800; text-align:center; }
+  .tline{ font-family:var(--mono); font-size:15px; font-weight:700; color:var(--muted); line-height:1.6; }
+  .tline + .tline{ margin-top:2px; }
+  .tline b{ color:var(--ink); font-weight:800; }
+  .tline .hs{ color:var(--hash); font-weight:800; }
+  .tline .id{ color:var(--id-ink); font-weight:800; }
+  .tline .hit{ color:var(--hit); font-weight:800; }
+  .tline .miss{ color:var(--miss); font-weight:800; }
+  .tline .note{ color:var(--dim); }
+  .fq{ display:flex; align-items:center; margin:24px 0 5px; }
+  /* 闸门：虚线圈出被 pop / push / 摘走的一段，动作标签压在这一段正上方 */
+  .fqgrp{ position:relative; display:flex; align-items:center; padding:10px 12px; margin:0 5px;
+          border-left:2.5px dashed var(--gate); border-right:2.5px dashed var(--gate);
+          background:var(--gate-soft); border-radius:4px; }
+  .fqgrp::before{ content:attr(data-op); position:absolute; left:50%; top:-22px;
+                  transform:translateX(-50%); white-space:nowrap; color:var(--gate);
+                  font-family:var(--mono); font-size:14px; font-weight:800; letter-spacing:.4px; }
+  .fqgrp.out{ --gate:var(--id-ink); --gate-soft:rgba(246,196,134,.10); }
+  .fqgrp.in{ --gate:var(--hit); --gate-soft:rgba(16,185,129,.12); }
+  .fqn{ min-width:38px; height:34px; border-radius:8px; background:var(--id-fill);
+        border:1.5px solid var(--id-line); color:var(--id-ink); display:flex; align-items:center;
+        justify-content:center; font-family:var(--mono); font-size:15px; font-weight:800; }
+  .fqn.take{ background:rgba(240,179,102,.42); color:#1a1a1a; border-color:var(--id-ink); }
+  .fqlk{ width:30px; display:flex; align-items:center; justify-content:center; flex:0 0 auto; }
+  .fqlk svg{ display:block; overflow:visible; }
+  .fqlk .sh{ stroke:var(--arrow); stroke-width:2.4; stroke-linecap:round; }
+  .fqlk .hd{ fill:none; stroke:var(--arrow); stroke-width:2.4; stroke-linecap:round; stroke-linejoin:round; }
+  .fqell{ width:30px; text-align:center; color:var(--dim); font-size:16px; font-weight:800; }
+  .lkup{ display:flex; gap:26px; margin-top:auto; padding-top:10px; }
+  .lk{ display:flex; flex-direction:column; align-items:center; gap:5px;
+       font-family:var(--mono); font-size:15px; font-weight:700; }
+  .lk .k{ color:var(--hash); font-weight:800; }
+  .lk .miss{ color:var(--miss); font-weight:800; }
+  .lk .hit{ color:var(--hit); font-weight:800; }
+  .cmap{ display:grid; grid-template-columns:repeat(4,max-content); column-gap:8px; row-gap:3px;
+         justify-content:start; width:max-content; align-items:center;
+         font-family:var(--mono); font-size:15px; font-weight:700; color:var(--muted); }
+  .cmap .pre{ white-space:pre; }
+  .cmap .ar{ color:var(--dim); }
+  .cmap .id{ color:var(--id-ink); font-weight:800; }
+  .cmap .tail{ color:var(--muted); }
+  .cmap .ev{ text-decoration:line-through; opacity:.42; }
+  .cmap .evtag{ margin-left:10px; color:var(--miss); font-weight:800; text-decoration:none; opacity:1; }
+  .tkrow{ display:flex; align-items:center; gap:7px; }
+  .tklbl{ font-family:var(--mono); font-size:15px; font-weight:700; color:var(--muted);
+          margin-right:5px; white-space:nowrap; }
+  .tkrow + .tline{ margin-top:8px; }
+  .tk{ display:inline-flex; align-items:center; padding:7px 13px; border-radius:8px;
+       font-family:var(--mono); font-size:16px; font-weight:700; color:var(--muted); white-space:nowrap;
+       border:1.5px solid var(--line-2); background:rgba(255,255,255,.04); }
+  .tk.sh{ border-color:var(--hash); background:rgba(159,140,250,.22); color:#e2dbff; }
+  .btcells{ display:flex; width:max-content; border:1px solid var(--line-2); border-radius:9px; overflow:hidden; }
+  .btc{ display:flex; flex-direction:column; gap:3px; padding:9px 13px; width:120px;
+        font-family:var(--mono); font-size:13px; font-weight:700; }
+  .btc + .btc{ border-left:1px solid var(--line-2); }
+  .btc .l1{ font-size:16px; font-weight:800; color:var(--ink); }
+  .btc .l2{ color:var(--id-ink); font-weight:800; font-size:14px; }
+  .btc .l3{ color:var(--muted); }
+  .btc .l4{ font-weight:800; }
+  .btc .l4.hh{ color:var(--hash); }
+  .btc .l4.ru{ color:var(--hit); }
+  .btc .l4.kp{ color:var(--dim); }
+  .rtb{ display:flex; align-items:center; gap:6px; font-family:var(--mono); font-size:15px;
+        font-weight:700; color:var(--muted); }
+  .rtb .kk{ white-space:nowrap; }
+  .rtb .br{ color:var(--dim); font-size:21px; font-weight:400; line-height:1; }
+  .rtb .b{ min-width:32px; height:28px; border-radius:7px; display:inline-flex; align-items:center;
+           justify-content:center; font-weight:800; font-size:15px; color:#16161a; }
+  .sp2{ grid-column:2 / span 2; }
+  .tlsum{ margin:22px auto 0; max-width:1100px; display:flex; flex-direction:column; gap:9px;
+          font-family:var(--sans); font-size:18px; color:var(--ink); line-height:1.5; text-align:left;
+          background:var(--hash-soft); border:1px solid var(--hash-line); border-radius:12px; padding:14px 26px; }
+  .tlsum .n{ color:var(--hash); font-weight:800; margin-right:8px; }
+  .tlsum b{ color:var(--hash); font-weight:800; }
+  .fqn.reuse{ background:rgba(16,185,129,.22); border-color:var(--hit); color:#bff0dd; text-decoration:line-through; }
+  .fqn.hitn{ background:rgba(16,185,129,.3); border-color:var(--hit); color:#bff0dd; }
+  .evt{ font-family:var(--mono); font-size:16px; font-weight:800; }
+  .rtb .del{ color:var(--dim); font-weight:700; }
+  .pfrow{ display:flex; gap:10px; }
+  .pfrow + .tline{ margin-top:8px; }
+  .pf{ display:inline-flex; align-items:center; justify-content:center; width:110px;
+       font-family:var(--mono); font-size:13px; font-weight:800; padding:6px 0; border-radius:7px; }
+  .pf.ph{ background:transparent; border:1px solid transparent; }
+  .pf.c{ color:#ffd3ca; background:rgba(255,122,107,.16); border:1px solid rgba(255,122,107,.5); }
+  .pf.s{ color:#bff0dd; background:rgba(16,185,129,.14); border:1px solid rgba(16,185,129,.5); }
+</style>
+</head>
+<body>
+<div class="deck">
+  <div class="topbar">
+    <div class="brand"><span class="ttl"><b>Paged Attention</b>：KV Cache 像操作系统一样分页</span></div>
+    <nav class="tabs">
+      <button class="tab active" data-i="0">显存碎片</button>
+      <button class="tab" data-i="1">显存分页</button>
+      <button class="tab" data-i="2">物理Block</button>
+      <button class="tab" data-i="3">Block Hash</button>
+      <button class="tab" data-i="4">数据结构</button>
+      <button class="tab" data-i="5">完整流程</button>
+      <button class="tab" data-i="6">请求结束</button>
+      <button class="tab" data-i="7">缓存复用</button>
+    </nav>
+  </div>
+
+  <div class="stage">
+
+    <!-- ===================== TAB 1 : 显存碎片（两个问题） ===================== -->
+    <section class="slide active">
+      <div class="wrap">
+        <div class="head">传统 KV Cache 的两种<span class="hl">显存碎片</span></div>
+
+        <div class="fragwrap">
+          <!-- 内部碎片 -->
+          <div class="fragrow">
+            <div class="fraglbl">
+              <div class="ft">内部碎片</div>
+              <div class="fd">按最大长度预留定长空间，实际生成用不满，剩余显存浪费</div>
+            </div>
+            <div class="fragbar">
+              <div class="ifrag">
+                <div class="iblk"><div class="bar"><div class="used" style="width:30%">已用</div><div class="waste">浪费</div></div><div class="cap">请求 1</div></div>
+                <div class="iblk"><div class="bar"><div class="used" style="width:70%">已用</div><div class="waste">浪费</div></div><div class="cap">请求 2</div></div>
+                <div class="iblk"><div class="bar"><div class="used" style="width:50%">已用</div><div class="waste">浪费</div></div><div class="cap">请求 3</div></div>
+              </div>
+            </div>
+          </div>
+          <!-- 外部碎片 -->
+          <div class="fragrow">
+            <div class="fraglbl">
+              <div class="ft">外部碎片</div>
+              <div class="fd">动态给请求分配空间，空闲散落在已用块之间</div>
+            </div>
+            <div class="fragbar">
+              <div class="efrag">
+                <div class="eseg alloc" style="flex:3">请求 A</div>
+                <div class="eseg freeb" style="flex:1">空闲</div>
+                <div class="eseg alloc" style="flex:2.4">请求 B</div>
+                <div class="eseg freeb" style="flex:1.7">空闲</div>
+                <div class="eseg alloc" style="flex:1.5">请求 C</div>
+                <div class="eseg freeb" style="flex:1">空闲</div>
+                <div class="eseg alloc" style="flex:2.4">请求 D</div>
+              </div>
+              <div class="enew">
+                <div class="enewbox">新请求：比任何一段空闲都大 → 进不来</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="fragfoot">早期给每个请求预留<b>一整段连续显存</b>——要么块内用不满，要么空闲被切散，这正是 Paged Attention 要解决的</div>
+      </div>
+    </section>
+
+    <!-- ===================== TAB 2 : 前缀共享 ===================== -->
+    <section class="slide">
+      <div class="wrap">
+        <div class="head">PagedAttention：模仿操作系统的<span class="hl">内存分页</span></div>
+        <div class="sub">把物理显存切割成固定大小的block，vLLM把逻辑块映射到散落各处的物理KV Block上</div>
+
+        <div class="genwrap" id="shwrap">
+          <div class="gencol">
+            <div class="gcolttl"><b>逻辑</b> Blocks</div>
+            <div class="promptrow" id="lrA" style="margin-top:56px">
+              <div class="pmlbl2">提示词1：</div>
+              <div class="lblk" id="lrA0"><div class="lblkbox">A B C D</div></div>
+              <div class="lblk" id="lrA1"><div class="lblkbox">E F G H</div></div>
+            </div>
+            <div class="promptrow" id="lrB" style="margin-top:22px">
+              <div class="pmlbl2">提示词2：</div>
+              <div class="lblk" id="lrB0"><div class="lblkbox">A B C D</div></div>
+              <div class="lblk" id="lrB1"><div class="lblkbox">X Y Z</div></div>
+            </div>
+          </div>
+
+          <div class="gencol gtbl">
+            <div class="gcolttl">Block table</div>
+            <div class="btbl">
+              <div class="btrow hd"><div class="btcell">Logical</div><div class="btcell">Physical</div></div>
+              <div class="btrow" id="btS"><div class="btcell">Block 0</div><div class="btcell">5</div></div>
+              <div class="btrow" id="btA1"><div class="btcell">Block 1</div><div class="btcell">0</div></div>
+              <div class="btrow" id="btB1"><div class="btcell">Block 2</div><div class="btcell">3</div></div>
+            </div>
+          </div>
+
+          <div class="gencol">
+            <div class="gcolttl"><b>物理</b> KV blocks</div>
+            <div class="ggrid">
+              <div class="grow" id="pr0"><div class="glab">Block 0</div><div class="gcells"><div class="gcell2 filled">E</div><div class="gcell2 filled">F</div><div class="gcell2 filled">G</div><div class="gcell2 filled">H</div></div></div>
+              <div class="grow" id="pr1"><div class="glab">Block 1</div><div class="gcells"><div class="gcell2 empty"></div><div class="gcell2 empty"></div><div class="gcell2 empty"></div><div class="gcell2 empty"></div></div></div>
+              <div class="grow" id="pr2"><div class="glab">Block 2</div><div class="gcells"><div class="gcell2 empty"></div><div class="gcell2 empty"></div><div class="gcell2 empty"></div><div class="gcell2 empty"></div></div></div>
+              <div class="grow" id="pr3"><div class="glab">Block 3</div><div class="gcells"><div class="gcell2 filled">X</div><div class="gcell2 filled">Y</div><div class="gcell2 filled">Z</div><div class="gcell2 empty"></div></div></div>
+              <div class="grow" id="pr4"><div class="glab">Block 4</div><div class="gcells"><div class="gcell2 empty"></div><div class="gcell2 empty"></div><div class="gcell2 empty"></div><div class="gcell2 empty"></div></div></div>
+              <div class="grow shd" id="pr5"><div class="glab">Block 5</div><div class="gcells"><div class="gcell2 filled">A</div><div class="gcell2 filled">B</div><div class="gcell2 filled">C</div><div class="gcell2 filled">D</div></div></div>
+            </div>
+          </div>
+          <svg class="gensvg" id="shsvg"></svg>
+        </div>
+
+        <div class="shfoot"><b>分页</b>：逻辑连续、物理随便散——碎片没了，相同前缀还能共享同一块</div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="wrap roomy">
+        <div class="head">vLLM 先把显存切成固定小块：<span class="hl">物理Block</span></div>
+        <div class="sub">启动时就把显存切成一池固定小块、空闲块串成队列；一块装 <b>block_size</b> 个 token 的 K、V</div>
+
+        <div class="pool2">
+          <div class="zonelbl"><div class="zl1">CPU</div></div>
+          <div class="p2box cpubox">
+            <div class="chaincol">
+              <div class="qcap"><span class="mn">free_block_queue</span>：空闲块串成<span class="wt">双向链表</span></div>
+              <div class="p2row" id="cpurow"></div>
+            </div>
+          </div>
+          <div class="codebox">
+            <div class="cbar"><span class="d r"></span><span class="d y"></span><span class="d g"></span><span class="fname">kv_cache_utils.py</span></div>
+            <pre><span class="kw">class</span> <span class="cls">KVCacheBlock</span>:
+    <span class="f-id">block_id</span>: int
+    <span class="f-ref">ref_cnt</span>: int
+    <span class="f-hash">_block_hash</span>: <span class="cls">BlockHash</span>
+    <span class="f-ptr">prev_block, next_block</span>: <span class="cls">KVCacheBlock</span></pre></div>
+
+          <div class="zonelbl"><div class="zl1">GPU</div></div>
+          <div class="p2box gpubox" id="gpubox">
+            <div class="gpustack" id="gpustack"></div>
+            <div class="blkcap">一共 <span class="mn">num_blocks</span> 个物理 Block</div>
+            <svg class="blksvg" id="blksvg"></svg>
+            <svg class="lbrace" id="lbrace"></svg>
+            <div class="llbl" id="llbl"><span class="lln">L</span> 层</div>
+          </div>
+          <div class="zoombox">
+            <div class="zt">每个物理 block 都是一个包含 K、V 的 <b>Tensor</b></div>
+            <div class="zstack">
+              <div class="ztensor k"><span class="zl">K</span>block_size × num_kv_heads × head_dim</div>
+              <div class="ztensor v"><span class="zl">V</span>block_size × num_kv_heads × head_dim</div>
+            </div>
+            <div class="zshape">shape = [<span class="hi">2</span>, block_size, num_kv_heads, head_dim]</div>
+          </div>
+          <svg class="poolsvg" id="poolsvg"></svg>
+        </div>
+
+        <div class="kvsum">
+          <span class="lbl">整个 KV Cache 显存占用 =</span>
+          <span class="expr"><span class="tm L">L</span><span class="op">×</span><span class="tm nb">num_blocks</span><span class="op">×</span><span class="tm">block_size</span><span class="op">×</span><span class="tm two">2</span><span class="op">×</span><span class="tm">num_kv_heads</span><span class="op">×</span><span class="tm">head_dim</span></span>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ===================== TAB 4 : Block hashing ===================== -->
+    <section class="slide">
+      <div class="wrap">
+        <div class="head"><span class="hl">Block Hash</span>：每个满 block 都算一个链式哈希</div>
+
+        <div class="promptline">假设 <b>block_size = 4</b>，提示词的 12 个 token = <span class="qs">ABCDEFGHIJKL</span></div>
+
+        <div class="apcrow">
+          <div class="apclbl">逻辑 Block</div>
+          <div class="apc">
+            <div class="bcell c1">
+              <div class="blab">Block 0</div>
+              <div class="bpills"><span class="pill">A</span><span class="pill">B</span><span class="pill">C</span><span class="pill">D</span></div>
+            </div>
+            <div class="bcell c2">
+              <div class="blab">Block 1</div>
+              <div class="bpills"><span class="pill">E</span><span class="pill">F</span><span class="pill">G</span><span class="pill">H</span></div>
+            </div>
+            <div class="bcell c3">
+              <div class="blab">Block 2</div>
+              <div class="bpills"><span class="pill">I</span><span class="pill">J</span><span class="pill">K</span><span class="pill">L</span></div>
+            </div>
+          </div>
+        </div>
+
+        <svg class="hashchain" viewBox="0 0 1240 300" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ah" markerWidth="10" markerHeight="10" refX="7.5" refY="3.5" orient="auto">
+              <path d="M0,0 L8,3.5 L0,7 Z" fill="#b6b6c4"/>
+            </marker>
+          </defs>
+
+          <text x="150" y="171" class="hc-mut">none_hash</text>
+          <line x1="240" y1="165" x2="280" y2="165" class="hc-arrow" marker-end="url(#ah)"/>
+
+          <!-- Node 0 -->
+          <circle cx="330" cy="165" r="46" class="hc-node"/>
+          <text x="330" y="172" text-anchor="middle" class="hc-hash">hash</text>
+          <line x1="330" y1="117" x2="330" y2="94" class="hc-arrow" marker-end="url(#ah)"/>
+          <text x="330" y="80" text-anchor="middle" class="hc-out">hash(Block 0)</text>
+          <rect x="257" y="252" width="32" height="30" rx="6" class="hc-pill"/><text x="273" y="272" text-anchor="middle" class="hc-ptok">A</text>
+          <rect x="295" y="252" width="32" height="30" rx="6" class="hc-pill"/><text x="311" y="272" text-anchor="middle" class="hc-ptok">B</text>
+          <rect x="333" y="252" width="32" height="30" rx="6" class="hc-pill"/><text x="349" y="272" text-anchor="middle" class="hc-ptok">C</text>
+          <rect x="371" y="252" width="32" height="30" rx="6" class="hc-pill"/><text x="387" y="272" text-anchor="middle" class="hc-ptok">D</text>
+          <line x1="330" y1="250" x2="330" y2="214" class="hc-arrow" marker-end="url(#ah)"/>
+
+          <!-- Node 1 -->
+          <circle cx="630" cy="165" r="46" class="hc-node"/>
+          <text x="630" y="172" text-anchor="middle" class="hc-hash">hash</text>
+          <line x1="630" y1="117" x2="630" y2="94" class="hc-arrow" marker-end="url(#ah)"/>
+          <text x="630" y="80" text-anchor="middle" class="hc-out">hash(Block 1)</text>
+          <rect x="557" y="252" width="32" height="30" rx="6" class="hc-pill"/><text x="573" y="272" text-anchor="middle" class="hc-ptok">E</text>
+          <rect x="595" y="252" width="32" height="30" rx="6" class="hc-pill"/><text x="611" y="272" text-anchor="middle" class="hc-ptok">F</text>
+          <rect x="633" y="252" width="32" height="30" rx="6" class="hc-pill"/><text x="649" y="272" text-anchor="middle" class="hc-ptok">G</text>
+          <rect x="671" y="252" width="32" height="30" rx="6" class="hc-pill"/><text x="687" y="272" text-anchor="middle" class="hc-ptok">H</text>
+          <line x1="630" y1="250" x2="630" y2="214" class="hc-arrow" marker-end="url(#ah)"/>
+
+          <!-- Node 2 -->
+          <circle cx="930" cy="165" r="46" class="hc-node"/>
+          <text x="930" y="172" text-anchor="middle" class="hc-hash">hash</text>
+          <line x1="930" y1="117" x2="930" y2="94" class="hc-arrow" marker-end="url(#ah)"/>
+          <text x="930" y="80" text-anchor="middle" class="hc-out">hash(Block 2)</text>
+          <rect x="857" y="252" width="32" height="30" rx="6" class="hc-pill"/><text x="873" y="272" text-anchor="middle" class="hc-ptok">I</text>
+          <rect x="895" y="252" width="32" height="30" rx="6" class="hc-pill"/><text x="911" y="272" text-anchor="middle" class="hc-ptok">J</text>
+          <rect x="933" y="252" width="32" height="30" rx="6" class="hc-pill"/><text x="949" y="272" text-anchor="middle" class="hc-ptok">K</text>
+          <rect x="971" y="252" width="32" height="30" rx="6" class="hc-pill"/><text x="987" y="272" text-anchor="middle" class="hc-ptok">L</text>
+          <line x1="930" y1="250" x2="930" y2="214" class="hc-arrow" marker-end="url(#ah)"/>
+
+          <!-- 链：hash(Block N) 先斜下、再水平连到下一个 node -->
+          <path d="M 400 88 L 505 165 L 582 165" class="hc-arrow" marker-end="url(#ah)"/>
+          <path d="M 700 88 L 805 165 L 882 165" class="hc-arrow" marker-end="url(#ah)"/>
+        </svg>
+
+        <div class="hcformula"><span class="k">hash(Block n)</span> = hash(<span class="k">hash(Block n-1)</span>, <span class="t">tokens(n)</span>)</div>
+        <div class="hcnote">两个请求，只要某个 Block 的 <b>hash 对上</b>，就说明从开头到这个 Block 的<b>前缀完全一样</b></div>
+      </div>
+    </section>
+
+    <!-- ===================== TAB 5 : 数据结构（两张表源码） ===================== -->
+    <section class="slide">
+      <div class="wrap">
+        <div class="head">辅助数据结构：<span class="hl">BlockHashToBlockMap</span> 表和 <span class="hl">Block Table</span></div>
+
+        <div class="ds2">
+         <div class="dsleft">
+          <div class="dscol">
+            <div class="dscap"><span class="h">BlockHashToBlockMap</span>：hash → 物理块（全局前缀缓存）</div>
+            <div class="codebox">
+              <div class="cbar"><span class="d r"></span><span class="d y"></span><span class="d g"></span><span class="fname">block_pool.py</span></div>
+              <pre><span class="kw">class</span> <span class="cls">BlockHashToBlockMap</span>:
+    <span class="kw">def</span> __init__(self):
+        self.<span class="f-hash">_cache</span>: dict[
+            <span class="f-hash">BlockHash</span>, <span class="f-id">KVCacheBlock</span>
+        ] = {}
+
+    <span class="kw">def</span> get_one_block(
+        self, key: <span class="f-hash">BlockHash</span>
+    ) -> <span class="f-id">KVCacheBlock</span> | None:
+        <span class="kw">return</span> self.<span class="f-hash">_cache</span>.get(key)  <span class="cmt"># O(1)</span></pre>
+            </div>
+          </div>
+
+          <div class="dscol">
+            <div class="dscap"><span class="a">block table</span>：逻辑块顺序 → 物理块（每个请求对应物理块列表）</div>
+            <div class="codebox">
+              <div class="cbar"><span class="d r"></span><span class="d y"></span><span class="d g"></span><span class="fname">single_type_kv_cache_manager.py</span></div>
+              <pre><span class="kw">class</span> <span class="cls">SingleTypeKVCacheManager</span>:
+    <span class="kw">def</span> __init__(self, ...):
+        <span class="cmt"># 每个请求：逻辑块顺序 → 物理块</span>
+        self.<span class="f-id">req_to_blocks</span>: dict[
+            str,                  <span class="cmt"># request_id</span>
+            list[<span class="f-id">KVCacheBlock</span>],   <span class="cmt"># 下标 = 逻辑块号</span>
+        ] = defaultdict(list)</pre>
+            </div>
+          </div>
+         </div>
+
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ===================== TAB 6 : 两个请求先后进来，一张表逐行对照 ===================== -->
+    <section class="slide">
+      <div class="wrap">
+        <div class="head">两个请求先后进来：<span class="hl">每一步</span>数据结构怎么变</div>
+
+        <div class="tl">
+          <div class="tlhd"></div>
+          <div class="tlhd" style="color:var(--r0)">时刻 0</div>
+          <div class="tlhd c1" style="color:var(--r1)">时刻 1</div>
+
+          <div class="tlc lb">Prompt</div>
+          <div class="tlc">
+            <div class="tkrow"><span class="tklbl">request[<span style="color:var(--r0)">0</span>] =</span><span class="tk sh">A B C D</span><span class="tk sh">E F G H</span><span class="tk">I J K L</span></div>
+          </div>
+          <div class="tlc c1">
+            <div class="tkrow"><span class="tklbl">request[<span style="color:var(--r1)">1</span>] =</span><span class="tk sh">A B C D</span><span class="tk sh">E F G H</span><span class="tk">X Y Z</span></div>
+          </div>
+
+          <div class="tlc lb">Block Hash</div>
+          <div class="tlc">
+            <div class="tstack">
+              <div class="tline"><span class="hs">block_hash[0]</span> = 0xABCD</div>
+              <div class="tline"><span class="hs">block_hash[1]</span> = 0xABGH</div>
+              <div class="tline"><span class="hs">block_hash[2]</span> = 0xABKL</div>
+            </div>
+          </div>
+          <div class="tlc c1">
+            <div class="tstack">
+              <div class="tline"><span class="hs">block_hash[0]</span> = <span class="hit">0xABCD</span>　<span class="hit">← 和 request[0] 一样</span></div>
+              <div class="tline"><span class="hs">block_hash[1]</span> = <span class="hit">0xABGH</span>　<span class="hit">← 和 request[0] 一样</span></div>
+              <div class="tline"><span class="note">block 2 没满，不算 hash</span></div>
+            </div>
+          </div>
+
+          <div class="tlc lb">BlockHashToBlockMap</div>
+          <div class="tlc">
+            <div class="tline">cache: { 空的 }</div>
+            <div class="lkup">
+              <div class="lk"><span class="k">block_hash[0]</span><span class="miss">MISS</span></div>
+              <div class="lk"><span class="k">block_hash[1]</span><span class="miss">MISS</span></div>
+              <div class="lk"><span class="k">block_hash[2]</span><span class="miss">MISS</span></div>
+            </div>
+          </div>
+          <div class="tlc c1">
+            <div class="cmap">
+              <span class="pre">cache: {</span><span>0xABCD</span><span class="ar">→</span><span><span class="id">block_id:0</span>,</span>
+              <span class="pre"></span><span>0xABGH</span><span class="ar">→</span><span><span class="id">block_id:1</span>,</span>
+              <span class="pre"></span><span>0xABKL</span><span class="ar">→</span><span><span class="id">block_id:2</span> }</span>
+            </div>
+            <div class="lkup">
+              <div class="lk"><span class="k">block_hash[0]</span><span class="hit">HIT</span></div>
+              <div class="lk"><span class="k">block_hash[1]</span><span class="hit">HIT</span></div>
+            </div>
+          </div>
+
+          <div class="tlc lb">free_block_queue</div>
+          <div class="tlc">
+            <div class="fq">
+              <span class="fqgrp out" data-op="↑ 弹出">
+                <span class="fqn take">0</span>
+                <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+                <span class="fqn take">1</span>
+                <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+                <span class="fqn take">2</span>
+              </span>
+              <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+              <span class="fqn">3</span>
+              <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+              <span class="fqn">4</span>
+              <span class="fqell">⋯</span>
+            </div>
+          </div>
+          <div class="tlc c1">
+            <div class="fq">
+              <span class="fqgrp out" data-op="↑ 弹出">
+                <span class="fqn take">3</span>
+              </span>
+              <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+              <span class="fqn">4</span>
+              <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+              <span class="fqn">5</span>
+              <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+              <span class="fqn">6</span>
+              <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+              <span class="fqn">7</span>
+              <span class="fqell">⋯</span>
+            </div>
+          </div>
+
+          <div class="tlc lb">req_to_blocks</div>
+          <div class="tlc">
+            <div class="rtb"><span class="kk">req_to_blocks[<span style="color:var(--r0)">0</span>] =</span><span class="br">[</span><span class="b" style="background:var(--r0)">0</span><span class="b" style="background:var(--r0)">1</span><span class="b" style="background:var(--r0)">2</span><span class="br">]</span></div>
+          </div>
+          <div class="tlc c1">
+            <div class="rtb"><span class="kk">req_to_blocks[<span style="color:var(--r1)">1</span>] =</span><span class="br">[</span><span class="b" style="background:var(--r1)">0</span><span class="b" style="background:var(--r1)">1</span><span class="b" style="background:var(--r1)">3</span><span class="br">]</span></div>
+          </div>
+
+          <div class="tlc lb">GPU Blocks</div>
+          <div class="tlc">
+            <div class="btcells">
+              <div class="btc"><span class="l2">block_id:0</span><span class="l4 hh">hash:0xABCD</span><span class="l3">ref_cnt:1</span></div>
+              <div class="btc"><span class="l2">block_id:1</span><span class="l4 hh">hash:0xABGH</span><span class="l3">ref_cnt:1</span></div>
+              <div class="btc"><span class="l2">block_id:2</span><span class="l4 hh">hash:0xABKL</span><span class="l3">ref_cnt:1</span></div>
+            </div>
+          </div>
+          <div class="tlc c1">
+            <div class="btcells">
+              <div class="btc"><span class="l2">block_id:0</span><span class="l4 hh">hash:0xABCD</span><span class="l3">ref_cnt:2</span></div>
+              <div class="btc"><span class="l2">block_id:1</span><span class="l4 hh">hash:0xABGH</span><span class="l3">ref_cnt:2</span></div>
+              <div class="btc"><span class="l2">block_id:2</span><span class="l4 hh">hash:0xABKL</span><span class="l3">ref_cnt:1</span></div>
+              <div class="btc"><span class="l2">block_id:3</span><span class="l4 kp">hash:None</span><span class="l3">ref_cnt:1</span></div>
+            </div>
+          </div>
+
+          <div class="tlc lb">Prefill</div>
+          <div class="tlc">
+            <div class="pfrow"><span class="pf c">COMPUTE</span><span class="pf c">COMPUTE</span><span class="pf c">COMPUTE</span></div>
+          </div>
+          <div class="tlc c1">
+            <div class="pfrow"><span class="pf s">SKIP</span><span class="pf s">SKIP</span><span class="pf ph"></span><span class="pf c">COMPUTE</span></div>
+          </div>
+        </div>
+
+        <div class="tlsum">
+          <div><span class="n">①</span>命中的块<b>不复制、不重算</b>，只是 <b>ref_cnt+1</b>，多个请求共用同一块显存</div>
+          <div><span class="n">②</span>只有从空闲队列<b>重新分配</b>的物理块，才需要实际跑推理 Prefill</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== TAB 7 : 请求结束，块归还 ===================== -->
+    <section class="slide">
+      <div class="wrap">
+        <div class="head">请求结束：<span class="hl">回收</span>空闲块，哈希表<span class="hl">不动</span></div>
+
+        <div class="tl">
+          <div class="tlhd"></div>
+          <div class="tlhd" style="color:var(--r0)">时刻 2</div>
+          <div class="tlhd c1" style="color:var(--r1)">时刻 3</div>
+
+          <div class="tlc lb">事件</div>
+          <div class="tlc">
+            <div class="tkrow"><span class="tklbl">结束　request[<span style="color:var(--r0)">0</span>] =</span><span class="tk sh">A B C D</span><span class="tk sh">E F G H</span><span class="tk">I J K L</span></div>
+          </div>
+          <div class="tlc c1">
+            <div class="tkrow"><span class="tklbl">结束　request[<span style="color:var(--r1)">1</span>] =</span><span class="tk sh">A B C D</span><span class="tk sh">E F G H</span><span class="tk">X Y Z</span></div>
+          </div>
+
+          <div class="tlc lb">req_to_blocks</div>
+          <div class="tlc">
+            <div class="rtb"><span class="kk">req_to_blocks[<span style="color:var(--r0)">0</span>] =</span><span class="br">[</span><span class="b" style="background:var(--r0)">0</span><span class="b" style="background:var(--r0)">1</span><span class="b" style="background:var(--r0)">2</span><span class="br">]</span></div>
+          </div>
+          <div class="tlc c1">
+            <div class="rtb"><span class="kk">req_to_blocks[<span style="color:var(--r1)">1</span>] =</span><span class="br">[</span><span class="b" style="background:var(--r1)">0</span><span class="b" style="background:var(--r1)">1</span><span class="b" style="background:var(--r1)">3</span><span class="br">]</span></div>
+          </div>
+
+          <div class="tlc lb">GPU Blocks</div>
+          <div class="tlc">
+            <div class="btcells">
+              <div class="btc"><span class="l2">block_id:0</span><span class="l4 hh">hash:0xABCD</span><span class="l3">ref_cnt:1</span></div>
+              <div class="btc"><span class="l2">block_id:1</span><span class="l4 hh">hash:0xABGH</span><span class="l3">ref_cnt:1</span></div>
+              <div class="btc"><span class="l2">block_id:2</span><span class="l4 hh">hash:0xABKL</span><span class="l3">ref_cnt:<span style="color:var(--hit)">0</span></span></div>
+              <div class="btc"><span class="l2">block_id:3</span><span class="l4 kp">hash:None</span><span class="l3">ref_cnt:1</span></div>
+            </div>
+          </div>
+          <div class="tlc c1">
+            <div class="btcells">
+              <div class="btc"><span class="l2">block_id:0</span><span class="l4 hh">hash:0xABCD</span><span class="l3">ref_cnt:<span style="color:var(--hit)">0</span></span></div>
+              <div class="btc"><span class="l2">block_id:1</span><span class="l4 hh">hash:0xABGH</span><span class="l3">ref_cnt:<span style="color:var(--hit)">0</span></span></div>
+              <div class="btc"><span class="l2">block_id:2</span><span class="l4 hh">hash:0xABKL</span><span class="l3">ref_cnt:<span style="color:var(--hit)">0</span></span></div>
+              <div class="btc"><span class="l2">block_id:3</span><span class="l4 kp">hash:None</span><span class="l3">ref_cnt:<span style="color:var(--hit)">0</span></span></div>
+            </div>
+          </div>
+
+          <div class="tlc lb">free_block_queue</div>
+          <div class="tlc">
+            <div class="fq">
+              <span class="fqgrp in" data-op="↓ 插入">
+                <span class="fqn hitn">2</span>
+              </span>
+              <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+              <span class="fqn">4</span>
+              <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+              <span class="fqn">5</span>
+              <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+              <span class="fqn">6</span>
+              <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+              <span class="fqn">7</span>
+              <span class="fqell">⋯</span>
+            </div>
+          </div>
+          <div class="tlc c1">
+            <div class="fq">
+              <span class="fqgrp in" data-op="↓ 插入">
+                <span class="fqn hitn">3</span>
+                <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+                <span class="fqn hitn">1</span>
+                <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+                <span class="fqn hitn">0</span>
+              </span>
+              <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+              <span class="fqn">2</span>
+              <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+              <span class="fqn">4</span>
+              <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+              <span class="fqn">5</span>
+              <span class="fqell">⋯</span>
+            </div>
+          </div>
+
+          <div class="tlc lb">BlockHashToBlockMap</div>
+          <div class="tlc">
+            <div class="cmap">
+              <span class="pre">cache: {</span><span>0xABCD</span><span class="ar">→</span><span><span class="id">block_id:0</span>,</span>
+              <span class="pre"></span><span>0xABGH</span><span class="ar">→</span><span><span class="id">block_id:1</span>,</span>
+              <span class="pre"></span><span>0xABKL</span><span class="ar">→</span><span><span class="id">block_id:2</span> }</span>
+            </div>
+          </div>
+          <div class="tlc c1">
+            <div class="cmap">
+              <span class="pre">cache: {</span><span>0xABCD</span><span class="ar">→</span><span><span class="id">block_id:0</span>,</span>
+              <span class="pre"></span><span>0xABGH</span><span class="ar">→</span><span><span class="id">block_id:1</span>,</span>
+              <span class="pre"></span><span>0xABKL</span><span class="ar">→</span><span><span class="id">block_id:2</span> }</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="tlsum">
+          <div><span class="n">①</span><b>ref_cnt=0</b> 才回收到空闲块队列 free_block_queue</div>
+          <div><span class="n">②</span>空闲<b>不等于作废</b>：物理块里的 KV Cache 还在，哈希表记录也保留了</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== TAB 8 : 时刻 4，新请求命中已释放的块 ===================== -->
+    <section class="slide">
+      <div class="wrap">
+        <div class="head">物理块复用：<span class="hl">捡回</span>刚才释放的块</div>
+
+        <div class="tl">
+          <div class="tlhd"></div>
+          <div class="tlhd sp2" style="color:var(--r2)">时刻 4</div>
+
+          <div class="tlc lb">Prompt</div>
+          <div class="tlc sp2">
+            <div class="tkrow"><span class="tklbl">request[<span style="color:var(--r2)">2</span>] =</span><span class="tk sh">A B C D</span><span class="tk sh">E F G H</span><span class="tk">P P P P</span><span class="tk">Q Q Q Q</span></div>
+          </div>
+
+          <div class="tlc lb">Block Hash</div>
+          <div class="tlc sp2">
+            <div class="tstack">
+              <div class="tline"><span class="hs">block_hash[0]</span> = <span class="hit">0xABCD</span>　<span class="hit">← 和 request[0] 一样</span></div>
+              <div class="tline"><span class="hs">block_hash[1]</span> = <span class="hit">0xABGH</span>　<span class="hit">← 和 request[0] 一样</span></div>
+              <div class="tline"><span class="hs">block_hash[2]</span> = 0xABPP</div>
+              <div class="tline"><span class="hs">block_hash[3]</span> = 0xABQQ</div>
+            </div>
+          </div>
+
+          <div class="tlc lb">BlockHashToBlockMap</div>
+          <div class="tlc">
+            <div class="cmap">
+              <span class="pre">cache: {</span><span>0xABCD</span><span class="ar">→</span><span><span class="id">block_id:0</span>,</span>
+              <span class="pre"></span><span>0xABGH</span><span class="ar">→</span><span><span class="id">block_id:1</span>,</span>
+              <span class="pre"></span><span>0xABKL</span><span class="ar">→</span><span><span class="id">block_id:2</span> }</span>
+            </div>
+            <div class="lkup">
+              <div class="lk"><span class="k">block_hash[0]</span><span class="hit">HIT</span></div>
+              <div class="lk"><span class="k">block_hash[1]</span><span class="hit">HIT</span></div>
+              <div class="lk"><span class="k">block_hash[2]</span><span class="miss">MISS</span></div>
+            </div>
+          </div>
+          <div class="tlc c1">
+            <div class="cmap">
+              <span class="pre">cache: {</span><span>0xABCD</span><span class="ar">→</span><span><span class="id">block_id:0</span>,</span>
+              <span class="pre"></span><span>0xABGH</span><span class="ar">→</span><span><span class="id">block_id:1</span>,</span>
+              <span class="pre"></span><span class="ev">0xABKL</span><span class="ar ev">→</span><span><span class="id ev">block_id:2</span> }<span class="evtag">evict</span></span>
+            </div>
+          </div>
+
+          <div class="tlc lb">free_block_queue</div>
+          <div class="tlc">
+            <div class="fq">
+              <span class="fqn">3</span>
+              <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+              <span class="fqgrp in" data-op="↑ 命中，从中间摘走">
+                <span class="fqn reuse">1</span>
+                <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+                <span class="fqn reuse">0</span>
+              </span>
+              <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+              <span class="fqn">2</span>
+              <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+              <span class="fqn">4</span>
+              <span class="fqell">⋯</span>
+            </div>
+          </div>
+          <div class="tlc c1">
+            <div class="fq">
+              <span class="fqgrp out" data-op="↑ 弹出">
+                <span class="fqn take">3</span>
+                <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+                <span class="fqn take">2</span>
+              </span>
+              <span class="fqlk"><svg viewBox="0 0 32 16" width="26" height="13"><line class="sh" x1="5" y1="8" x2="27" y2="8"/><polyline class="hd" points="10,3 4,8 10,13"/><polyline class="hd" points="22,3 28,8 22,13"/></svg></span>
+              <span class="fqn">4</span>
+              <span class="fqell">⋯</span>
+            </div>
+          </div>
+
+          <div class="tlc lb">req_to_blocks</div>
+          <div class="tlc sp2">
+            <div class="rtb"><span class="kk">req_to_blocks[<span style="color:var(--r2)">2</span>] =</span><span class="br">[</span><span class="b" style="background:var(--r2)">0</span><span class="b" style="background:var(--r2)">1</span><span class="b" style="background:var(--r2)">3</span><span class="b" style="background:var(--r2)">2</span><span class="br">]</span></div>
+          </div>
+
+          <div class="tlc lb">GPU Blocks</div>
+          <div class="tlc sp2">
+            <div class="btcells">
+              <div class="btc"><span class="l2">block_id:0</span><span class="l4 hh">hash:0xABCD</span><span class="l3">ref_cnt:1</span></div>
+              <div class="btc"><span class="l2">block_id:1</span><span class="l4 hh">hash:0xABGH</span><span class="l3">ref_cnt:1</span></div>
+              <div class="btc"><span class="l2">block_id:2</span><span class="l4 hh">hash:0xABQQ</span><span class="l3">ref_cnt:1</span></div>
+              <div class="btc"><span class="l2">block_id:3</span><span class="l4 hh">hash:0xABPP</span><span class="l3">ref_cnt:1</span></div>
+            </div>
+          </div>
+
+          <div class="tlc lb">Prefill</div>
+          <div class="tlc sp2">
+            <div class="pfrow"><span class="pf s">SKIP</span><span class="pf s">SKIP</span><span class="pf c">COMPUTE</span><span class="pf c">COMPUTE</span></div>
+          </div>
+        </div>
+
+        <div class="tlsum">
+          <div><span class="n">①</span>命中的块<b>直接从空闲队列取回</b>，ref_cnt 从 0 变 1，KV 一个字都不用重算</div>
+          <div><span class="n">②</span>被重新分配的块，旧 hash 才会从表里 <b>evict</b> 掉，替换成新 hash 以及重算 KV</div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script>
+  const tabs=[...document.querySelectorAll('.tab')];
+  const slides=[...document.querySelectorAll('.slide')];
+  let cur=0;
+  function go(i){
+    i=(i+slides.length)%slides.length;
+    tabs.forEach((t,k)=>t.classList.toggle('active',k===i));
+    slides.forEach((s,k)=>s.classList.toggle('active',k===i));
+    cur=i;
+    if(i===1) requestAnimationFrame(drawShare);   // ② 显存分页
+    if(i===2) requestAnimationFrame(draw0);       // ③ 物理Block
+    // i===0 显存碎片 / i===3 Block hashing / i===4 数据结构 / i===5 完整流程：静态 SVG / 代码，无需绘制
+  }
+  function draw0(){ drawPoolLinks(); drawBlockPrism(); drawLayerBrace(); }
+  tabs.forEach((t,i)=>t.addEventListener('click',()=>go(i)));
+  document.addEventListener('keydown',e=>{
+    if(e.key==='ArrowRight'||e.key===' ') go(cur+1);
+    else if(e.key==='ArrowLeft') go(cur-1);
+    else if(/^[1-9]$/.test(e.key)) go(+e.key-1);
+  });
+
+  // ---- 物理格子 ----
+  const PAL=['#ffd9b3','#fff0a8','#c6ecca','#bcd9ff','#e6c9f5'];
+  function buildGrid(id, cols, cellW, states, prefix){
+    const el=document.getElementById(id); if(!el) return;
+    el.style.gridTemplateColumns='repeat('+cols+','+cellW+'px)';
+    states.forEach((st,i)=>{
+      const c=document.createElement('div'); c.id=prefix+i; c.textContent=i;
+      if(typeof st==='number'){ c.className='gcell ours'; c.style.background=PAL[st]; }
+      else c.className='gcell '+st;
+      el.appendChild(c);
+    });
+  }
+  // Tab2：GPU Block Pool 24 块。7/2/19 = 请求 A；21 = 请求 B 自己的新块
+  buildGrid('grid3',6,100,[
+    'occ','free',1,'occ','free','occ',
+    'free',0,'free','occ','free','free',
+    'occ','free','occ','free','free','occ',
+    'free',2,'free',4,'occ','free',
+  ],'f3-');
+
+  // ---- Tab1：CPU 双向链表 ↕ GPU 显存（L 层 × 每层切成块）----
+  (function(){
+    const cpu=document.getElementById('cpurow'), stack=document.getElementById('gpustack');
+    if(!cpu||!stack) return;
+    const IDS=['1','2','3','4','⋯'];
+    const mk=(cls,txt)=>{ const d=document.createElement('div'); d.className=cls; if(txt!==undefined) d.textContent=txt; return d; };
+    // CPU 行：链表节点，贴框左侧起
+    const ARROW='<svg viewBox="0 0 36 16" width="36" height="16">'+
+      '<line class="sh" x1="6" y1="8" x2="30" y2="8"/>'+
+      '<polyline class="hd" points="11,3 5,8 11,13"/>'+
+      '<polyline class="hd" points="25,3 31,8 25,13"/></svg>';
+    IDS.forEach((t,i)=>{
+      if(i>0){ const lk=mk('plink'); lk.innerHTML=ARROW; cpu.appendChild(lk); }
+      if(t==='⋯'){ cpu.appendChild(mk('pell','⋯')); }
+      else{
+        const n=mk('pnode');
+        n.appendChild(mk('n1','block_id'));
+        n.appendChild(mk('n2','='+t));
+        cpu.appendChild(n);
+      }
+    });
+    // GPU：一摞 L 层 —— 背后偏移板露边（其余层）+ 最前一层完整格子
+    for(let k=4;k>=1;k--){
+      const b=mk('lyback');
+      b.style.transform='translate('+(k*10)+'px,'+(-k*22)+'px)';
+      b.style.zIndex=String(5-k);
+      stack.appendChild(b);
+    }
+    const row=mk('p2row lyrow'); row.style.zIndex='6';
+    IDS.forEach((t,i)=>{
+      if(i>0) row.appendChild(mk('pvsp'));
+      if(t==='⋯'){ row.appendChild(mk('pgell','⋯')); }
+      else{ const c=mk('pgcell',t); if(t==='2') c.setAttribute('data-col','2'); row.appendChild(c); }
+    });
+    stack.appendChild(row);
+  })();
+
+  // 节点 → 对应物理列 的竖向虚线（SVG，跨越两个虚线框）
+  function drawPoolLinks(){
+    const wrap=document.querySelector('.pool2'), svg=document.getElementById('poolsvg');
+    const cpu=document.getElementById('cpurow'), stack=document.getElementById('gpustack');
+    if(!wrap||!svg||!cpu||!stack) return;
+    const gr=wrap.getBoundingClientRect(); if(!gr.width) return;
+    const NS='http://www.w3.org/2000/svg';
+    svg.setAttribute('viewBox','0 0 '+gr.width+' '+gr.height);
+    while(svg.firstChild) svg.removeChild(svg.firstChild);
+    const nodes=[...cpu.querySelectorAll('.pnode')];
+    const cells=[...stack.querySelector('.p2row').querySelectorAll('.pgcell')];
+    nodes.forEach((n,i)=>{
+      const c=cells[i]; if(!c) return;
+      const rn=n.getBoundingClientRect(), rc=c.getBoundingClientRect();
+      const l=document.createElementNS(NS,'line');
+      l.setAttribute('x1',rn.left-gr.left+rn.width/2); l.setAttribute('y1',rn.bottom-gr.top+4);
+      l.setAttribute('x2',rc.left-gr.left+rc.width/2); l.setAttribute('y2',rc.top-gr.top-4);
+      l.setAttribute('stroke','#b6b6c4'); l.setAttribute('stroke-width','2');
+      l.setAttribute('stroke-dasharray','4 5'); l.setAttribute('opacity','.55');
+      svg.appendChild(l);
+    });
+  }
+
+  // 黄色虚线柱：block_id=2 在所有 L 层都是同一 slice —— 逐层点亮 + 四条棱连成一根柱子
+  function drawBlockPrism(){
+    const box=document.getElementById('gpubox'), svg=document.getElementById('blksvg');
+    const stack=document.getElementById('gpustack');
+    if(!box||!svg||!stack) return;
+    const br=box.getBoundingClientRect(); if(!br.width) return;
+    const cell=box.querySelector('[data-col="2"]'); if(!cell) return;    // 前层的块 2
+    const frontRow=stack.querySelector('.p2row'), backBoard=stack.querySelector('.lyback');
+    if(!frontRow||!backBoard) return;
+    const rc=cell.getBoundingClientRect();
+    const rf=frontRow.getBoundingClientRect(), rb=backBoard.getBoundingClientRect();
+    const dx=rb.left-rf.left, dy=rb.top-rf.top;   // 前层 → 最后层 的总偏移
+    const N=4, ux=dx/N, uy=dy/N, p=4;             // 4 块板 + 前层 = 5 层
+    const x=rc.left-br.left-p, y=rc.top-br.top-p, w=rc.width+2*p, h=rc.height+2*p;
+    const F=[[x,y],[x+w,y],[x+w,y+h],[x,y+h]];
+    svg.setAttribute('viewBox','0 0 '+br.width+' '+br.height);
+    svg.setAttribute('width',br.width); svg.setAttribute('height',br.height);
+    while(svg.firstChild) svg.removeChild(svg.firstChild);
+    const NS='http://www.w3.org/2000/svg', CO='#f6c486';
+    // 四条棱：前层四角 → 最后层四角（先画，压在框下面）
+    for(let i=0;i<4;i++){
+      const l=document.createElementNS(NS,'line');
+      l.setAttribute('x1',F[i][0]); l.setAttribute('y1',F[i][1]);
+      l.setAttribute('x2',F[i][0]+dx); l.setAttribute('y2',F[i][1]+dy);
+      l.setAttribute('stroke',CO); l.setAttribute('stroke-width','1.6');
+      l.setAttribute('opacity','.32'); l.setAttribute('stroke-dasharray','5 4'); svg.appendChild(l);
+    }
+    // 逐层框：后 → 前（前层最后画、最亮最粗，越往后越淡）
+    for(let k=N;k>=0;k--){
+      const pts=F.map(([px,py])=>(px+k*ux).toFixed(1)+','+(py+k*uy).toFixed(1)).join(' ');
+      const pg=document.createElementNS(NS,'polygon');
+      pg.setAttribute('points',pts); pg.setAttribute('fill','none'); pg.setAttribute('stroke',CO);
+      pg.setAttribute('stroke-dasharray','5 4'); pg.setAttribute('stroke-linejoin','round');
+      pg.setAttribute('stroke-width', k===0?'2.6':'1.8');
+      pg.setAttribute('opacity', k===0?'1':(0.78-(k-1)*0.13).toFixed(2));
+      svg.appendChild(pg);
+    }
+  }
+
+  // 右侧大括号：纵向括住整摞偏移板 = 共 L 层
+  function drawLayerBrace(){
+    const box=document.getElementById('gpubox'), stack=document.getElementById('gpustack');
+    const svg=document.getElementById('lbrace'), lbl=document.getElementById('llbl');
+    if(!box||!stack||!svg||!lbl) return;
+    const br=box.getBoundingClientRect(); if(!br.width) return;
+    // 整摞的上沿、下沿、最右沿（偏移板 + 最前一层一起算）
+    const boards=[...stack.querySelectorAll('.lyback'), stack.querySelector('.p2row')];
+    let top=Infinity, bot=-Infinity, right=-Infinity;
+    boards.forEach(b=>{ if(!b) return; const r=b.getBoundingClientRect();
+      top=Math.min(top,r.top); bot=Math.max(bot,r.bottom); right=Math.max(right,r.right); });
+    if(!isFinite(top)) return;
+    const yTop=top-br.top, yBot=bot-br.top, mid=(yTop+yBot)/2, H=yBot-yTop;
+    // 开口朝左抱住板堆、尖头朝右戳向标签：xL=内线(贴板堆,上下两端在此)，xR=尖头(朝右)
+    const xL=(right-br.left)+14, W=16, xR=xL+W;
+    svg.style.left='0'; svg.style.top='0';
+    svg.setAttribute('width',br.width); svg.setAttribute('height',br.height);
+    svg.setAttribute('viewBox','0 0 '+br.width+' '+br.height);
+    while(svg.firstChild) svg.removeChild(svg.firstChild);
+    const NS='http://www.w3.org/2000/svg';
+    const p=document.createElementNS(NS,'path');
+    // 大括号 }：上端(xL)→上肩鼓右→中尖(xR,朝右戳出)→下肩鼓右→下端(xL)
+    p.setAttribute('d',
+      'M '+xL+' '+yTop+
+      ' C '+xR+' '+yTop+' '+xL+' '+mid+' '+xR+' '+mid+
+      ' C '+xL+' '+mid+' '+xR+' '+yBot+' '+xL+' '+yBot);
+    p.setAttribute('fill','none'); p.setAttribute('stroke','#b6b6c4');
+    p.setAttribute('stroke-width','2.2'); p.setAttribute('opacity','.85');
+    p.setAttribute('stroke-linecap','round'); p.setAttribute('stroke-linejoin','round');
+    svg.appendChild(p);
+    lbl.style.left=(xR+11)+'px'; lbl.style.top=mid+'px';
+    lbl.style.transform='translateY(-50%)';
+  }
+
+  // ---- 映射表 → 物理格子 的彩色折线 ----
+  // 走线规则：表右侧空隙里各占一条竖向 lane → 沿目标格上方的行间空隙横穿 → 从顶边垂直插入
+  function drawMap(hostId, svgId, gridId, pairs){
+    const host=document.getElementById(hostId), svg=document.getElementById(svgId);
+    const grid=document.getElementById(gridId);
+    if(!host||!svg||!grid) return;
+    const gr=host.getBoundingClientRect(); if(!gr.width) return;
+    const gd=grid.getBoundingClientRect();
+    const NS='http://www.w3.org/2000/svg';
+    svg.setAttribute('viewBox','0 0 '+gr.width+' '+gr.height);
+    while(svg.firstChild) svg.removeChild(svg.firstChild);
+    const items=pairs.map(([rid,cid,color])=>{
+      const r=document.getElementById(rid), c=document.getElementById(cid);
+      if(!r||!c) return null;
+      const rr=r.getBoundingClientRect(), rc=c.getBoundingClientRect();
+      return {color,
+        x1:rr.right-gr.left+5, y1:rr.top-gr.top+rr.height/2,
+        cx:rc.left-gr.left+rc.width/2, yTop:rc.top-gr.top};
+    }).filter(Boolean);
+    if(!items.length) return;
+    const xs=Math.max(...items.map(it=>it.x1))+8;
+    const xe=gd.left-gr.left-12;
+    items.forEach((it,i)=>{
+      const lane=xs+(xe-xs)*(i+1)/(items.length+1);
+      const chY=it.yTop-5;                          /* 目标格上方 10px 行间空隙的中线 */
+      const pl=document.createElementNS(NS,'polyline');
+      pl.setAttribute('points',[[it.x1,it.y1],[lane,it.y1],[lane,chY],[it.cx,chY],[it.cx,it.yTop-2]]
+        .map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' '));
+      pl.setAttribute('fill','none'); pl.setAttribute('stroke',it.color);
+      pl.setAttribute('stroke-width','2.4'); pl.setAttribute('opacity','.92');
+      pl.setAttribute('stroke-linejoin','round'); pl.setAttribute('stroke-linecap','round');
+      svg.appendChild(pl);
+      const ah=document.createElementNS(NS,'path');
+      ah.setAttribute('d','M '+(it.cx-5.5)+' '+(it.yTop-4)+' L '+(it.cx+5.5)+' '+(it.yTop-4)+' L '+it.cx+' '+(it.yTop+7)+' Z');
+      ah.setAttribute('fill',it.color); ah.setAttribute('opacity','.92');
+      svg.appendChild(ah);
+    });
+  }
+  function draw3(){ drawMap('mw3','svg3','grid3',[
+    ['m3r0','f3-7',PAL[0]],['m3r1','f3-2',PAL[1]],['m3r2','f3-19',PAL[2]]]); }
+
+  // ===================== Tab1：生成过程 动画 =====================
+  const A3={ map:{0:7,1:1,2:3}, idx:0, timer:null, built:false,
+    steps:[
+      { t:'0 · 生成前', comp:'', log:{}, tbl:[] },
+      { t:'1 · 存入 prompt 的 KV', comp:'', log:{0:['练习','时长','两年','半'],1:['，','喜欢','唱跳']}, tbl:[{p:7,f:4},{p:1,f:3}] },
+      { t:'2 · 生成第 1 个 token', comp:'rap', log:{0:['练习','时长','两年','半'],1:['，','喜欢','唱跳','rap']}, tbl:[{p:7,f:4},{p:1,f:4}], newTok:[1,3], chgRow:1 },
+      { t:'3 · 生成第 2 个 token（分配新块）', comp:'rap篮球', log:{0:['练习','时长','两年','半'],1:['，','喜欢','唱跳','rap'],2:['篮球']}, tbl:[{p:7,f:4},{p:1,f:4},{p:3,f:1}], newTok:[2,0], chgRow:2, allocBlk:2 },
+      { t:'4 · 生成第 3 个 token', comp:'rap篮球Music', log:{0:['练习','时长','两年','半'],1:['，','喜欢','唱跳','rap'],2:['篮球','Music']}, tbl:[{p:7,f:4},{p:1,f:4},{p:3,f:2}], newTok:[2,1], chgRow:2 },
+    ] };
+  function buildA3(){
+    if(A3.built) return;
+    const mkgrid=(host,n,pfx)=>{ for(let b=0;b<n;b++){
+      const row=document.createElement('div'); row.className='grow'; row.id=pfx+b;
+      const lab=document.createElement('div'); lab.className='glab'; lab.textContent='Block '+b; row.appendChild(lab);
+      const cs=document.createElement('div'); cs.className='gcells';
+      for(let i=0;i<4;i++){ const c=document.createElement('div'); c.className='gcell2 empty'; c.id=pfx+b+'-'+i; cs.appendChild(c); }
+      row.appendChild(cs); host.appendChild(row);
+    } };
+    mkgrid(document.getElementById('logrid'),4,'lr');
+    mkgrid(document.getElementById('phygrid'),8,'pr');
+    const bt=document.getElementById('btbl');
+    const hd=document.createElement('div'); hd.className='btrow hd';
+    hd.innerHTML='<div class="btcell">Physical<br>block no.</div><div class="btcell"># Filled<br>slots</div>'; bt.appendChild(hd);
+    for(let i=0;i<4;i++){ const r=document.createElement('div'); r.className='btrow'; r.id='bt'+i;
+      r.innerHTML='<div class="btcell bp">–</div><div class="btcell bf">–</div>'; bt.appendChild(r); }
+    A3.built=true;
+  }
+  function renderA3(){
+    const s=A3.steps[A3.idx];
+    document.getElementById('genstep').textContent=s.t;
+    document.getElementById('gencomp').textContent=s.comp;
+    for(let b=0;b<4;b++){ const toks=s.log[b]||[]; for(let i=0;i<4;i++){ const c=document.getElementById('lr'+b+'-'+i);
+      const t=toks[i]; c.textContent=t||''; c.className='gcell2 '+(t?'filled':'empty');
+      if(s.newTok&&s.newTok[0]===b&&s.newTok[1]===i) c.classList.add('newtok'); } }
+    for(let p=0;p<8;p++){ for(let i=0;i<4;i++){ const c=document.getElementById('pr'+p+'-'+i); c.textContent=''; c.className='gcell2 empty'; } }
+    for(let b=0;b<4;b++){ const toks=s.log[b]; if(!toks||!toks.length) continue; const p=A3.map[b];
+      for(let i=0;i<4;i++){ const t=toks[i]; const c=document.getElementById('pr'+p+'-'+i); c.textContent=t||'';
+        c.className='gcell2 '+(t?'filled':'empty'); if(s.newTok&&s.newTok[0]===b&&s.newTok[1]===i) c.classList.add('newtok'); } }
+    [...document.querySelectorAll('#phygrid .grow')].forEach(r=>{ r.classList.remove('alloc'); const g=r.querySelector('.alloctag'); if(g) g.remove(); });
+    if(s.allocBlk!==undefined){ const row=document.getElementById('pr'+A3.map[s.allocBlk]); row.classList.add('alloc');
+      const tag=document.createElement('div'); tag.className='alloctag'; tag.textContent='按需分配'; row.appendChild(tag); }
+    for(let i=0;i<4;i++){ const r=document.getElementById('bt'+i), bp=r.querySelector('.bp'), bf=r.querySelector('.bf'), row=s.tbl[i];
+      if(row){ bp.textContent=row.p; bf.textContent=row.f; } else { bp.textContent='–'; bf.textContent='–'; }
+      bf.classList.toggle('chg', s.chgRow===i); }
+    drawA3arrows();
+  }
+  function drawA3arrows(){
+    const svg=document.getElementById('gensvg'), wrap=document.querySelector('.genwrap');
+    if(!svg||!wrap) return; const wr=wrap.getBoundingClientRect(); if(!wr.width) return;
+    svg.setAttribute('viewBox','0 0 '+wr.width+' '+wr.height);
+    while(svg.firstChild) svg.removeChild(svg.firstChild);
+    const s=A3.steps[A3.idx], NS='http://www.w3.org/2000/svg', CO='#b6b6c4';
+    const arrow=(x1,y1,x2,y2)=>{ const l=document.createElementNS(NS,'line');
+      l.setAttribute('x1',x1);l.setAttribute('y1',y1);l.setAttribute('x2',x2);l.setAttribute('y2',y2);
+      l.setAttribute('stroke',CO);l.setAttribute('stroke-width','1.8');l.setAttribute('opacity','.85');svg.appendChild(l);
+      const ang=Math.atan2(y2-y1,x2-x1), s2=6, a=document.createElementNS(NS,'path');
+      a.setAttribute('d','M '+(x2-s2*Math.cos(ang-.5))+' '+(y2-s2*Math.sin(ang-.5))+' L '+x2+' '+y2+' L '+(x2-s2*Math.cos(ang+.5))+' '+(y2-s2*Math.sin(ang+.5)));
+      a.setAttribute('fill','none');a.setAttribute('stroke',CO);a.setAttribute('stroke-width','1.8');a.setAttribute('opacity','.85');
+      a.setAttribute('stroke-linejoin','round');a.setAttribute('stroke-linecap','round');svg.appendChild(a); };
+    s.tbl.forEach((row,i)=>{ const lr=document.getElementById('lr'+i), bt=document.getElementById('bt'+i), pr=document.getElementById('pr'+row.p);
+      if(!lr||!bt||!pr) return; const a=lr.getBoundingClientRect(), b=bt.getBoundingClientRect(), c=pr.getBoundingClientRect();
+      arrow(a.right-wr.left+3, a.top-wr.top+a.height/2, b.left-wr.left-4, b.top-wr.top+b.height/2);
+      arrow(b.right-wr.left+3, b.top-wr.top+b.height/2, c.left-wr.left-4, c.top-wr.top+c.height/2); });
+  }
+  function startA3(){ buildA3(); A3.idx=0; renderA3(); }   // 手动控帧：进入即定格第 0 帧
+  function stopA3(){ clearInterval(A3.timer); A3.timer=null; }
+  // 手动推进：点击 / 回车 → 当前动画 tab 的下一帧（末帧回到第 0 帧循环）
+  function animNext(){ if(cur===1){ A3.idx=(A3.idx+1)%A3.steps.length; renderA3(); } }
+  function animPrev(){ if(cur===1){ A3.idx=(A3.idx-1+A3.steps.length)%A3.steps.length; renderA3(); } }
+
+  // ② 前缀共享：逻辑块 → Block Table → 散落的物理块；两个 Block 0 都指向物理 Block 5 = 共享
+  function drawShare(){
+    const wrap=document.getElementById('shwrap'), svg=document.getElementById('shsvg');
+    if(!wrap||!svg) return;
+    const wr=wrap.getBoundingClientRect(); if(!wr.width) return;
+    svg.setAttribute('viewBox','0 0 '+wr.width+' '+wr.height);
+    while(svg.firstChild) svg.removeChild(svg.firstChild);
+    const NS='http://www.w3.org/2000/svg', CO='#b6b6c4';
+    const arrow=(x1,y1,x2,y2)=>{ const l=document.createElementNS(NS,'line');
+      l.setAttribute('x1',x1);l.setAttribute('y1',y1);l.setAttribute('x2',x2);l.setAttribute('y2',y2);
+      l.setAttribute('stroke',CO);l.setAttribute('stroke-width','1.8');l.setAttribute('opacity','.85');svg.appendChild(l);
+      const ang=Math.atan2(y2-y1,x2-x1), s2=6, a=document.createElementNS(NS,'path');
+      a.setAttribute('d','M '+(x2-s2*Math.cos(ang-.5))+' '+(y2-s2*Math.sin(ang-.5))+' L '+x2+' '+y2+' L '+(x2-s2*Math.cos(ang+.5))+' '+(y2-s2*Math.sin(ang+.5)));
+      a.setAttribute('fill','none');a.setAttribute('stroke',CO);a.setAttribute('stroke-width','1.8');a.setAttribute('opacity','.85');
+      a.setAttribute('stroke-linejoin','round');a.setAttribute('stroke-linecap','round');svg.appendChild(a); };
+    const R=id=>{ const e=document.getElementById(id); return e?e.getBoundingClientRect():null; };
+    const hop=(sId,dId)=>{ const s=R(sId), d=R(dId); if(!s||!d) return;
+      arrow(s.right-wr.left+3, s.top-wr.top+s.height/2, d.left-wr.left-4, d.top-wr.top+d.height/2); };
+    // Block 0（在英语里怎么）从块本身发出，直角折线抬到上方通道，绕过右侧 Block 1 再进共享行
+    const orthoHop=(sId,dId,lane)=>{ const s=R(sId), d=R(dId); if(!s||!d) return;
+      const cx=s.left-wr.left+s.width/2, yTop=s.top-wr.top;
+      const x2=d.left-wr.left, y2=d.top-wr.top+d.height/2;
+      const laneY=yTop-18, ix=x2-(lane||12), xe=x2-2;
+      const pts=[[cx,yTop],[cx,laneY],[ix,laneY],[ix,y2],[xe,y2]];
+      const pl=document.createElementNS(NS,'polyline');
+      pl.setAttribute('points',pts.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' '));
+      pl.setAttribute('fill','none');pl.setAttribute('stroke',CO);pl.setAttribute('stroke-width','1.8');
+      pl.setAttribute('opacity','.85');pl.setAttribute('stroke-linejoin','round');pl.setAttribute('stroke-linecap','round');svg.appendChild(pl);
+      const a=document.createElementNS(NS,'path');
+      a.setAttribute('d','M '+(xe-6)+' '+(y2-5)+' L '+xe+' '+y2+' L '+(xe-6)+' '+(y2+5));
+      a.setAttribute('fill','none');a.setAttribute('stroke',CO);a.setAttribute('stroke-width','1.8');a.setAttribute('opacity','.85');
+      a.setAttribute('stroke-linejoin','round');a.setAttribute('stroke-linecap','round');svg.appendChild(a); };
+    hop('lrA1','btA1'); hop('lrB1','btB1');
+    orthoHop('lrA0','btS',20); orthoHop('lrB0','btS',30);
+    hop('btS','pr5'); hop('btA1','pr0'); hop('btB1','pr3');
+  }
+
+  function redrawCur(){ if(cur===1) drawShare(); else if(cur===2) draw0(); }
+  window.addEventListener('resize', redrawCur);
+  if(document.fonts&&document.fonts.ready) document.fonts.ready.then(redrawCur);
+</script>
+</body>
+</html>
