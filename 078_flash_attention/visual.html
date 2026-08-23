@@ -1,0 +1,1132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FlashAttention · 为什么加速推理的同时还能节省显存</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body);"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap');
+  * { box-sizing:border-box; margin:0; padding:0; }
+
+  :root{
+    --bg:#f7f7f8; --card:#ffffff; --card-head:#fbfbfc;
+    --ink:#0d0d0d; --muted:#6e6e80; --dim:#8e8ea0;
+    --line:#e6e6e8; --line-2:#ececef;
+    --arrow:#c2c2cc;
+    --accent:#10a37f; --accent-deep:#0a7d61;          /* OpenAI 绿（重点色） */
+    --accent-soft:rgba(16,163,127,.08);
+    --accent-line:rgba(16,163,127,.28);
+
+    /* 矩阵语义色（沿用 063，为白底加深，保证在 #f7f7f8 上可读） */
+    --q:#7c5cf0;        /* Query  */
+    --k:#0e8fd4;        /* Key    */
+    --v:#e2691b;        /* Value  */
+    --score:#6b7280;    /* 分数 / 权重表 */
+    --out:#10a37f;      /* Output = 重点色 */
+
+    --csize:32px; --cgap:3px;      /* 矩阵格子边长 / 间距，JS 算高亮框要用 */
+    --mono:"JetBrains Mono","SF Mono",Menlo,monospace;
+    --sans:"Inter","PingFang SC",-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;
+  }
+
+  html,body{ height:100%; }
+  body{
+    background:var(--bg); color:var(--ink); font-family:var(--sans);
+    -webkit-font-smoothing:antialiased; overflow:hidden;   /* 滚动安全 1/3 */
+  }
+
+  .deck{ height:100vh; display:flex; flex-direction:column; }
+
+  /* 顶栏（持久） */
+  .topbar{ flex:0 0 auto; display:flex; align-items:center; justify-content:space-between;
+           gap:24px; padding:20px 46px; border-bottom:1px solid var(--line); }
+  .brand .ttl{ font-size:20px; font-weight:700; color:var(--ink); white-space:nowrap; }
+  .brand .ttl b{ color:var(--accent); font-weight:800; }
+  .tabs{ display:flex; gap:6px; padding:5px; border:1px solid var(--line);
+         border-radius:999px; background:#fff; }
+  .tab{ appearance:none; border:1px solid transparent; border-radius:999px; cursor:pointer;
+        background:transparent; color:var(--muted); font-family:var(--sans);
+        font-size:15px; font-weight:700; padding:9px 16px; white-space:nowrap; transition:.18s; }
+  .tab:hover{ color:var(--ink); }
+  .tab.active{ color:var(--accent-deep); background:var(--accent-soft); border-color:var(--accent-line); }
+
+  /* 舞台 + slide */
+  .stage{ position:relative; flex:1 1 auto; }
+  .slide{ position:absolute; inset:0; display:none; flex-direction:column;
+          padding:20px 46px 80px;   /* 底部滚动余量。1080p 下最高的一页内容 881px，20+881+80=981 < 986，仍不出滚动条 */
+          overflow-y:auto; overflow-x:hidden; }                /* 滚动安全 2/3 */
+  /* 窗口比 1080p 矮（预览 / 笔记本屏）时本来就要滚，底部余量给足，最后一行不贴边 */
+  @media (max-height:1023px){ .slide{ padding-bottom:220px; } }
+  .slide.active{ display:flex; }
+  .wrap{ width:100%; max-width:1340px; margin:0 auto;
+         flex:1 0 auto;                                        /* 滚动安全 3/3 */
+         display:flex; flex-direction:column;
+         justify-content:flex-start;                           /* 顶部对齐 */
+         align-items:center; text-align:center; gap:12px; }
+  .wrap.narrow{ max-width:760px; }
+  .wrap.mid{ max-width:1150px; }
+  .wrap.wide{ max-width:1150px; }        /* 内容不宽的 slide：卡片跟着收窄，别把表格列撑散 */
+
+  .head{ font-size:28px; line-height:1.2; font-weight:800; letter-spacing:-.2px; }
+  .head .hl{ color:var(--accent); }
+  .sub{ font-size:19px; line-height:1.35; color:var(--muted); margin-top:-3px; }
+
+  /* ===== 白卡片 ===== */
+  .panel{ width:100%; background:var(--card); border:1px solid var(--line); border-radius:14px;
+          padding:16px 24px 14px;
+          box-shadow:0 1px 2px rgba(13,13,13,.04), 0 8px 24px rgba(13,13,13,.03); }
+  .sec-name{ font-size:15px; font-weight:700; color:var(--ink); margin-bottom:14px; text-align:center; }
+
+  /* ===== 公式条 ===== */
+  .formula-recap{ display:flex; justify-content:center; background:var(--card-head);
+                  border:1px solid var(--line-2); border-radius:10px;
+                  padding:8px 16px; margin-bottom:12px; }
+  .formula-recap .katex{ font-size:2.05em; color:var(--ink); }
+
+  /* ===== 矩阵流 ===== */
+  .mtx-flow{ display:grid;
+             grid-template-columns:145px 30px 215px 30px 215px 30px 145px 30px 145px;
+             align-items:center; justify-items:center; justify-content:center;
+             gap:6px 10px; margin-bottom:10px; }
+  .mtx{ display:flex; flex-direction:column; align-items:center; gap:9px; font-family:var(--mono); }
+  .grid{ display:grid; gap:var(--cgap); position:relative; }
+  .cell{ width:var(--csize); height:var(--csize); border-radius:5px; }
+  .cell.c-q{ background:var(--q); }
+  .cell.c-k{ background:var(--k); }
+  .cell.c-v{ background:var(--v); }
+  .cell.c-score{ background:var(--score); }
+  .cell.c-out{ background:var(--out); }
+
+  /* 单个 token 的 q / k / v / o：在整块矩阵里就是一行（Kᵀ 里是一列）—— 下面表格里
+     "4 × d ~ 几 KB" 说的就是它。n×n 不高亮，它没有这样一条。
+     其余格子保持原色；选中的那一行/列换成同色系的浅色 + 原色描边 + 辉光（同 063 view4） */
+  .cell.hi{ position:relative; z-index:2; }
+  .cell.c-q.hi  { background:#d8ceff; box-shadow:0 0 0 2.5px var(--q),   0 0 14px rgba(124,92,240,.55); }
+  .cell.c-k.hi  { background:#bfe4fa; box-shadow:0 0 0 2.5px var(--k),   0 0 14px rgba(14,143,212,.55); }
+  .cell.c-v.hi  { background:#ffd9b0; box-shadow:0 0 0 2.5px var(--v),   0 0 14px rgba(226,105,27,.55); }
+  .cell.c-out.hi{ background:#b8e8d9; box-shadow:0 0 0 2.5px var(--out), 0 0 14px rgba(16,163,127,.55); }
+
+  .ml-sym{ font-size:26px; font-weight:800; line-height:1; text-align:center; }
+  .ml-sym sup{ font-size:.7em; }
+  .ml-sym.q{ color:var(--q); }
+  .ml-sym.k{ color:var(--k); }
+  .ml-sym.v{ color:var(--v); }
+  .ml-sym.s{ color:#4b5563; font-size:20px; }
+  .ml-sym.o{ color:var(--out); }
+  .ml-dim{ font-size:17px; color:var(--dim); text-align:center; line-height:1.35; }
+  .op{ font-size:34px; color:var(--arrow); font-weight:700; line-height:1; }
+
+
+  /* 放得进哪一层：整块矩阵 vs 单个 token 的向量 */
+  .fit-tbl{ max-width:900px; }
+  .fit-tbl tbody th{ white-space:nowrap; }
+  .fit-tbl td.tier{ font-family:var(--sans); font-weight:700; }
+  .fit-tbl td.tier.hbm { color:#3F8A43; }
+  .fit-tbl td.tier.sram{ color:#D9820F; }
+  /* 首列关键词高亮，颜色对齐各自的存储层级 */
+  .fit-tbl th b.kw{ display:inline-block; font-weight:700; border-radius:9px;
+                    padding:5px 12px; margin:-5px 0; }
+  .fit-tbl th b.kw.hbm { color:#2F7A34; background:rgba(63,138,67,.10);
+                         box-shadow:inset 0 0 0 1px rgba(63,138,67,.30); }
+  .fit-tbl th b.kw.sram{ color:#B8690A; background:rgba(217,130,15,.11);
+                         box-shadow:inset 0 0 0 1px rgba(217,130,15,.32); }
+  /* 强调框（同 071 的 .hcnote） */
+  .hcnote{ font-family:var(--sans); font-size:19.5px; color:var(--ink);
+           width:max-content; max-width:100%; margin:14px auto 10px;
+           background:var(--accent-soft); border:1px solid var(--accent-line); border-radius:12px;
+           padding:14px 28px; line-height:1.5; box-shadow:0 8px 24px rgba(13,13,13,.03); }
+  .hcnote b{ color:var(--accent-deep); font-weight:800; }
+  .hc-fml{ margin-top:6px; }
+  .hc-fml .katex{ font-size:1.55em; color:var(--ink); }
+  /* 递归式的展开推导 */
+  /* 结论框可点击展开 */
+  .recur{ width:100%; display:flex; flex-direction:column; align-items:center; }
+  .pf-toggle{ cursor:pointer; user-select:none; transition:border-color .15s, box-shadow .15s; }
+  .pf-toggle:hover{ border-color:var(--accent); box-shadow:0 10px 28px rgba(16,163,127,.10); }
+  .pf-hint{ display:block; margin-top:6px; font-size:15px; color:var(--accent-deep); font-weight:700; }
+  .recur.open .pf-hint::after{ content:' ▴（点击收起）'; }
+  .recur:not(.open) .pf-hint::after{ content:' ▾'; }
+  .pf-panel{ display:none; margin:14px 0 160px; }   /* 展开在结论下方，底部留出滚动余量 */
+  .recur.open .pf-panel{ display:block; }
+  .pf-panel .proof{ background:#eaf7f2; }
+  .proof .pf-lbl{ color:var(--muted); font-weight:700; font-size:17px; margin-bottom:4px; }   /* 浮层要不透明，否则底下代码会透出来 */
+  .proof{ font-family:var(--sans); font-size:19.5px; color:var(--muted);
+          width:max-content; max-width:100%; margin:0 auto; text-align:left;
+          background:var(--accent-soft); border:1px solid var(--accent-line); border-radius:12px;
+          padding:14px 30px 16px; box-shadow:0 18px 44px rgba(13,13,13,.13); }
+  .proof .katex-display{ margin:0; }
+  .proof .katex{ font-size:var(--pf,1.15em); color:var(--ink); }
+
+  /* ===== token 拆解：三步竖排 ===== */
+  .steps{ display:grid; grid-template-columns:auto auto; align-items:center;
+          justify-content:center; gap:0 30px; }
+  .step-body{ display:flex; justify-content:center; }
+  .steps > .step-body, .steps > .step-lbl{ padding:14px 0; }
+  .steps > :nth-child(1), .steps > :nth-child(2){ padding-top:4px; }
+  .steps > :nth-child(7), .steps > :nth-child(8){ padding-bottom:4px; }
+  /* 步骤之间的整条虚线分隔（横跨图 + 标号两列） */
+  .sdiv{ grid-column:1 / -1; height:0; border-top:1.5px dashed #d2d2da; }
+  .step-lbl{ display:flex; flex-direction:column; align-items:flex-start; }
+  .lbl-row{ display:flex; align-items:center; gap:13px; white-space:nowrap; }
+  /* 公式下面的一句说明，左边缩进对齐公式，用和 .hcnote 一样的强调框 */
+  .lbl-note{ margin:12px 0 0; max-width:362px; font-family:var(--sans);
+             font-size:17px; line-height:1.6; color:var(--ink); text-align:left;
+             background:var(--accent-soft); border:1px solid var(--accent-line);
+             border-radius:11px; padding:10px 15px; }
+  .step-lbl .num{ width:36px; height:36px; border-radius:50%; background:var(--accent);
+                  color:#fff; font-size:20px; font-weight:800; flex:0 0 auto;
+                  display:flex; align-items:center; justify-content:center; }
+  .step-lbl .fml{ font-size:24px; color:var(--ink); }
+
+  /* 步骤 1 的内部排布 */
+  .s1{ --rowh:42px;
+       display:grid; grid-template-columns:auto auto;
+       grid-template-areas:
+         ".     krow"
+         "qcol  sgrid";
+       align-items:center; justify-items:center; justify-content:center; gap:18px 22px; }
+  .a-krow{ grid-area:krow; }
+  .a-qcol{ grid-area:qcol; } .a-sgrid{ grid-area:sgrid; }
+
+  /* 步骤 3 竖排三行：p₁×V / = 展开的加权和 / = o₁，行首的 = 上下对齐 */
+  .s3{ display:grid; grid-template-columns:auto auto;
+       align-items:center; justify-items:start; gap:16px 12px; }
+  .s3-row1{ display:flex; align-items:center; gap:15px; justify-self:center; }
+  .s3-lead{ font-size:26px; color:var(--ink); line-height:1; }
+  /* 加权和：一项 = 向量 × 权重，横着排开 */
+  .s3-eq{ display:flex; align-items:center; gap:8px; }
+  .eq-t{ display:flex; align-items:center; gap:5px; }
+  .eq-op{ font-size:21px; color:var(--ink); line-height:1; }
+  .eq-mul{ font-size:18px; color:var(--ink); line-height:1; }
+
+  .dc-col{ display:grid; grid-template-rows:repeat(4,var(--rowh,42px)); gap:8px;
+           align-items:center; justify-items:center; }
+  .s3{ --rowh:36px; }
+  .dc-krow{ display:grid; grid-template-columns:repeat(4,78px); gap:8px;
+            align-items:center; justify-items:center; }
+  .dc-sgrid{ display:grid; grid-template-columns:repeat(4,78px); grid-template-rows:repeat(4,var(--rowh));
+             gap:8px; align-items:center; justify-items:center; position:relative; }
+  /* 虚线框住 S 的第 1 行，和第 2 步的放大框配对 */
+  .row-hl{ position:absolute; left:-13px; right:-13px; top:-8px; height:calc(var(--rowh) + 16px);
+           border:2.2px dashed #4b5563; border-radius:11px; pointer-events:none;
+           background:rgba(107,114,128,.07); }
+  /* S 的第 1 行 —— 后面两步一直盯着它，用和 Tab2 同一套高亮（浅底 + 原色描边 + 辉光） */
+  .box.s.hi{ position:relative; z-index:2; font-weight:600;
+             background:#dbe1ea; border-color:var(--score); color:#1f2937;
+             box-shadow:0 0 0 2.5px var(--score), 0 0 14px rgba(107,114,128,.55); }
+
+  .box{ width:72px; height:40px; border-radius:6px; border:1.6px solid;
+        display:flex; align-items:center; justify-content:center; font-size:18px; }
+  .box.s{ border-color:#ccd1d9; background:#fff; color:#4b5563; }
+  .box.p{ width:145px; height:70px; border-color:#b9bfc8;
+          background:#f1f2f4; color:#3f4650; font-size:26px; }
+
+  /* 第 2 步：放大框展开 P 第 1 行的 softmax */
+  .p-full{ display:flex; flex-direction:column; align-items:center; gap:8px; }
+  .zoom-box{ display:inline-flex; flex-direction:column; align-items:center; gap:9px;
+             border:2px dashed var(--score); border-radius:14px;
+             background:rgba(107,114,128,.07); padding:10px 18px; }
+  .zoom-cap{ font-size:20px; font-weight:600; color:#4b5563; }
+  /* 上排 S 的分数 → 箭头 → 下排 softmax 结果，逐列对齐 */
+  .zoom-grid{ display:grid; grid-template-columns:auto 145px 145px auto 145px;
+              gap:9px 14px; align-items:center; justify-items:center; }
+  .zoom-lbl{ font-size:21px; color:#4b5563; white-space:nowrap;
+             justify-self:end; padding-right:2px; }
+  .zoom-arrow{ font-size:26px; line-height:1; color:var(--arrow); }
+
+  /* d 维向量：画成一条 d 个格子的小条 */
+  .vec{ display:flex; gap:2px; }
+  .vec .c{ width:19px; height:24px; border-radius:3px; }
+  .vec.vert{ flex-direction:column; }
+  .vec.vert .c{ width:23px; height:17px; }
+  .vec.q .c{ background:var(--q); }
+  .vec.k .c{ background:var(--k); }
+  .vec.v .c{ background:var(--v); }
+  .vec.o .c{ background:var(--out); }
+  .vec.s .c{ background:var(--score); }
+  .vgrp{ display:flex; align-items:center; gap:9px; }
+  .vgrp.col{ position:relative; }
+  .vgrp.col .vlbl{ position:absolute; right:calc(100% + 9px); top:50%; transform:translateY(-50%); }
+  .vlbl{ font-size:21px; line-height:1; }
+  .vlbl.q{ color:var(--q); } .vlbl.k{ color:var(--k); }
+  .vlbl.v{ color:var(--v); } .vlbl.o{ color:var(--accent-deep); }
+  .vlbl.s{ color:#4b5563; }
+
+  .dots{ color:var(--dim); font-size:26px; line-height:1; }
+  .dc-lbl{ font-size:25px; line-height:1; }
+  .dc-lbl.q{ color:var(--q); } .dc-lbl.k{ color:var(--k); }
+  .dc-lbl.v{ color:var(--v); } .dc-lbl.s{ color:#4b5563; }
+  .dc-lbl.o{ color:var(--accent-deep); }
+  .dc-mid{ font-size:26px; color:var(--ink); white-space:nowrap; }
+
+  /* ===== 存储层级金字塔 ===== */
+  .pyramid{ width:100%; max-width:620px; height:auto; display:block; margin:0 auto; }
+  .py-in{ font-family:var(--sans); font-weight:700; fill:#fff; text-anchor:middle; }
+  .py-lbl{ font-family:var(--sans); font-weight:700; font-size:22px; }
+  .py-val{ font-family:var(--sans); font-weight:600; font-size:22px; fill:var(--ink); }
+
+  /* ===== 参数表 ===== */
+  .spec-tbl{ border-collapse:separate; border-spacing:0; width:100%;
+             margin:0 auto; font-size:18px; }
+  .spec-tbl th, .spec-tbl td{ padding:10px 14px; border-bottom:1px solid var(--line-2);
+                              text-align:center; white-space:nowrap; }
+  .spec-tbl thead th{ background:var(--card-head); color:var(--muted);
+                      font-weight:700; font-size:15px; border-bottom:1px solid var(--line); }
+  .spec-tbl thead th:first-child{ background:transparent; border-bottom-color:var(--line-2); }
+  .spec-tbl tbody th{ text-align:left; color:var(--muted); font-weight:600; }
+  .spec-tbl td{ font-family:var(--mono); font-weight:600; color:var(--ink); }
+  .spec-tbl tr.r-sram th{ color:var(--accent-deep); background:var(--accent-soft); }
+  .spec-tbl tr.r-sram td{ color:var(--accent-deep); background:var(--accent-soft); }
+  .spec-tbl tr:last-child th, .spec-tbl tr:last-child td{ border-bottom:none; }
+  /* ===== Tab4：复刻 Kernel Fusion 参考图 ===== */
+  /* 图在左、代码在右，两边等高 */
+  .fuse-wrap{ display:flex; justify-content:center; padding:6px 0 2px; }
+  .fusesvg{ width:100%; max-width:940px; height:auto; display:block; }
+  /* 单个代码框居中（Tab5 的融合实现） */
+  .onecode{ display:flex; justify-content:center; }
+  .onecode .cbnote{ margin-top:9px; }
+  /* 代码行数比图矮，撑高后让代码在框里上下居中 */
+  .onecode .codebox pre{ font-size:var(--tcode,19px); }
+
+  /* ===== Tab8：Tiling 示意（参考 FlashAttention note 的 Figure 2） ===== */
+  .tile-wrap{ display:flex; align-items:center; justify-content:center; gap:26px; padding:2px 0 0; }
+  .tile-col{ display:flex; flex-direction:column; align-items:center; }
+  .tilesvg{ width:660px; height:auto; display:block; }
+  .tile-wrap .codebox pre{ font-size:var(--tcode,15px); }
+  .tilesvg .fl { font-family:var(--sans); font-size:15px; font-weight:700; fill:#1f2937; }
+  .tilesvg .flb{ font-family:var(--sans); font-size:16px; font-weight:800; fill:#1f2937; }
+  .tilesvg .flm{ font-family:var(--sans); font-size:14px; font-weight:700; }
+  .tilesvg .fll{ font-family:var(--sans); font-size:16px; font-weight:800; }
+  .tilesvg .mtx{ font-family:var(--sans); font-size:21px; font-weight:800; }
+  .tilesvg .dim{ font-family:var(--sans); font-size:13px; font-weight:600; fill:var(--dim); }
+  .tilesvg .blk{ font-family:var(--mono); font-weight:700; fill:#fff; }
+  .tilesvg .rowlbl{ font-family:var(--mono); font-size:15px; font-weight:700; }
+  .tilesvg .inb{ font-family:var(--mono); font-size:15px; font-weight:700; fill:#fff; text-anchor:middle; }
+  .tile-legend{ font-family:var(--sans); font-size:16.5px; color:var(--muted); margin:10px 0 0; }
+  .tile-legend b{ color:var(--ink); font-weight:800; }
+  .tile-legend .lg-hbm{ color:#4E9A4E; font-weight:800; }
+  .tile-legend .lg-sram{ color:#D9820F; font-weight:800; }
+  .tile-wrap + .tile-legend + .pdiv{ margin-top:14px; }
+  #t8 .onecode .codebox pre{ font-size:15px; }
+  .fs-h{ font-family:var(--sans); font-size:18px; font-weight:600; fill:#111; }
+  .fs-cap{ font-family:var(--sans); font-size:22px; font-weight:800; fill:#111; }
+  .fs-note{ font-family:var(--sans); font-size:18px; fill:#4b5563; }
+
+  /* ===== 左右两栏对照：3-pass vs 2-pass 两个代码窗 ===== */
+  .cmp{ display:flex; justify-content:center; align-items:stretch; gap:16px; width:100%; }
+  /* 代码框撑到等高，下面的定义式才在同一条水平线上 */
+  .cbcol > .codebox{ flex:1 1 auto; }
+  /* 左 -> 右 的流向箭头，垂直对到代码框中部（要往下让开标题的高度） */
+  .cmp-arrow{ align-self:center; margin-top:var(--arrowdy,40px); flex:0 0 auto; display:block; }
+  .cbcol{ display:flex; flex-direction:column; }
+  /* 代码框上方的大标题：右边用重点色，和标题里的「在线Softmax」呼应 */
+  /* 定高 + 居中：中文标题的行盒比英文高，不定死两个代码框顶边会错开 */
+  .cbtitle{ font-family:var(--sans); font-size:21px; font-weight:800; color:var(--ink);
+            height:28px; line-height:1; display:flex; align-items:center;
+            justify-content:center; margin-bottom:12px; }
+  .cbtitle.good{ color:var(--accent-deep); }
+
+  /* ===== Tab5：为什么减 m 是恒等变形 ===== */
+  /* 溢出的动机，用红框和下面绿色的结论区分开 */
+  .whynote{ font-family:var(--sans); font-size:17.5px; line-height:1.6; color:var(--ink);
+            width:max-content; max-width:100%; text-align:left; margin:0 0 0 6px;
+            background:rgba(163,57,44,.05); border:1px solid rgba(163,57,44,.26);
+            border-radius:12px; padding:12px 18px; }
+  .whynote b{ color:#A3392C; font-weight:800; }
+  /* Tab1 结论高亮框 */
+  .keynote{ font-family:var(--sans); font-size:20px; line-height:1.62; font-weight:700;
+            color:var(--ink); text-align:center; margin:16px 0 0;
+            background:rgba(16,163,127,.07); border:1px solid rgba(16,163,127,.32);
+            border-radius:14px; padding:16px 26px; }
+  .keynote b{ color:var(--accent-deep); font-weight:800; }
+  /* 推导：两行，第一行是 softmax 定义，第二行是 safe softmax 的恒等变形 */
+  .deriv{ display:grid; grid-template-columns:auto auto auto auto;
+          align-items:center; justify-content:center;
+          gap:18px 16px; width:100%; margin:14px 0 12px; }
+  .deriv .d-lhs{ justify-self:end; }
+  .deriv .d-rhs{ justify-self:start; }
+  .deriv .d-rhs.span{ grid-column:3 / -1; }
+  /* 行尾小注：灰色 = 旧做法，绿色 = 新做法 */
+  /* 代码框正下方的定义式 + 一句小注 */
+  .cbdef{ margin:var(--cbdef-mt,34px) 0 var(--cbdef-mb,16px); text-align:center; }
+  .cbdef .katex{ font-size:var(--cbdef-fs,2.35em); color:var(--ink); }
+  .cbnote{ margin:0 0 var(--cbnote-mb,10px); text-align:center; font-family:var(--sans);
+           font-size:17.5px; color:var(--muted); }
+  .cbnote.bad{ color:#A3392C; }
+  .cbnote.bad b{ color:#A3392C; }
+  .cbnote b{ font-weight:800; color:#4b5563; }
+  .cbnote.good{ color:var(--accent-deep); }
+  .cbnote.good b{ color:var(--accent-deep); }
+  /* 只放大公式格里的 KaTeX —— 红框也在 .deriv 里，别把它的 x / eˣ 一起撑大 */
+  .deriv .d-lhs .katex,
+  .deriv .d-eq  .katex,
+  .deriv .d-rhs .katex{ font-size:2em; color:var(--ink); }
+
+  /* 面板中间的分段线 + 过渡句 */
+  .pdiv{ height:0; border-top:1.5px dashed #d2d2da; margin:10px 0 14px; }
+
+  /* 代码窗：沿用 074 的深色 codebox（#1d1f28 + 三个圆点 + 文件名） */
+  .codebox{ background:#1d1f28; border:1px solid rgba(255,255,255,.13); border-radius:12px;
+            overflow:hidden; text-align:left; width:max-content; max-width:100%;
+            box-shadow:0 10px 30px rgba(13,13,13,.28); }
+  .codebox .cbar{ display:flex; align-items:center; gap:8px; padding:9px 16px;
+                  background:#272a36; border-bottom:1px solid rgba(255,255,255,.09); }
+  .cbar .d{ width:12px; height:12px; border-radius:50%; }
+  .cbar .d.r{ background:#ff5f57; } .cbar .d.y{ background:#febc2e; } .cbar .d.g{ background:#28c840; }
+  .cbar .fname{ margin-left:10px; font-family:var(--mono); font-size:14px; color:#9aa3b5; }
+  .codebox pre{ margin:0; padding:15px 20px 17px; font-family:var(--mono); font-size:var(--cfs,15px);
+                line-height:1.62; color:#c3cad9; white-space:pre; min-width:var(--codew,48ch); }
+  .codebox .kw { color:#35d0a3; font-weight:700; }   /* def / for / in / return */
+  .codebox .fn { color:#e8ecf5; font-weight:800; }   /* 函数名 */
+  .codebox .bi { color:#f6c486; }                    /* max / exp / inf / 数字 */
+  .codebox .cmt{ color:#7f8a9e; }                    /* # pass N */
+  .codebox .cf { color:#8ef0c8; font-weight:700;     /* 修正因子：整页唯一的高亮 */
+                 background:rgba(53,208,163,.17); border-radius:5px;
+                 padding:1px 3px; margin:0 -3px; }
+
+</style>
+</head>
+<body>
+<div class="deck">
+  <div class="topbar">
+    <div class="brand"><span class="ttl">FlashAttention：为什么加速推理的同时<b>还能节省显存</b></span></div>
+    <nav class="tabs">
+      <button class="tab active" data-i="0">存储层级</button>
+      <button class="tab" data-i="1">注意力机制</button>
+      <button class="tab" data-i="2">矩阵计算</button>
+      <button class="tab" data-i="3">算子融合</button>
+      <button class="tab" data-i="4">数值溢出</button>
+      <button class="tab" data-i="5">在线Softmax</button>
+      <button class="tab" data-i="6">FlashAttention</button>
+      <button class="tab" data-i="7">分块Tiling</button>
+    </nav>
+  </div>
+
+  <div class="stage">
+
+    <!-- ===================== TAB 1 · 存储层级 ===================== -->
+    <section class="slide active">
+      <div class="wrap narrow">
+        <div class="head">GPU 显存是分层的：<span class="hl">层级越高越快，也越小</span></div>
+
+        <div class="panel">
+          <svg class="pyramid" viewBox="8 0 562 236" shape-rendering="geometricPrecision" role="img" aria-label="GPU 存储层级金字塔">
+            <defs>
+              <clipPath id="pyClip"><polygon points="140,8 265,228 15,228"/></clipPath>
+            </defs>
+
+            <!-- 三层色带：整块矩形被三角形裁切，斜边只由 clip 生成一条边，不叠描边 -->
+            <g clip-path="url(#pyClip)">
+              <rect x="0" y="0"   width="290" height="72" fill="#F0921F"/>
+              <rect x="0" y="72"  width="290" height="78" fill="#4E9A4E"/>
+              <rect x="0" y="150" width="290" height="86" fill="#7FBDBD"/>
+              <line x1="0" y1="72"  x2="290" y2="72"  stroke="#fff" stroke-width="2"/>
+              <line x1="0" y1="150" x2="290" y2="150" stroke="#fff" stroke-width="2"/>
+            </g>
+
+            <!-- 外轮廓：单独一条 path，压住裁切边 -->
+            <polygon points="140,8 265,228 15,228" fill="none"
+                     stroke="#0d0d0d" stroke-width="2.2" stroke-linejoin="round"/>
+
+            <!-- 层内文字 -->
+            <text class="py-in" x="140" y="48"  font-size="14">GPU</text>
+            <text class="py-in" x="140" y="66"  font-size="14">SRAM</text>
+            <text class="py-in" x="140" y="102" font-size="21">GPU</text>
+            <text class="py-in" x="140" y="129" font-size="21">HBM</text>
+            <text class="py-in" x="140" y="180" font-size="21">Main Memory</text>
+            <text class="py-in" x="140" y="207" font-size="21">(CPU DRAM)</text>
+
+            <!-- 右侧标注：层名右对齐到 x=345，数值统一从 x=349 起排 -->
+            <text class="py-lbl" x="345" y="60"  text-anchor="end" fill="#D9820F">SRAM</text>
+            <text class="py-val" x="349" y="60">：19 TB/s（20 MB）</text>
+
+            <text class="py-lbl" x="345" y="116" text-anchor="end" fill="#3F8A43">HBM</text>
+            <text class="py-val" x="349" y="116">：1.5 TB/s（40 GB）</text>
+
+            <text class="py-lbl" x="345" y="194" text-anchor="end" fill="#3E9797">DRAM</text>
+            <text class="py-val" x="349" y="194">：12.8 GB/s（&gt;1 TB）</text>
+          </svg>
+        </div>
+
+        <div class="panel">
+          <table class="spec-tbl">
+            <thead>
+              <tr>
+                <th></th>
+                <th>A100</th>
+                <th>H100</th>
+                <th>H200</th>
+                <th>B200</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="r-sram">
+                <th>SRAM 容量</th>
+                <td>20.25 MB</td><td>33 MB</td><td>33 MB</td><td>37 MB</td>
+              </tr>
+              <tr>
+                <th>HBM 容量</th>
+                <td>40 GB</td><td>80 GB</td><td>141 GB</td><td>192 GB</td>
+              </tr>
+              <tr>
+                <th>HBM 带宽</th>
+                <td>1.55 TB/s</td><td>3.35 TB/s</td><td>4.8 TB/s</td><td>8.0 TB/s</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="keynote">想让 GPU 跑得快，就得<b>尽量在 SRAM 里算完</b>，少在中途<b>从 HBM 读写数据</b>。</div>
+
+      </div>
+    </section>
+
+    <!-- ===================== TAB 2 · 注意力机制 ===================== -->
+    <section class="slide">
+      <div class="wrap mid">
+        <div class="head">假设提示词有 n 个 token、每个 token 向量 d 维 —— Q、K、V 各是一个 <span class="hl">n×d</span> 矩阵</div>
+
+        <div class="panel">
+          <div class="formula-recap">
+            \[\text{Attention}(\textcolor{#7c5cf0}{Q},\textcolor{#0e8fd4}{K},\textcolor{#e2691b}{V})=\text{softmax}\!\left(\frac{\textcolor{#7c5cf0}{Q}\textcolor{#0e8fd4}{K^{\top}}}{\sqrt{d_k}}\right)\textcolor{#e2691b}{V}\]
+          </div>
+          <div class="mtx-flow">
+            <div class="mtx"><span class="ml-sym q">Q</span>
+              <div class="grid slice" id="g-q"></div><span class="ml-dim">n × d</span></div>
+            <div class="op">×</div>
+            <div class="mtx"><span class="ml-sym k">K<sup>⊤</sup></span>
+              <div class="grid slice" id="g-kt"></div><span class="ml-dim">d × n</span></div>
+            <div class="op">=</div>
+            <div class="mtx"><span class="ml-sym s">softmax(QK<sup>⊤</sup>/√d)</span>
+              <div class="grid" id="g-score"></div><span class="ml-dim">n × n</span></div>
+            <div class="op">×</div>
+            <div class="mtx"><span class="ml-sym v">V</span>
+              <div class="grid slice" id="g-v"></div><span class="ml-dim">n × d</span></div>
+            <div class="op">=</div>
+            <div class="mtx"><span class="ml-sym o">O</span>
+              <div class="grid slice" id="g-out"></div><span class="ml-dim">n × d</span></div>
+          </div>
+
+          <div class="hcnote">n 一般在 <b>100000</b> 量级还在往上涨，d 一般是 <b>32 / 64 / 128</b></div>
+          <table class="spec-tbl fit-tbl">
+            <tbody>
+              <tr>
+                <th><b class="kw hbm">整块矩阵</b> Q、Kᵀ、softmax(QKᵀ/√d)</th>
+                <td>n×d &gt; 32 MB　n×n &gt; 32 GB</td>
+                <td class="tier hbm">只能放 HBM</td>
+              </tr>
+              <tr>
+                <th><b class="kw sram">单个 token</b> 的 q、k、v、o <b class="kw sram">向量</b></th>
+                <td>4 × d ~ 几 KB</td>
+                <td class="tier sram">塞得进 SRAM</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== TAB 3 · 矩阵计算 ===================== -->
+    <section class="slide">
+      <div class="wrap wide">
+        <div class="head">深入矩阵计算内部：<span class="hl">注意力分数绝对值 → Softmax 相对值 → 加权 v 向量</span></div>
+
+        <div class="panel">
+          <div class="steps">
+
+            <!-- 第 1 步 -->
+            <div class="step-lbl">
+              <div class="lbl-row"><span class="num">1</span><span class="fml">\(S=QK^{\top}\)</span></div>
+              <div class="lbl-note">第一行的 n 个值，就是第一个 token 对其他所有 token 的注意力绝对值分数</div>
+            </div>
+            <div class="step-body">
+              <div class="s1">
+                <div class="dc-krow a-krow">
+                  <div class="vgrp col"><div class="vec k vert"><i class="c"></i><i class="c"></i><i class="c"></i><i class="c"></i></div><span class="vlbl k">\(k_1\)</span></div>
+                  <div class="vgrp col"><div class="vec k vert"><i class="c"></i><i class="c"></i><i class="c"></i><i class="c"></i></div><span class="vlbl k">\(k_2\)</span></div>
+                  <span class="dots">⋯</span>
+                  <div class="vgrp col"><div class="vec k vert"><i class="c"></i><i class="c"></i><i class="c"></i><i class="c"></i></div><span class="vlbl k">\(k_N\)</span></div>
+                </div>
+                <div class="dc-col a-qcol">
+                  <div class="vgrp"><span class="vlbl q">\(q_1\)</span><div class="vec q"><i class="c"></i><i class="c"></i><i class="c"></i><i class="c"></i></div></div>
+                  <div class="vgrp"><span class="vlbl q">\(q_2\)</span><div class="vec q"><i class="c"></i><i class="c"></i><i class="c"></i><i class="c"></i></div></div>
+                  <span class="dots">⋮</span>
+                  <div class="vgrp"><span class="vlbl q">\(q_N\)</span><div class="vec q"><i class="c"></i><i class="c"></i><i class="c"></i><i class="c"></i></div></div>
+                </div>
+                <div class="dc-sgrid a-sgrid">
+                  <span class="row-hl"></span>
+                  <div class="box s hi">\(q_1k_1\)</div>
+                  <div class="box s hi">\(q_1k_2\)</div>
+                  <span class="dots">⋯</span>
+                  <div class="box s hi">\(q_1k_N\)</div>
+                  
+                  <div class="box s">\(q_2k_1\)</div>
+                  <div class="box s">\(q_2k_2\)</div>
+                  <span class="dots">⋯</span>
+                  <div class="box s">\(q_2k_N\)</div>
+                  
+                  <span class="dots">⋮</span>
+                  <span class="dots">⋮</span>
+                  <span class="dots">⋱</span>
+                  <span class="dots">⋮</span>
+                  
+                  <div class="box s">\(q_Nk_1\)</div>
+                  <div class="box s">\(q_Nk_2\)</div>
+                  <span class="dots">⋯</span>
+                  <div class="box s">\(q_Nk_N\)</div>
+                  
+                </div>
+              </div>
+            </div>
+
+            <div class="sdiv"></div>
+
+            <!-- 第 2 步 -->
+            <div class="step-lbl">
+              <div class="lbl-row"><span class="num">2</span><span class="fml">\(P=\text{Softmax}(S)\)</span></div>
+              <div class="lbl-note">把注意力绝对值分数，归一化为总和为 1 的概率分布分数</div>
+            </div>
+            <div class="step-body">
+              <div class="p-full">
+                <div class="zoom-box">
+                  <div class="zoom-grid">
+                    <span class="zoom-lbl">\(s_1 =\)</span>
+                    <div class="box s">\(q_1k_1\)</div>
+                    <div class="box s">\(q_1k_2\)</div>
+                    <span class="dots">⋯</span>
+                    <div class="box s">\(q_1k_N\)</div>
+
+                    <span></span>
+                    <span class="zoom-arrow">↓</span>
+                    <span class="zoom-arrow">↓</span>
+                    <span></span>
+                    <span class="zoom-arrow">↓</span>
+
+                    <span class="zoom-lbl">\(p_1 =\)</span>
+                    <div class="box p">\(\frac{e^{q_1k_1}}{\sum_x e^{q_1k_x}}\)</div>
+                    <div class="box p">\(\frac{e^{q_1k_2}}{\sum_x e^{q_1k_x}}\)</div>
+                    <span class="dots">⋯</span>
+                    <div class="box p">\(\frac{e^{q_1k_N}}{\sum_x e^{q_1k_x}}\)</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="sdiv"></div>
+
+            <!-- 第 3 步 -->
+            <div class="step-lbl">
+              <div class="lbl-row"><span class="num">3</span><span class="fml">\(O=PV\)</span></div>
+              <div class="lbl-note">输出向量等于所有 token 对应的 Value 向量用注意力分布系数加权后累加</div>
+            </div>
+            <div class="step-body">
+              <div class="s3">
+                <span></span>
+                <div class="s3-row1">
+                  <div class="vgrp"><span class="vlbl s">\(p_1\)</span><div class="vec s"><i class="c"></i><i class="c"></i><i class="c"></i><i class="c"></i><i class="c"></i><i class="c"></i></div></div>
+                  <div class="dc-mid">\(\times\)</div>
+                  <div class="dc-col">
+                    <div class="vgrp"><span class="vlbl v">\(v_1\)</span><div class="vec v"><i class="c"></i><i class="c"></i><i class="c"></i><i class="c"></i></div></div>
+                    <div class="vgrp"><span class="vlbl v">\(v_2\)</span><div class="vec v"><i class="c"></i><i class="c"></i><i class="c"></i><i class="c"></i></div></div>
+                    <span class="dots">⋮</span>
+                    <div class="vgrp"><span class="vlbl v">\(v_N\)</span><div class="vec v"><i class="c"></i><i class="c"></i><i class="c"></i><i class="c"></i></div></div>
+                  </div>
+                </div>
+
+                <span class="s3-lead">\(=\)</span>
+                <div class="s3-eq">
+                  <span class="eq-t"><span class="vlbl v">\(v_1\)</span><span class="vec v eq-vec"><i class="c"></i><i class="c"></i><i class="c"></i><i class="c"></i></span><span class="eq-mul">×</span><span class="vlbl s">\(p_{11}\)</span></span>
+                  <span class="eq-op">+</span>
+                  <span class="eq-t"><span class="vlbl v">\(v_2\)</span><span class="vec v eq-vec"><i class="c"></i><i class="c"></i><i class="c"></i><i class="c"></i></span><span class="eq-mul">×</span><span class="vlbl s">\(p_{12}\)</span></span>
+                  <span class="eq-op">+</span>
+                  <span class="dots">⋯</span>
+                  <span class="eq-op">+</span>
+                  <span class="eq-t"><span class="vlbl v">\(v_N\)</span><span class="vec v eq-vec"><i class="c"></i><i class="c"></i><i class="c"></i><i class="c"></i></span><span class="eq-mul">×</span><span class="vlbl s">\(p_{1N}\)</span></span>
+                </div>
+
+                <span class="s3-lead">\(=\)</span>
+                <div class="vgrp"><span class="vlbl o">\(o_1\)</span><div class="vec o"><i class="c"></i><i class="c"></i><i class="c"></i><i class="c"></i></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ===== Tab4 · 标准实现的 HBM 往返 与 kernel fusion ===== -->
+    <section class="slide">
+      <div class="wrap mid">
+        <div class="head">注意力矩阵计算的瓶颈：<span class="hl">大量 GPU 消耗在等待 HBM</span></div>
+
+        <div class="panel">
+          <div class="fuse-wrap">
+            <svg class="fusesvg" viewBox="0 0 900 572" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+    <marker id="ah" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#111111"/></marker>
+    <marker id="ao" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#B3541E"/></marker>
+  </defs>
+            <text class="fs-h" x="20" y="26">Memory: <tspan fill="#4E9A4E">HBM</tspan></text><text class="fs-h" x="288" y="26" text-anchor="middle">Compute</text>
+            <rect x="20" y="46" width="200" height="120" rx="3" fill="#4E9A4E"/>
+            <line x1="42" y1="66" x2="206" y2="66" stroke="#111111" stroke-width="2.2" marker-end="url(#ah)"/>
+            <rect x="37" y="85" width="22" height="22" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <rect x="77" y="85" width="22" height="22" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <rect x="117" y="85" width="22" height="22" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <rect x="157" y="85" width="22" height="22" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <circle cx="48" cy="128" r="11" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <circle cx="88" cy="128" r="11" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <circle cx="128" cy="128" r="11" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <circle cx="168" cy="128" r="11" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <line x1="206" y1="150" x2="42" y2="150" stroke="#111111" stroke-width="2.2" marker-end="url(#ah)"/>
+            <rect x="277" y="69" width="22" height="22" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <line x1="288" y1="96" x2="288" y2="118" stroke="#111111" stroke-width="2.2" marker-end="url(#ah)"/>
+            <circle cx="288" cy="136" r="11" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <path d="M220 66 H348 V150 H226" fill="none" stroke="#B3541E" stroke-width="2.2" marker-end="url(#ao)"/>
+            <rect x="20" y="186" width="200" height="120" rx="3" fill="#4E9A4E"/>
+            <line x1="42" y1="206" x2="206" y2="206" stroke="#111111" stroke-width="2.2" marker-end="url(#ah)"/>
+            <circle cx="48" cy="236" r="11" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <circle cx="88" cy="236" r="11" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <circle cx="128" cy="236" r="11" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <circle cx="168" cy="236" r="11" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <polygon points="48,256 60,277 36,277" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <polygon points="88,256 100,277 76,277" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <polygon points="128,256 140,277 116,277" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <polygon points="168,256 180,277 156,277" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <line x1="206" y1="290" x2="42" y2="290" stroke="#111111" stroke-width="2.2" marker-end="url(#ah)"/>
+            <circle cx="288" cy="220" r="11" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <line x1="288" y1="236" x2="288" y2="258" stroke="#111111" stroke-width="2.2" marker-end="url(#ah)"/>
+            <polygon points="288,264 300,285 276,285" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <path d="M220 206 H348 V290 H226" fill="none" stroke="#B3541E" stroke-width="2.2" marker-end="url(#ao)"/>
+            <rect x="20" y="326" width="200" height="120" rx="3" fill="#4E9A4E"/>
+            <line x1="42" y1="346" x2="206" y2="346" stroke="#111111" stroke-width="2.2" marker-end="url(#ah)"/>
+            <polygon points="48,364 60,385 36,385" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <polygon points="88,364 100,385 76,385" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <polygon points="128,364 140,385 116,385" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <polygon points="168,364 180,385 156,385" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <polygon points="48,395 60,408 48,421 36,408" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <polygon points="88,395 100,408 88,421 76,408" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <polygon points="128,395 140,408 128,421 116,408" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <polygon points="168,395 180,408 168,421 156,408" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <line x1="206" y1="430" x2="42" y2="430" stroke="#111111" stroke-width="2.2" marker-end="url(#ah)"/>
+            <polygon points="288,348 300,369 276,369" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <line x1="288" y1="376" x2="288" y2="398" stroke="#111111" stroke-width="2.2" marker-end="url(#ah)"/>
+            <polygon points="288,403 300,416 288,429 276,416" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <path d="M220 346 H348 V430 H226" fill="none" stroke="#B3541E" stroke-width="2.2" marker-end="url(#ao)"/>
+            <path d="M392 246 H442" stroke="#c9c9d2" stroke-width="16"/>
+            <path d="M438 226 L468 246 L438 266 z" fill="#c9c9d2"/>
+            <text class="fs-h" x="496" y="26">Memory: <tspan fill="#4E9A4E">HBM</tspan></text><text class="fs-h" x="764" y="26" text-anchor="middle">Compute</text>
+            <rect x="496" y="60" width="200" height="74" rx="3" fill="#4E9A4E"/>
+            <line x1="518" y1="80" x2="682" y2="80" stroke="#111111" stroke-width="2.2" marker-end="url(#ah)"/>
+            <rect x="513" y="99" width="22" height="22" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <rect x="553" y="99" width="22" height="22" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <rect x="593" y="99" width="22" height="22" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <rect x="633" y="99" width="22" height="22" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <rect x="753" y="99" width="22" height="22" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <line x1="764" y1="126" x2="764" y2="189" stroke="#111111" stroke-width="2.2" marker-end="url(#ah)"/>
+            <circle cx="764" cy="207" r="11" fill="#fff" stroke="#111111" stroke-width="2.2"/>
+            <line x1="764" y1="223" x2="764" y2="285" stroke="#111111" stroke-width="2.2" marker-end="url(#ah)"/>
+            <polygon points="764,291 776,312 752,312" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <line x1="764" y1="319" x2="764" y2="382" stroke="#111111" stroke-width="2.2" marker-end="url(#ah)"/>
+            <polygon points="764,387 776,400 764,413 752,400" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <rect x="496" y="372" width="200" height="74" rx="3" fill="#4E9A4E"/>
+            <polygon points="524,387 536,400 524,413 512,400" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <polygon points="564,387 576,400 564,413 552,400" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <polygon points="604,387 616,400 604,413 592,400" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <polygon points="644,387 656,400 644,413 632,400" fill="#fff" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+            <line x1="682" y1="428" x2="518" y2="428" stroke="#111111" stroke-width="2.2" marker-end="url(#ah)"/>
+            <path d="M696 80 H824 V428 H702" fill="none" stroke="#B3541E" stroke-width="2.2" marker-end="url(#ao)"/>
+            <text class="fs-note" x="184" y="486" text-anchor="middle">每步矩阵计算都把结果写回 HBM，</text>
+            <text class="fs-note" x="184" y="513" text-anchor="middle">然后下一步再从 HBM 读出来</text>
+            <text class="fs-note" x="660" y="486" text-anchor="middle">能不能只从 HBM 读一次、</text>
+            <text class="fs-note" x="660" y="513" text-anchor="middle">全部计算完再把最终结果写回</text>
+            <text class="fs-cap" x="450" y="557" text-anchor="middle">算子融合(Kernel Fusion)</text>
+            </svg>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ============ TAB 5 · 融合的代码 + Safe Softmax 定义 ============ -->
+    <section class="slide">
+      <div class="wrap mid">
+        <div class="head">一个理论上的融合算子 —— <span class="hl">但 \(e^{x}\) 会溢出</span></div>
+
+        <div class="panel">
+          <div class="onecode">
+              <div class="cbcol" style="--codew:0">
+                <div class="codebox">
+                <div class="cbar"><span class="d r"></span><span class="d y"></span><span class="d g"></span><span class="fname">fused_attention.py</span></div>
+                <pre><span class="kw">def</span> <span class="fn">fused_attention</span>(q, K, V):
+    d = <span class="bi">0</span>                        <span class="cmt"># softmax 的分母</span>
+    o = <span class="bi">zeros_like</span>(V[<span class="bi">0</span>])         <span class="cmt"># 输出向量</span>
+    scale = <span class="bi">1</span> / <span class="bi">sqrt</span>(K.shape[<span class="bi">1</span>])  <span class="cmt"># 公式里的 1/√d_k</span>
+    <span class="kw">for</span> k, v <span class="kw">in</span> <span class="bi">zip</span>(K, V):       <span class="cmt"># 不断从HBM里读取k和v</span>
+        x = q @ k * scale
+        o += <span class="bi">exp</span>(x) * v          <span class="cmt"># 分子直接累加进输出</span>
+        d += <span class="bi">exp</span>(x)              <span class="cmt"># 分母同步累加</span>
+    <span class="kw">return</span> <span class="cf">o / d</span>                 <span class="cmt"># 最后一次性除</span></pre>
+                </div>
+              </div>
+          </div>
+
+          <div class="pdiv"></div>
+
+          <div class="deriv">
+            <span class="d-lhs">\(\text{softmax}(x_i)\)</span>
+            <span class="d-eq">\(=\)</span>
+            <span class="d-rhs">\(\dfrac{e^{x_i}}{\sum_{j} e^{x_j}}\)</span>
+            <span class="whynote">实际计算时，\(x\) 太大会导致 \(e^{x}\) <b>数值溢出</b></span>
+
+            <span class="d-lhs">\(\text{safe softmax}(x_i)\)</span>
+            <span class="d-eq">\(=\)</span>
+            <span class="d-rhs span">\(\dfrac{\textcolor{#10a37f}{e^{-m}}\cdot e^{x_i}}{\textcolor{#10a37f}{e^{-m}}\cdot\sum_{j} e^{x_j}}
+              \;=\;\dfrac{e^{x_i\textcolor{#10a37f}{-m}}}{\sum_{j} e^{x_j\textcolor{#10a37f}{-m}}}\)</span>
+          </div>
+
+          <div class="hcnote">取 \(m=\max(x_i)\)，每个 \(x_i-m\le 0\)，\(e^{x_i-m}\) 全落在 \((0,1]\)，<b>指数再也不会溢出</b></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ TAB 6 · 3-pass -> 2-pass online softmax ============ -->
+    <section class="slide">
+      <div class="wrap mid">
+        <div class="head">算子融合的关键：<span class="hl">在线Softmax</span></div>
+
+        <div class="panel">
+          <div class="cmp" style="--codew:48.5ch; --arrowdy:-98px">
+
+            <div class="cbcol">
+              <div class="cbtitle">Safe Softmax</div>
+              <div class="codebox">
+              <div class="cbar"><span class="d r"></span><span class="d y"></span><span class="d g"></span><span class="fname">safe_softmax_3pass.py</span></div>
+              <pre><span class="kw">def</span> <span class="fn">safe_softmax</span>(x):
+    m, d = -<span class="bi">inf</span>, <span class="bi">0</span>
+    <span class="cmt"># pass 1</span>
+    <span class="kw">for</span> xi <span class="kw">in</span> x:
+        m = <span class="bi">max</span>(m, xi)
+    <span class="cmt"># pass 2</span>
+    <span class="kw">for</span> xi <span class="kw">in</span> x:
+        d += <span class="bi">exp</span>(xi - m)
+    <span class="cmt"># pass 3</span>
+    <span class="kw">return</span> [<span class="bi">exp</span>(xi - m) / d <span class="kw">for</span> xi <span class="kw">in</span> x]</pre>
+              </div>
+              <div class="cbdef">\(d_i = \sum_{j\le i} e^{x_j-m_N}\)</div>
+              <div class="cbnote bad">每一项都减<b>总体最大值</b> \(m_N\)，要整行扫完才知道</div>
+            </div>
+
+            <svg class="cmp-arrow" viewBox="0 0 76 40" width="62" height="33" aria-hidden="true">
+              <path d="M4 20 H50" stroke="#c9c9d2" stroke-width="14"/>
+              <path d="M46 4 L72 20 L46 36 z" fill="#c9c9d2"/>
+            </svg>
+
+            <div class="cbcol">
+              <div class="cbtitle good">在线Softmax</div>
+              <div class="codebox">
+              <div class="cbar"><span class="d r"></span><span class="d y"></span><span class="d g"></span><span class="fname">online_softmax_2pass.py</span></div>
+              <pre><span class="kw">def</span> <span class="fn">online_safe_softmax</span>(x):
+    m, d = -<span class="bi">inf</span>, <span class="bi">0</span>
+    <span class="cmt"># pass 1</span>
+    <span class="kw">for</span> xi <span class="kw">in</span> x:
+        m_old = m
+        m = <span class="bi">max</span>(m, xi)
+        d = d * <span class="cf">exp(m_old - m)</span> + <span class="bi">exp</span>(xi - m)
+    <span class="cmt"># pass 2</span>
+    <span class="kw">return</span> [<span class="bi">exp</span>(xi - m) / d <span class="kw">for</span> xi <span class="kw">in</span> x]</pre>
+              </div>
+              <div class="cbdef">\(d'_i = \sum_{j\le i} e^{x_j-\textcolor{#10a37f}{m_i}}\)</div>
+              <div class="cbnote good">每一项都减<b>前 \(i\) 项的最大值</b> \(m_i\)</div>
+            </div>
+
+          </div>
+
+          <div class="recur">
+            <div class="hcnote pf-toggle">\(d'_i\) 和 \(d'_{i-1}\) 的递归式：<div class="hc-fml">\(d'_i = d'_{i-1}\,\textcolor{#0a7d61}{e^{m_{i-1}-m_i}} + e^{x_i-m_i}\)</div><span class="pf-hint">点击展开推导</span></div>
+            <div class="pf-panel"><div class="proof" style="--pf:1.55em">
+              <div class="pf-lbl">把 \(d'_{i-1}\) 的定义代回去：</div>
+              \[\begin{aligned}
+                  &= \Big(\sum\nolimits_{j\le i-1} e^{x_j-m_{i-1}}\Big)\textcolor{#0a7d61}{e^{m_{i-1}-m_i}} + e^{x_i-m_i}\\[4pt]
+                  &= \sum\nolimits_{j\le i-1} e^{x_j-m_i} + e^{x_i-m_i}\\[4pt]
+                  &= \sum\nolimits_{j\le i} e^{x_j-m_i}
+              \end{aligned}\]
+            </div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ TAB 7 · 2-pass Attention -> FlashAttention ============ -->
+    <section class="slide">
+      <div class="wrap mid">
+        <div class="head">FlashAttention：<span class="hl">继续用在线Softmax的思路建立递归式</span></div>
+
+        <div class="panel">
+          <div class="cmp" style="--codew:51.5ch; --arrowdy:-134px; --cfs:14px; --cbdef-mt:12px; --cbdef-mb:6px; --cbdef-fs:2.05em; --cbtitle-mb:6px; --cbnote-mb:4px">
+
+            <div class="cbcol">
+              <div class="cbtitle">Safe Softmax Attention</div>
+              <div class="codebox">
+              <div class="cbar"><span class="d r"></span><span class="d y"></span><span class="d g"></span><span class="fname">attention_2pass.py</span></div>
+              <pre><span class="kw">def</span> <span class="fn">attention</span>(q, K, V):
+    m, d = -<span class="bi">inf</span>, <span class="bi">0</span>
+    o = <span class="bi">zeros_like</span>(V[<span class="bi">0</span>])
+    scale = <span class="bi">1</span> / <span class="bi">sqrt</span>(K.shape[<span class="bi">1</span>])
+    <span class="cmt"># pass 1</span>
+    <span class="kw">for</span> k <span class="kw">in</span> K:
+        x = q @ k * scale
+        m_old = m
+        m = <span class="bi">max</span>(m, x)
+        d = d * <span class="bi">exp</span>(m_old - m) + <span class="bi">exp</span>(x - m)
+    <span class="cmt"># pass 2</span>
+    <span class="kw">for</span> k, v <span class="kw">in</span> <span class="bi">zip</span>(K, V):
+        o += <span class="bi">exp</span>(q @ k * scale - m) / d * v
+    <span class="kw">return</span> o</pre>
+              </div>
+              <div class="cbdef">\(\boldsymbol{o}_i = \sum_{j\le i}\dfrac{e^{x_j-m_N}}{d_N}\,\boldsymbol{v}_j\)</div>
+              <div class="cbnote bad">\(m_N\)、\(d_N\) 要<b>整行扫完</b>才知道</div>
+            </div>
+
+            <svg class="cmp-arrow" viewBox="0 0 76 40" width="62" height="33" aria-hidden="true">
+              <path d="M4 20 H50" stroke="#c9c9d2" stroke-width="14"/>
+              <path d="M46 4 L72 20 L46 36 z" fill="#c9c9d2"/>
+            </svg>
+
+            <div class="cbcol">
+              <div class="cbtitle good">FlashAttention</div>
+              <div class="codebox">
+              <div class="cbar"><span class="d r"></span><span class="d y"></span><span class="d g"></span><span class="fname">flash_attention_1pass.py</span></div>
+              <pre><span class="kw">def</span> <span class="fn">flash_attention</span>(q, K, V):
+    m, d = -<span class="bi">inf</span>, <span class="bi">0</span>
+    o = <span class="bi">zeros_like</span>(V[<span class="bi">0</span>])
+    scale = <span class="bi">1</span> / <span class="bi">sqrt</span>(K.shape[<span class="bi">1</span>])
+    <span class="cmt"># pass 1</span>
+    <span class="kw">for</span> k, v <span class="kw">in</span> <span class="bi">zip</span>(K, V):
+        x = q @ k * scale
+        m_old = m
+        d_old = d
+        m = <span class="bi">max</span>(m, x)
+        d = d_old * <span class="bi">exp</span>(m_old - m) + <span class="bi">exp</span>(x - m)
+        <span class="cf">rescale</span> = d_old * <span class="bi">exp</span>(m_old - m) / d
+        o = o * <span class="cf">rescale</span> + <span class="bi">exp</span>(x - m) / d * v
+    <span class="kw">return</span> o</pre>
+              </div>
+              <div class="cbdef">\(\boldsymbol{o}'_i = \sum_{j\le i}\dfrac{e^{x_j-\textcolor{#10a37f}{m_i}}}{\textcolor{#10a37f}{d'_i}}\,\boldsymbol{v}_j\)</div>
+              <div class="cbnote good">每一项都用<b>前 \(i\) 项的</b> \(m_i\)、\(d'_i\)</div>
+            </div>
+
+          </div>
+
+          <div class="recur">
+            <div class="hcnote pf-toggle">\(\boldsymbol{o}'_i\) 和 \(\boldsymbol{o}'_{i-1}\) 的递归式：<div class="hc-fml">\(\boldsymbol{o}'_i = \boldsymbol{o}'_{i-1}\,\textcolor{#0a7d61}{\dfrac{d'_{i-1}\,e^{m_{i-1}-m_i}}{d'_i}} + \dfrac{e^{x_i-m_i}}{d'_i}\,\boldsymbol{v}_i\)</div><span class="pf-hint">点击展开推导</span></div>
+            <div class="pf-panel"><div class="proof" style="--pf:1.55em">
+              <div class="pf-lbl">把 \(\boldsymbol{o}'_{i-1}\) 和 \(d'_{i-1}\) 的定义代回去：</div>
+              \[\begin{aligned}
+                  &= \Big(\sum\nolimits_{j\le i-1}\frac{e^{x_j-m_{i-1}}}{d'_{i-1}}\boldsymbol{v}_j\Big)\textcolor{#0a7d61}{\frac{d'_{i-1}\,e^{m_{i-1}-m_i}}{d'_i}} + \frac{e^{x_i-m_i}}{d'_i}\boldsymbol{v}_i\\[4pt]
+                  &= \sum\nolimits_{j\le i-1}\frac{e^{x_j-m_i}}{d'_i}\boldsymbol{v}_j + \frac{e^{x_i-m_i}}{d'_i}\boldsymbol{v}_i\\[4pt]
+                  &= \sum\nolimits_{j\le i}\frac{e^{x_j-m_i}}{d'_i}\boldsymbol{v}_j
+              \end{aligned}\]
+            </div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ TAB 8 · Tiling ============ -->
+    <section class="slide">
+      <div class="wrap">
+        <div class="head">Tiling：<span class="hl">将QKV分成一段段的小矩阵批量处理</span></div>
+
+        <div class="panel">
+          <div class="tile-wrap">
+            <div class="tile-col">
+              <svg class="tilesvg" viewBox="-8 0 602 614" xmlns="http://www.w3.org/2000/svg">
+              <defs><marker id="ah" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#1f2937"/></marker><marker id="aho" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#D9820F"/></marker><marker id="ahb" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#3b7dd8"/></marker><marker id="ahr" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#d1493f"/></marker></defs>
+              <rect x="155" y="165" width="280" height="280" rx="6" fill="#9aa0aa" fill-opacity=".05" stroke="#9aa0aa" stroke-width="2" stroke-dasharray="7 6"/>
+              <text class="flm" x="423" y="189" text-anchor="end" fill="#6b7280">QK<tspan baseline-shift="super" font-size="12">⊤</tspan>: N × N</text>
+              <path d="M195.4 165 L195.4 445" stroke="#9aa0aa" stroke-width="2" fill="none" stroke-dasharray="7 6"/>
+              <path d="M232.9 165 L232.9 445" stroke="#9aa0aa" stroke-width="2" fill="none" stroke-dasharray="7 6"/>
+              <rect x="152" y="63" width="286" height="36" rx="4" fill="none" stroke="#1f2937" stroke-width="1.6"/>
+              <rect x="155" y="66" width="37.43" height="30" rx="2" fill="#4E9A4E"/>
+              <rect x="195.4" y="66" width="37.43" height="30" rx="2" fill="#D9820F"/>
+              <rect x="235.9" y="66" width="37.43" height="30" rx="2" fill="#4E9A4E"/>
+              <rect x="276.3" y="66" width="37.43" height="30" rx="2" fill="#4E9A4E"/>
+              <rect x="316.7" y="66" width="37.43" height="30" rx="2" fill="#4E9A4E"/>
+              <rect x="357.1" y="66" width="37.43" height="30" rx="2" fill="#4E9A4E"/>
+              <rect x="397.6" y="66" width="37.43" height="30" rx="2" fill="#4E9A4E"/>
+              <text class="flb" x="142" y="87" text-anchor="end">K<tspan baseline-shift="super" font-size="12">⊤</tspan>: d × N</text>
+              <rect x="53" y="162" width="36" height="286" rx="4" fill="none" stroke="#1f2937" stroke-width="1.6"/>
+              <rect x="56" y="165" width="30" height="37.43" rx="2" fill="#4E9A4E"/>
+              <rect x="56" y="205.4" width="30" height="37.43" rx="2" fill="#4E9A4E"/>
+              <rect x="56" y="245.9" width="30" height="37.43" rx="2" fill="#4E9A4E"/>
+              <rect x="56" y="286.3" width="30" height="37.43" rx="2" fill="#D9820F"/>
+              <rect x="56" y="326.7" width="30" height="37.43" rx="2" fill="#4E9A4E"/>
+              <rect x="56" y="367.1" width="30" height="37.43" rx="2" fill="#4E9A4E"/>
+              <rect x="56" y="407.6" width="30" height="37.43" rx="2" fill="#4E9A4E"/>
+              <text class="flb" x="71" y="149" text-anchor="middle">Q: N × d</text>
+              <rect x="501" y="162" width="36" height="286" rx="4" fill="none" stroke="#1f2937" stroke-width="1.6"/>
+              <rect x="504" y="165" width="30" height="37.43" rx="2" fill="#4E9A4E"/>
+              <rect x="504" y="205.4" width="30" height="37.43" rx="2" fill="#D9820F"/>
+              <rect x="504" y="245.9" width="30" height="37.43" rx="2" fill="#4E9A4E"/>
+              <rect x="504" y="286.3" width="30" height="37.43" rx="2" fill="#4E9A4E"/>
+              <rect x="504" y="326.7" width="30" height="37.43" rx="2" fill="#4E9A4E"/>
+              <rect x="504" y="367.1" width="30" height="37.43" rx="2" fill="#4E9A4E"/>
+              <rect x="504" y="407.6" width="30" height="37.43" rx="2" fill="#4E9A4E"/>
+              <text class="flb" x="519" y="149" text-anchor="middle">V: N × d</text>
+              <rect x="152" y="516" width="286" height="36" rx="4" fill="none" stroke="#1f2937" stroke-width="1.6"/>
+              <rect x="155" y="519" width="37.43" height="30" rx="2" fill="#4E9A4E"/>
+              <rect x="195.4" y="519" width="37.43" height="30" rx="2" fill="#4E9A4E"/>
+              <rect x="235.9" y="519" width="37.43" height="30" rx="2" fill="#4E9A4E"/>
+              <rect x="276.3" y="519" width="37.43" height="30" rx="2" fill="#D9820F"/>
+              <rect x="316.7" y="519" width="37.43" height="30" rx="2" fill="#4E9A4E"/>
+              <rect x="357.1" y="519" width="37.43" height="30" rx="2" fill="#4E9A4E"/>
+              <rect x="397.6" y="519" width="37.43" height="30" rx="2" fill="#4E9A4E"/>
+              <text class="flb" x="142" y="540" text-anchor="end">sm(QK<tspan baseline-shift="super" font-size="12">⊤</tspan>)V</text>
+              <rect x="195.4" y="125" width="37.43" height="30" rx="3" fill="#D9820F" stroke="#1f2937" stroke-width="2"/>
+              <rect x="115" y="286.3" width="30" height="37.43" rx="3" fill="#D9820F" stroke="#1f2937" stroke-width="2"/>
+              <rect x="445" y="205.4" width="30" height="37.43" rx="3" fill="#D9820F" stroke="#1f2937" stroke-width="2"/>
+              <rect x="195.4" y="286.3" width="37.43" height="37.43" rx="3" fill="#D9820F" stroke="#1f2937" stroke-width="2"/>
+              <path d="M214.1 98 L214.1 120" stroke="#1f2937" stroke-width="2.2" fill="none" marker-end="url(#ah)"/>
+              <path d="M88 305 L110 305" stroke="#1f2937" stroke-width="2.2" fill="none" marker-end="url(#ah)"/>
+              <path d="M502 224.1 L480 224.1" stroke="#1f2937" stroke-width="2.2" fill="none" marker-end="url(#ah)"/>
+              <path d="M203.1 158 L203.1 280.3" stroke="#D9820F" stroke-width="2.2" fill="none" stroke-dasharray="6 5" marker-end="url(#aho)"/>
+              <path d="M148 305 L189.4 305" stroke="#D9820F" stroke-width="2.2" fill="none" stroke-dasharray="6 5" marker-end="url(#aho)"/>
+              <path d="M442 224.1 L226.1 224.1 L226.1 280.3" stroke="#D9820F" stroke-width="2.2" fill="none" stroke-dasharray="6 5" marker-end="url(#aho)"/>
+              <path d="M214.1 326.7 L214.1 479 L295 479 L295 515" stroke="#1f2937" stroke-width="2.2" fill="none" marker-end="url(#ah)"/>
+              <text class="flm" x="240.9" y="145" text-anchor="start" fill="#D9820F">拷贝到 SRAM</text>
+              <text class="flm" x="130" y="344.7" text-anchor="middle" fill="#D9820F">拷贝</text>
+              <text class="flm" x="460" y="263.9" text-anchor="middle" fill="#D9820F">拷贝</text>
+              <text class="flm" x="242.9" y="341.7" text-anchor="start" fill="#D9820F">在 SRAM 上算这一块</text>
+              <text class="flm" x="305" y="473" text-anchor="start" fill="#4E9A4E">写回 HBM</text>
+              <path d="M155 46 L435 46" stroke="#3b7dd8" stroke-width="3" fill="none" marker-end="url(#ahb)"/>
+              <text class="fll" x="295" y="34" text-anchor="middle" fill="#3b7dd8">内层循环</text>
+              <path d="M155 573 L435 573" stroke="#d1493f" stroke-width="3" fill="none" marker-end="url(#ahr)"/>
+              <text class="fll" x="295" y="597" text-anchor="middle" fill="#d1493f">外层循环</text>
+              <path d="M36 165 L36 445" stroke="#d1493f" stroke-width="3" fill="none" marker-end="url(#ahr)"/>
+              <text class="fll" x="14" y="305" text-anchor="middle" fill="#d1493f" transform="rotate(-90 14 305)">外层循环</text>
+              <path d="M554 165 L554 445" stroke="#3b7dd8" stroke-width="3" fill="none" marker-end="url(#ahb)"/>
+              <text class="fll" x="576" y="305" text-anchor="middle" fill="#3b7dd8" transform="rotate(-90 576 305)">内层循环</text>
+              </svg>
+              <div class="tile-legend"><span class="lg-hbm">绿</span> = 待在 <b>HBM</b> 的整块，<span class="lg-sram">橙</span> = 当前搬进 <b>SRAM</b> 的小块</div>
+            </div>
+
+            <div class="cbcol" style="--codew:0; --tcode:14px">
+              <div class="codebox">
+              <div class="cbar"><span class="d r"></span><span class="d y"></span><span class="d g"></span><span class="fname">flash_attention_tiled.py</span></div>
+              <pre><span class="kw">def</span> <span class="fn">flash_attention_tiled</span>(Q, K, V, tile_size):
+    O = <span class="bi">zeros_like</span>(Q)
+    scale = <span class="bi">1</span> / <span class="bi">sqrt</span>(K.shape[<span class="bi">1</span>])
+    <span class="cmt"># 外层：搬 tile_size 行 Q 进 SRAM</span>
+    <span class="kw">for</span> i <span class="kw">in</span> <span class="bi">range</span>(<span class="bi">0</span>, <span class="bi">len</span>(Q), tile_size):
+        Q_tile = Q[i:i+tile_size]
+        <span class="cmt"># 每块 query 各持一份状态</span>
+        m = <span class="bi">full</span>((<span class="bi">len</span>(Q_tile), <span class="bi">1</span>), -<span class="bi">inf</span>)
+        d = <span class="bi">zeros</span>((<span class="bi">len</span>(Q_tile), <span class="bi">1</span>))
+        o = <span class="bi">zeros_like</span>(Q_tile)
+        <span class="cmt"># 内层：扫 tile_size 行 K、V</span>
+        <span class="kw">for</span> j <span class="kw">in</span> <span class="bi">range</span>(<span class="bi">0</span>, <span class="bi">len</span>(K), tile_size):
+            K_tile, V_tile = K[j:j+tile_size], V[j:j+tile_size]
+            <span class="cmt"># tile_size × tile_size 的一小块分数</span>
+            x = Q_tile @ K_tile.T * scale
+            m_old = m
+            d_old = d
+            m = <span class="bi">maximum</span>(m, x.max(<span class="bi">1</span>, keepdims=<span class="bi">True</span>))
+            p = <span class="bi">exp</span>(x - m)
+            d = d_old * <span class="bi">exp</span>(m_old - m) + p.sum(<span class="bi">1</span>, keepdims=<span class="bi">True</span>)
+            <span class="cf">rescale</span> = d_old * <span class="bi">exp</span>(m_old - m) / d
+            o = o * <span class="cf">rescale</span> + (p / d) @ V_tile
+        <span class="cmt"># 一块算完才写回 HBM</span>
+        O[i:i+tile_size] = o
+    <span class="kw">return</span> O</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script>
+  // ---- 矩阵格子 ----
+  function grid(id,rows,cols,cls,opts){
+    opts=opts||{};
+    const el=document.getElementById(id);
+    if(!el)return;
+    el.style.gridTemplateColumns='repeat('+cols+',1fr)';
+    for(let r=0;r<rows;r++){
+      for(let c=0;c<cols;c++){
+        const cell=document.createElement('div');
+        let k=cls;
+        if(opts.newRow!==undefined && r===opts.newRow) k=opts.newCls||cls;
+        if(opts.newCol!==undefined && c===opts.newCol) k=opts.newCls||cls;
+        cell.className='cell '+k;
+        el.appendChild(cell);
+      }
+    }
+  }
+  // prefill : n=6, d=4
+  // 同一个 token i 贯穿全程：q 是 Q 的第 i 行，k 是 Kᵀ 的第 i 列，v 和 o 各是自己矩阵的第 i 行。
+  // n×n 不标 —— 它没有「一个 token 的一条」，这正是它塞不进 SRAM 的原因。
+  const TOK = 2;
+  grid('g-q',6,4,'c-q',{newRow:TOK,newCls:'c-q hi'});
+  grid('g-kt',4,6,'c-k',{newCol:TOK,newCls:'c-k hi'});
+  grid('g-score',6,6,'c-score');
+  grid('g-v',6,4,'c-v',{newRow:TOK,newCls:'c-v hi'});
+  grid('g-out',6,4,'c-out',{newRow:TOK,newCls:'c-out hi'});
+
+  // ---- tab / 键盘导航 ----
+  const tabs=[...document.querySelectorAll('.tab')];
+  const slides=[...document.querySelectorAll('.slide')];
+  let cur=0;
+  function go(i){
+    i=(i+slides.length)%slides.length;
+    tabs.forEach((t,k)=>t.classList.toggle('active',k===i));
+    slides.forEach((s,k)=>s.classList.toggle('active',k===i));
+    cur=i;
+  }
+  tabs.forEach((t,i)=>t.addEventListener('click',()=>go(i)));
+  // 点结论框展开/收起推导
+  // 让推导的等号和结论式里的等号对齐。必须在这一页 active、推导已展开时量，
+  // 否则 .slide{display:none} 会让所有坐标都是 0。
+  function alignEq(r){
+    const box=r.querySelector('.proof');
+    box.style.transform='';
+    const a=r.querySelector('.hc-fml .mrel'), b=r.querySelector('.pf-panel .mrel');
+    if(a&&b) box.style.transform='translateX('+(a.getBoundingClientRect().left-b.getBoundingClientRect().left)+'px)';
+  }
+  addEventListener('resize',()=>document.querySelectorAll('.recur.open').forEach(alignEq));
+  document.querySelectorAll('.pf-toggle').forEach(el=>
+    el.addEventListener('click',()=>{
+      const r=el.closest('.recur'), open=r.classList.toggle('open');
+      if(open) alignEq(r);
+      // 推导在结论下方、超出一屏，展开后自动滚过去；收起再滚回顶部
+      const s=el.closest('.slide');
+      if(open){                     // 滚到推导底边上方留 44px，不贴着屏幕边
+        const pf=r.querySelector('.pf-panel');
+        s.scrollBy({top:pf.getBoundingClientRect().bottom-s.getBoundingClientRect().bottom+44,behavior:'smooth'});
+      }
+      else s.scrollTo({top:0,behavior:'smooth'});
+    }));
+  document.addEventListener('keydown',e=>{
+    const s=slides[cur];
+    if(e.key==='ArrowRight'||e.key===' ') go(cur+1);
+    else if(e.key==='ArrowLeft') go(cur-1);
+    else if(/^[1-9]$/.test(e.key)) go(+e.key-1);
+    // 窗口比 1080p 矮时，用上下键 / PageUp·PageDown / Home·End 滚当前这页
+    else if(e.key==='ArrowDown')  { s.scrollTop+=80;  e.preventDefault(); }
+    else if(e.key==='ArrowUp')    { s.scrollTop-=80;  e.preventDefault(); }
+    else if(e.key==='PageDown')   { s.scrollTop+=s.clientHeight*0.85; e.preventDefault(); }
+    else if(e.key==='PageUp')     { s.scrollTop-=s.clientHeight*0.85; e.preventDefault(); }
+    else if(e.key==='Home')       { s.scrollTop=0; e.preventDefault(); }
+    else if(e.key==='End')        { s.scrollTop=s.scrollHeight; e.preventDefault(); }
+  });
+</script>
+</body>
+</html>
