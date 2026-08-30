@@ -1,0 +1,2085 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mixture of Experts · 如何实现超大规模参数模型</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body);"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap');
+  * { box-sizing:border-box; margin:0; padding:0; }
+
+  :root{
+    --bg:#0d0d0d; --ink:#f2f3f5; --muted:#9a9aa6; --dim:#6e6e7a;
+    --arrow:#b6b6c4;
+    --line:rgba(255,255,255,.09); --line-2:rgba(255,255,255,.14);
+    --card:#161618; --card-2:#1b1b1e; --card-3:#24242a;
+
+    --accent:#6aa0ff;                                  /* 蓝灰：重点色 / attention（共用的那一份） */
+    --accent-soft:rgba(106,160,255,.15);
+    --accent-line:rgba(106,160,255,.55); --accent-ink:#cfe0ff;
+
+    --ffn:#9f8cfa;                                     /* 紫：FFN / 专家（模型内部的大块） */
+    --ffn-soft:rgba(159,140,250,.16); --ffn-line:rgba(159,140,250,.55); --ffn-ink:#d6cbff;
+
+    --router:#f6c486;                                  /* 琥珀：router / 机器算出来的数字 */
+    --router-soft:rgba(240,179,102,.16); --router-line:rgba(240,179,102,.62);
+
+    --on:#34d399;                                      /* 绿：这个 token 真的算了的部分 */
+    --on-soft:rgba(16,185,129,.14); --on-line:rgba(16,185,129,.5); --on-ink:#6ee7b0;
+
+    --off:#2a2a31;                                     /* 灰：躺在显存里没动的参数 */
+    --bad:#ff9d9d; --bad-soft:rgba(255,120,120,.08); --bad-line:rgba(255,120,120,.3);
+
+    --t0:#ffd9b3; --t1:#fff0a8; --t2:#c6ecca; --t3:#bcd9ff; --t4:#e6c9f5; --t5:#ffc9c9;
+
+    --mono:"JetBrains Mono","SF Mono",Menlo,monospace;
+    --sans:"Inter","PingFang SC",-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;
+  }
+
+  html,body{ height:100%; }
+  body{
+    background:
+      radial-gradient(1200px 420px at 50% -8%, rgba(106,160,255,.07), transparent 60%),
+      var(--bg);
+    color:var(--ink); font-family:var(--sans);
+    -webkit-font-smoothing:antialiased; overflow:hidden;   /* 滚动安全 1/3 */
+  }
+
+  .deck{ height:100vh; display:flex; flex-direction:column; }
+
+  /* 顶栏（持久） */
+  .topbar{ flex:0 0 auto; display:flex; align-items:center; justify-content:space-between;
+           gap:24px; padding:18px 40px; border-bottom:1px solid var(--line); }
+  .brand .ttl{ font-size:19px; font-weight:700; color:var(--ink); white-space:nowrap; }
+  .brand .ttl b{ color:var(--accent); font-weight:800; }
+  .tabs{ display:flex; gap:4px; padding:5px; border:1px solid var(--line);
+         border-radius:999px; background:rgba(255,255,255,.03); }
+  .tab{ appearance:none; border:1px solid transparent; border-radius:999px; cursor:pointer;
+        background:transparent; color:var(--muted); font-family:var(--sans);
+        font-size:14px; font-weight:700; padding:8px 13px; white-space:nowrap; transition:.18s; }
+  .tab:hover{ color:var(--ink); }
+  .tab:focus, .tab:focus-visible{ outline:none; }  /* 键盘翻页时别留焦点环 */
+  .tab.active{ color:var(--accent-ink); background:var(--accent-soft); border-color:var(--accent-line); }
+
+  /* 舞台 + slide */
+  .stage{ position:relative; flex:1 1 auto; }
+  .slide{ position:absolute; inset:0; display:none; flex-direction:column;
+          padding:20px 46px 70px;
+          overflow-y:auto; overflow-x:hidden; }                /* 滚动安全 2/3 */
+  @media (max-height:1023px){ .slide{ padding-bottom:220px; } }
+  .slide.active{ display:flex; }
+  .wrap{ width:100%; max-width:1340px; margin:0 auto;
+         flex:1 0 auto;                                        /* 滚动安全 3/3 */
+         display:flex; flex-direction:column;
+         justify-content:flex-start;                           /* 顶部对齐 */
+         align-items:center; text-align:center; gap:14px; }
+  .wrap.mid{ max-width:1150px; }
+  .wrap.narrow{ max-width:980px; }
+
+  .head{ font-size:28px; line-height:1.2; font-weight:800; letter-spacing:-.2px; }
+  .head .hl{ color:var(--accent); }
+  .head .hl-p{ color:var(--ffn); }
+  .head .hl-g{ color:var(--on-ink); }
+  .head .hl-b{ color:var(--bad); }
+  .sub{ font-size:18px; line-height:1.35; color:var(--muted); margin-top:-4px; }
+
+  /* ===== 卡片 ===== */
+  .panel{ width:100%; background:var(--card); border:1px solid var(--line); border-radius:14px;
+          padding:18px 24px 16px; }
+  .panel.tight{ padding:14px 20px 12px; }
+  .sec-name{ font-size:15px; font-weight:700; color:var(--ink); margin-bottom:12px; text-align:center; }
+  .sec-name .en{ color:var(--dim); font-weight:600; font-size:13px; margin-left:7px; letter-spacing:.3px; }
+  .cols2{ display:grid; grid-template-columns:1fr 1fr; gap:16px; width:100%; align-items:stretch; }
+  .cols2.uneven{ grid-template-columns:1.15fr 1fr; }
+  .pdiv{ height:0; border-top:1.5px dashed rgba(255,255,255,.13); margin:12px 0; }
+
+  /* ===== 强调框 ===== */
+  .keynote{ font-family:var(--sans); font-size:20px; line-height:1.6; font-weight:700;
+            color:var(--ink); text-align:center; width:100%;
+            background:var(--accent-soft); border:1px solid var(--accent-line);
+            border-radius:14px; padding:14px 26px; }
+  .keynote b{ color:var(--accent-ink); font-weight:800; }
+  .keynote .mono{ font-family:var(--mono); font-weight:700; }
+  .whynote{ font-family:var(--sans); font-size:19px; line-height:1.58; color:var(--ink);
+            text-align:center; width:100%;
+            background:var(--bad-soft); border:1px solid var(--bad-line);
+            border-radius:14px; padding:13px 24px; }
+  .whynote b{ color:var(--bad); font-weight:800; }
+  .note{ font-size:17px; color:var(--muted); line-height:1.55; }
+  .note b{ color:var(--ink); font-weight:700; }
+  .cap{ font-size:14px; color:var(--dim); line-height:1.5; }
+
+  /* ===== TAB1：一层参数的比例条 ===== */
+  .ratiobar{ display:flex; width:100%; height:108px; border-radius:14px; overflow:hidden;
+             border:1px solid var(--line-2); }
+  .ratiobar .seg{ display:flex; flex-direction:column; align-items:center; justify-content:center;
+                  gap:2px; color:#12121a; }
+  .ratiobar .seg .nm{ font-size:26px; font-weight:800; letter-spacing:.2px; }
+  .ratiobar .seg .pc{ font-family:var(--mono); font-size:19px; font-weight:700; opacity:.8; }
+  .ratiobar .a{ background:var(--accent); flex:0 0 19.2%; }
+  .ratiobar .f{ background:var(--ffn); flex:1 1 auto; }
+  .breakdown{ display:grid; grid-template-columns:19.2% 1fr; gap:0; width:100%; margin-top:10px; }
+  .bd{ padding:0 8px; }
+  .bd .mx{ font-family:var(--mono); font-size:17px; color:var(--muted); line-height:1.8; }
+  .bd .tot{ font-family:var(--mono); font-size:25px; font-weight:800; margin-top:7px; }
+  .bd.a .tot{ color:var(--accent); } .bd.f .tot{ color:var(--ffn); }
+
+  /* ===== TAB1：Transformer 层结构 + Dense FFN 展开（还原参考图）===== */
+  .blockfig{ width:100%; max-width:920px; height:auto; display:block; margin:0 auto; }
+  .blockfig .zoomline{ fill:none; stroke-width:2.4; }
+  .blockfig .zoomline.b{ stroke:var(--accent); stroke-dasharray:10 8; }
+  .blockfig .zoomline.p{ stroke:var(--ffn); stroke-dasharray:10 8; }
+  .blockfig .stream{ fill:none; stroke:#f2f3f5; stroke-width:3; }
+  .blockfig .qkvbus{ fill:none; stroke:#f2f3f5; stroke-width:3; stroke-linecap:butt; }
+  .blockfig .qkvhead{ fill:#f2f3f5; }
+  .blockfig .stream.dash{ stroke:#5b5b66; stroke-dasharray:7 9; }
+  .blockfig .blockbox{ fill:rgba(106,160,255,.045); stroke:var(--accent); stroke-width:2.4; }
+  .blockfig .resid{ fill:none; stroke:#f2f3f5; stroke-width:2.6; }
+  .blockfig .pill{ stroke:rgba(0,0,0,.55); stroke-width:1.6; }
+  .blockfig .pill.norm{ fill:var(--t1); }
+  .blockfig .pill.attn{ fill:var(--t2); }
+  .blockfig .pill.ffn{ fill:var(--ffn); }
+  .blockfig .lbl{ font-family:var(--sans); font-weight:800; text-anchor:middle; dominant-baseline:central; }
+  .blockfig .lbl.dark{ fill:#12121a; font-size:21px; }
+  .blockfig .lbl.big{ font-size:22px; }
+  .blockfig .lbl.huge{ font-size:29px; }
+  .blockfig .plus{ fill:var(--bg); stroke:#f2f3f5; stroke-width:2.6; }
+  .blockfig .plussign{ font-family:var(--sans); font-size:26px; font-weight:800;
+                       fill:#f2f3f5; text-anchor:middle; dominant-baseline:central; }
+  .blockfig .densebox{ fill:rgba(159,140,250,.06); stroke:var(--ffn); stroke-width:2.4; }
+  .blockfig .denselbl{ font-family:var(--sans); font-size:30px; font-weight:800; fill:#f2f3f5; }
+  .blockfig .denselbl .pk{ fill:var(--ffn); }
+  /* 进出这一层的向量，配色和下面矩阵排的 X / Y 一致 */
+  .blockfig .tokcell{ stroke:rgba(0,0,0,.5); stroke-width:1.4; }
+  .blockfig .tokcell.in { fill:#6aa0ff; }
+  .blockfig .tokcell.out{ fill:#b8d96a; }
+  .blockfig .wire{ fill:none; stroke:rgba(255,255,255,.30); stroke-width:2; }
+  .blockfig .wire.dk{ stroke:#b6b6c4; stroke-width:2.6; }
+  .blockfig .mesh line{ stroke:#7d7d8a; stroke-width:1.6; }
+  .blockfig .neuron{ fill:#ececf2; }
+  .blockfig .brace{ fill:none; stroke:#f2f3f5; stroke-width:2.4; }
+  .blockfig .dimlbl{ font-family:var(--sans); font-size:26px; font-weight:800; fill:#f2f3f5; }
+  .blockfig .dimlbl .soft{ font-weight:600; fill:var(--muted); font-size:23px; }
+  .blockfig .projlbl{ font-family:var(--sans); font-size:24px; font-weight:800; fill:#f2f3f5; }
+  .blockfig .projarrow{ fill:none; stroke:#b6b6c4; stroke-width:2.4; }
+
+  /* TAB2：卡片底部的一行统计 */
+  .statline{ font-family:var(--mono); font-size:16px; color:var(--muted); margin-top:2px; }
+  .statline b.p{ color:var(--ffn-ink); font-weight:800; }
+  .statline b.g{ color:var(--on-ink); font-weight:800; }
+
+  /* TAB3：竖向分步标签 + 末尾的专家小方块 */
+  .steplab{ margin:9px 0 3px; color:var(--arrow); font-size:17px; font-weight:700;
+            font-family:var(--sans); }
+  .steplab span{ font-family:var(--mono); font-size:14px; color:var(--muted); }
+  .expmini{ height:50px; border-radius:9px; display:flex; align-items:center; justify-content:center;
+            font-family:var(--mono); font-size:16px; font-weight:800; }
+  .expmini.on{ background:var(--ffn); color:#12121a; box-shadow:0 0 0 2.5px var(--on), 0 0 14px rgba(52,211,153,.45); }
+  .expmini.off{ background:rgba(159,140,250,.14); border:1px solid rgba(159,140,250,.3); }
+
+  /* ===== TAB1：FFN 的两次矩阵乘法（格子画法同 078 Tab2）=====
+     高度卡在 W₂ 上：它是 d_ff × d，有 d_ff 行，是整排里最高的一块 */
+  /* 宽度贴着内容走，不撑满整行；.wrap 的 align-items:center 负责居中 */
+  /* Tab1：把 wrap 卡到「blockfig 920 + 左右 padding 20 + 边框 1」＝ 962，
+     上下两个 panel 都撑满它，宽度自然一致，上框也正好贴着图没有多余灰边 */
+  /* 每屏都卡到「图宽 + padding 20×2 + 边框 1×2」，灰底框贴着图，不撑满整行 */
+  .wrap.fig{ max-width:962px; }    /* Tab1：blockfig  920 */
+  /* Tab2 把原来「专家网络」那一屏的右半并了进来：左边是 decoder 层（FFN 那一格
+     已经换成一排专家），右边把这一排放大，看清四个里只有一个被点亮。
+     两张图并排，两个蓝框要严丝合缝地上下对齐——同高，且顶边底边都在一条线上。
+     ① 同高：sparsefig 的 sbox 高 506（画幅 880×748），752px 宽下渲染成 432.4px。
+        decoder 的 dbox 高 590（裁出来的画幅 586×782），要落到同样的 432.4px，
+        宽度就得是 586 × 432.4/590 = 429.5。
+     ② 对齐：两张 svg 里蓝框离各自顶边的距离不一样——sparsefig 是 106×0.8545=90.6，
+        deccrop 是 (100−6)×0.7329=68.9，差 21.7。所以 row 改成顶对齐，
+        再给 deccrop 压 21.7 的上边距把这个差补掉，光靠 align-items:center 对不上。
+     1252 = 752 + 28 的列间距 + 429.5 + panel 左右各 20 + 边框。 */
+  .wrap.fig2{ max-width:1252px; }
+  .mergerow{ display:flex; align-items:flex-start; justify-content:center;
+             gap:28px; width:100%; }
+  /* decoder 在右、放大图在左：order 排的，markup 里 decoder 仍写在前面，
+     因为它是从原来那一屏整块搬过来的，挪 DOM 只会让 diff 变脏 */
+  .mergerow .deccrop{ width:429.5px; flex:0 0 429.5px; max-width:429.5px;
+                      order:2; margin-top:21.7px; }
+  .mergerow .sparsefig{ width:752px; flex:0 0 752px; max-width:752px; order:1; }
+  /* 901 = layerfig2 画幅 1381 × 0.6218 + 内边距 + 边框。0.6218 是原来 929/1494 的比例，
+     保持不变，decoder 在屏幕上还是原来那么大，只有 MoE 面板缩了 */
+  .wrap.fig4{ max-width:901px; }
+  /* Tab5：按 fpflow 实测宽度定（内容 1307，步骤名带上英文之后比原来宽了 30）。
+     1415 = 1307 + 左右各 30 的 panel 内边距 + 边框，再各留 22 的余量，
+     图不至于顶出灰底、贴到边上 */
+  .wrap.fig5{ max-width:1415px; }
+  /* 顶上那排步骤名离灰底边太近，这一屏单独把上下内边距放开 */
+  .wrap.fig5 .panel.tight.slim{ padding:22px 30px 16px; }
+  /* 这一屏的图特别宽，keynote 再拉满就成了一条细长横幅；让它按文字宽度收，居中 */
+  .wrap.fig5 .keynote{ width:auto; }
+
+  /* ===== Top-K 路由（导航「Top-K」，排在前向计算和负载均衡中间）=====
+     类名沿用 figtk 不叫 fig5：fig5 / fig6 已经被前向计算、负载均衡占着，
+     插一屏就跟着改号，等于把两屏的样式全动一遍，不值当。
+     图和下面那几行算式是同一张表：图占第一行，两半各放一格，
+     所以「哪一栏对哪个 token」由表格的列本身保证，不用再去凑对齐。结构同 Tab7 的 .lbtab。
+     980 = 标签列 138 + 两个数据栏各 400 + panel 左右各 20 + 边框。
+     数据栏 400、半幅 viewBox 宽 500，缩放还是 0.8，图和拆之前一样大（合起来 800，同 Tab3）*/
+  .wrap.figtk{ max-width:980px; gap:11px; }
+  .wrap.figtk .panel.tight{ padding:12px 20px 8px; }
+
+  /* 图缩到 0.85（同 Tab4 的 MoE 面板）。两个半幅各自在自己那一栏里居中，
+     下面几行算式也是各自居中，所以缩放不影响它们和图的列对齐 */
+  .tkfig{ width:85%; height:auto; display:block; margin:0 auto; }
+  .tkfig .tokpill{ fill:var(--card-3); stroke:var(--line-2); stroke-width:1.5; }
+  .tkfig .toklbl{ font-family:var(--sans); font-size:24px; font-weight:800; fill:var(--ink);
+                  text-anchor:middle; dominant-baseline:central; }
+  /* 进出这一层的向量，配色对齐 Tab1 的 .tokcell：进来是蓝的、出去是绿的。
+     参考图里是反过来的（绿进蓝出），这里以本 deck 前几屏的约定为准 */
+  .tkfig .vin { fill:#6aa0ff; stroke:rgba(0,0,0,.5); stroke-width:1.4; }
+  .tkfig .vout{ fill:#b8d96a; stroke:rgba(0,0,0,.5); stroke-width:1.4; }
+  .tkfig .wire{ fill:none; stroke:#f2f3f5; stroke-width:2.6; }
+  .tkfig .ah  { fill:#f2f3f5; }
+  /* Router 用实心琥珀底 + 深色字（同 Tab1 的 .pill.norm / Tab4 的 .pill.soft）。
+     Tab4 的 .routerbox 是半透明的，那里配的是琥珀色字；这里照抄了框却留了深色字，
+     深底黑字直接糊成一团，所以底色改实心 */
+  .tkfig .rtbox{ fill:var(--router); stroke:rgba(240,179,102,.95); stroke-width:2.2; }
+  .tkfig .rtlbl{ font-family:var(--sans); font-size:25px; font-weight:800; fill:#12121a;
+                 text-anchor:middle; dominant-baseline:central; }
+  /* 概率柱：选中的两根点亮成琥珀，没选中的压暗 —— 同 Tab4 的 .bar2 */
+  .tkfig .bar    { fill:rgba(240,179,102,.26); stroke:rgba(240,179,102,.45); stroke-width:1.4; }
+  .tkfig .bar.sel{ fill:var(--router); stroke:rgba(240,179,102,.95); stroke-width:2; }
+  .tkfig .base{ stroke:rgba(240,179,102,.85); stroke-width:2.6; }
+  .tkfig .pv    { font-family:var(--sans); font-size:20px; font-weight:700;
+                  fill:rgba(240,179,102,.6); text-anchor:middle; }
+  .tkfig .pv.sel{ font-size:22px; font-weight:800; fill:var(--router); }
+  /* 专家框：选中的两个亮紫描绿边，另外两个压成灰紫 —— 同 Tab4 的 .ep */
+  .tkfig .ep    { fill:rgba(159,140,250,.16); stroke:rgba(159,140,250,.32); stroke-width:2; }
+  .tkfig .ep.on { fill:var(--ffn); stroke:var(--on); stroke-width:2.4; }
+  .tkfig .eplbl    { font-family:var(--sans); font-size:21px; font-weight:800;
+                     text-anchor:middle; dominant-baseline:central; fill:rgba(214,203,255,.42); }
+  .tkfig .eplbl.on { fill:#12121a; }
+  /* 参考图里那圈虚线：把「被选中的专家 + 它那个 ×」框成一条通路 */
+  .tkfig .pick{ fill:none; stroke:rgba(110,231,176,.85); stroke-width:3.4; stroke-dasharray:9 7; }
+  .tkfig .op   { fill:var(--bg); stroke:#f2f3f5; stroke-width:2.6; }
+  .tkfig .opsgn{ font-family:var(--sans); font-size:22px; font-weight:800; fill:#f2f3f5;
+                 text-anchor:middle; dominant-baseline:central; }
+  /* 权重挪到乘号下方了：横着摆时只有乘号右缘到框右缘那 40 个单位可用，
+     「0.59」逼得字号只能给到 14（上屏 9.5px，看不清）。
+     放到下面就能用整个框宽，20 号字上屏 13.6px，和柱上的概率一样大 */
+  .tkfig .wlbl{ font-family:var(--sans); font-size:20px; font-weight:800;
+                fill:var(--on-ink); dominant-baseline:central; }
+
+  /* 最左一列写步骤名，右边两栏是两个 token 各走一遍。
+     单元格里只留向量本身，p= / y= / 除数都不写，那些由最左列的步骤名交代 */
+  .tktab{ width:100%; border-collapse:collapse; table-layout:fixed; }
+  .tktab .clab{ width:138px; }
+  .tktab td{ padding:6px 10px; text-align:center; color:var(--ink); }
+  .tktab .katex{ font-size:1.22em; }
+  /* 步骤名居中，同 Tab7 的 .rowdef */
+  .tktab .rlab{ font-size:16px; font-weight:700; color:var(--muted);
+                text-align:center; padding:6px 10px; white-space:nowrap; }
+  /* 图那一行：格子不留内边距，两个半幅各自撑满 400 的栏宽，缩放才和拆之前一致 */
+  .tktab .figrow td{ padding:0 0 6px; vertical-align:bottom; }
+  /* 三列都画格子 */
+  .tktab td:nth-child(2), .tktab td:last-child{ border-left:1px solid var(--line); }
+  .tktab tbody tr + tr td{ border-top:1px dashed rgba(255,255,255,.13); }
+  /* 归一化是这一屏的落点：Top-K 砍完之后必须重新除以它们的和，权重才加得回 1。
+     高亮用品红，不用绿——这一屏的绿已经被占满了（虚线框、权重 0.59/0.41、
+     输出向量格子），再铺一层绿底只会糊在一起。蓝=向量、琥珀=概率、
+     紫=专家 FFN、绿=选中，品红是这屏唯一没承载含义的颜色，所以最跳。
+     实线压相邻行的虚线是 border-collapse 自己的优先级，不用 !important */
+  .tktab tbody tr.hl td{ background:rgba(244,114,182,.22);
+                         border-top:2px solid #f472b6;
+                         border-bottom:2px solid #f472b6; }
+  .tktab tbody tr.hl .rlab{ color:#fbcfe8; font-weight:800; font-size:17px; }
+  /* 数字也跟着大半档，整行在视觉上重一点 */
+  .tktab tbody tr.hl .katex{ font-size:1.34em; }
+  /* Tab6：收窄之后 keynote 那句要断成两行，多出来的一行靠下面几处内边距收回来 */
+  /* Tab6 自己一套红绿：全局那对 --bad / --on-ink 是浅色调，两栏摆在一起分不开，
+     这里换成红绿灯那种高饱和的一对，只在这一屏生效，不动别的 tab */
+  /* 1042 = 表格 1000 + panel 左右各 20 + 边框。表格从 1100 收到 1000 之后
+     面板要跟着收，不然灰底两边各空 50，框不贴内容 */
+  .wrap.fig6{ max-width:1042px; gap:11px;
+              --tl-red:#ff4136; --tl-green:#2ecc40; }
+  .wrap.fig6 .panel.tight{ padding:11px 20px 10px; }
+  .wrap.fig6 .pdiv{ margin:9px 0; }
+  .panel.tight.slim{ padding:10px 26px 10px; }
+
+  /* n / d / d_ff 的定义，位置同 078 Tab2 的 head */
+  .mtxhead{ font-size:20px; font-weight:800; line-height:1.3; color:var(--ink);
+            letter-spacing:-.1px; margin-bottom:8px; }
+  .mtxhead b{ font-family:var(--mono); font-weight:800; }
+  .mtxhead b.n{ color:var(--accent-ink); }
+  .mtxhead b.f{ color:#c3b2ff; }
+  .mtxhead b.e{ color:var(--router); }
+
+  /* 三行网格：符号 / 矩阵 / 尺寸。用 flex 的话每个标签会跟着自己那块矩阵浮动，
+     W₂ 有 d_ff 行、最高，会把它的标签顶到半空，五个标签对不成一条线 */
+  .mtxflow{ --fc:15px; --fg:2px;
+           display:grid; grid-auto-flow:column; grid-template-rows:auto auto auto;
+           align-items:center; justify-items:center; justify-content:center;
+           /* 行距要留够：最高的 W₂（d_ff 行）把中间那行撑满，它的上下边就贴着行界，
+              5px 的话尺寸标签几乎压在矩阵上 */
+           gap:13px 14px; font-family:var(--mono); }
+  .mtxflow .grid{ display:grid; gap:var(--fg); }
+  .mtxflow .cell{ width:var(--fc); height:var(--fc); border-radius:3px; }
+  /* 五块各一个色。避开琥珀（Tab4 的 router）和纯绿（被激活的专家），
+     免得同一套 deck 里一个颜色两个意思 */
+  .mtxflow .cell.c-x { background:#6aa0ff; }   /* 输入 */
+  .mtxflow .cell.c-w1{ background:#9f8cfa; }   /* 升维权重 */
+  .mtxflow .cell.c-h { background:#4ec9b0; }   /* 撑宽后的中间层 */
+  .mtxflow .cell.c-w2{ background:#e084b8; }   /* 降维权重 */
+  .mtxflow .cell.c-y { background:#b8d96a; }   /* 输出 */
+  /* Tab4 的 Router：权重沿用 Tab1 的紫（都是权重矩阵），输出用琥珀（＝上图那四根概率柱） */
+  .mtxflow .cell.c-wg{ background:#9f8cfa; }
+  .mtxflow .cell.c-g { background:#f6c486; }
+  .mtxflow .lab{ align-self:end; font-size:19px; font-weight:800; line-height:1; white-space:nowrap; }
+  .mtxflow .lab sub{ font-size:.72em; }
+  .mtxflow .dim{ align-self:start; font-size:17px; font-weight:700; color:var(--muted);
+                line-height:1; white-space:nowrap; }
+  .mtxflow .lab.x { color:#9dc0ff; }
+  .mtxflow .lab.w1{ color:#c3b2ff; }
+  .mtxflow .lab.h { color:#7fdcc8; font-size:16px; }
+  .mtxflow .lab.w2{ color:#efaed3; }
+  .mtxflow .lab.y { color:#d3e8a0; }
+  .mtxflow .lab.wg{ color:#c3b2ff; }
+  .mtxflow .lab.g { color:#f6c486; font-size:16px; }
+  .mtxflow .op{ font-size:26px; color:var(--arrow); font-weight:700; line-height:1; }
+
+  /* ===== TAB4：softmax 的每一行摊开成一个概率分布 ===== */
+  /* n 只有 3，格子放大一点。行距不跟 Tab1 一起放大：这一屏本来就已经超出 1080p 了，
+     再加行距只会把 keynote 顶得更靠下 */
+  .mtxflow.rt{ --fc:22px; row-gap:5px; }
+  /* 三个分布竖着摞，一行对一个 token；柱子压矮换成加宽，短了也看得清 */
+  .pdists{ display:flex; flex-direction:column; gap:9px; }
+  .pdist{ display:flex; align-items:flex-end; gap:6px;
+          padding-bottom:3px; border-bottom:2px solid rgba(240,179,102,.8); }
+  .pdist i{ display:block; width:20px; border-radius:2px 2px 0 0;
+            background:rgba(240,179,102,.32); }
+  .pdist i.win{ background:var(--router); }
+
+  /* ===== TAB5：一层 MoE 的 forward pass =====
+     三件事各占一种编码，不挤在一个颜色里：
+       格子一律蓝色 —— 它只表示「一个 d 维向量」，不表示身份
+       左边的彩色小牌子 —— 这一行是哪个 token，第 1/3/4/5 步都是同一个颜色
+       外面那个带底色的框 —— 这几行归哪个专家
+     所以四个专家色里不放蓝，免得和格子撞。
+     格子按 d=5 列画：比第 2 步表格的 e=4 列多一列，两个数字不一样才不会看混 */
+  /* 同 .mtxflow：三行网格（步骤名 / 图 / 形状），否则每列标签会跟着自己那块的高度浮动 */
+  .fpwrap{ position:relative; width:100%; }
+  /* --dc 格子边长（对齐 Tab4 的 .mtxflow.rt）、--dg 列间距、--dgr 行间距、--rg 分数表行间距。
+     矩阵横竖都贴死（--dg / --dgr 都是 0），靠格子自己的 1px 深色描边分格，是一整块 n × d。
+     行不留空之后，分数表的行高就不能再跟着格子走了（那样只有 22px，又扁回去），
+     所以第 2 步不再和第 1 / 5 步逐行对齐，各自居中；哪一行是哪个 token 由连线的颜色交代 */
+  .fpflow{ --dc:28px; --dg:0px; --dgr:0px; --rg:5px; --ehh:16px;
+           display:grid; grid-auto-flow:column; grid-template-rows:auto auto;
+           align-items:center; justify-items:center; justify-content:center;
+           gap:16px 22px; font-family:var(--mono); }
+  /* 挂在 .fpwrap 上而不是 .fpflow：绝对定位的 FFN 那层在 .fpflow 外面，也要拿到 --ec。
+     三个专家三个色相（青铜 / 青 / 梅），但都压到中暗一档：格子已经是灰的，
+     专家框只需要分得开，不需要抢眼。要读的数字另外提亮，见 .pv.win / .wc */
+  .fpwrap .c-e1{ --ec:#c4924e; }
+  .fpwrap .c-e2{ --ec:#4d9e8f; }
+  .fpwrap .c-e3{ --ec:#b0655c; }   /* 这一轮没接到 token 的那个 */
+  .fpwrap .c-e4{ --ec:#a06fae; }
+  /* 格子横竖都贴着排，靠 1px 深色描边分格 —— 同参考图：这是一整块矩阵，不是一堆散件。
+     一律用同一档深灰：格子只是「一块数据」，进出 FFN 也不换色，
+     彩色全留给真正要认的三样东西 —— token 牌子、专家框、权重 */
+  .fpflow .cell{ width:var(--dc); height:var(--dc); background:#565c6b;
+                 border:1px solid rgba(11,13,18,.55); }
+  .fpflow .dgrid{ display:grid; gap:var(--dgr) var(--dg); }
+  .fpflow .fpbody{ display:flex; align-items:center; gap:9px; }
+
+  /* 连线：2 → 3 按专家分摞、4 → 5 放回原位，都是一条一个 token、线色＝token 色；
+     3 → 4 是每个专家自己那个 FFN，线色＝专家色。
+     位置得等排完版实测，所以整张 svg 绝对定位盖在 .fpwrap 上，坐标 1:1 对 CSS 像素 */
+  .fplink{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+  .fplink .lk{ fill:none; stroke-width:2.4; opacity:.95; }
+  .fpgap { display:block; width:48px;  height:1px; }  /* 2→3 / 4→5：给连线空出这一列 */
+  .fpgap2{ display:block; width:106px; height:1px; }  /* 3→4：给几张小网络空出这一列 */
+
+  /* 3 → 4 之间，一个专家一个 FFN，画成 d → d_ff → d 的小网络（中间层更宽＝升维），
+     不套框、直接落在底色上。要卡在两边框的正中间、和框等高居中，
+     只能排完版按实测坐标摆，所以单独一层绝对定位 */
+  .fpffn{ position:absolute; inset:0; pointer-events:none; }
+  .fpffn .ffn{ position:absolute; transform:translate(-50%,-50%); line-height:0; }
+  .fpffn .net line  { stroke:var(--ec); stroke-width:.9; opacity:.5; }
+  .fpffn .net circle{ fill:var(--ec); }
+  .fpffn .ffn.void{ opacity:.5; }        /* 没 token 进来，这份权重这轮没动 */
+
+  /* 第一行：序号 + 步骤名；第三行：形状 */
+  .stp{ align-self:end; display:flex; align-items:center; gap:9px;
+        font-size:19px; font-weight:800; line-height:1;
+        white-space:nowrap; color:#e7e8ee; }
+  .stp i{ font-style:normal; flex:0 0 auto; width:25px; height:25px; border-radius:50%;
+          display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:800;
+          background:var(--accent-soft); border:1px solid var(--accent-line); color:var(--accent-ink); }
+  /* 形状标注跟图放进同一个格子，紧贴在图下面。
+     原来它自己占第三行，而这一行是被最高那两摞撑开的，
+     结果矮的几列（1 / 2 / 5）标注被甩到老远的下方 */
+  .fpcell{ display:flex; flex-direction:column; align-items:center; gap:11px; }
+  .fpdim{ font-size:17px; font-weight:700; line-height:1;
+          white-space:nowrap; color:var(--muted); }
+  .fpar{ font-size:28px; font-weight:700; color:var(--arrow); line-height:1; }
+
+  /* token 牌子：一个 token 一个颜色，底色在 JS 里设 —— 和连线共用同一份色表。
+     占位高度必须等于 --dc（贴着格子的行走），但牌子之间还要留缝：
+     用透明描边 + background-clip 把底色往里收，布局不变、看上去就分开了。
+     上下各收 2px（牌子间空出 4px，刚好不碰上），左右不收，牌子实际是 32×24。
+     高度顶到 --dc - 4 就到头了，再大就贴上了；要更大只能往宽里走 */
+  .tkcol{ display:flex; flex-direction:column; gap:var(--dgr); min-width:32px; }
+  .fpflow .tkcol .tk{ height:var(--dc); min-width:32px; padding:0; border-radius:6px;
+                      border:solid transparent; border-width:2px 0; background-clip:padding-box;
+                      font-size:13px; font-weight:800; color:#14161c;
+                      display:flex; align-items:center; justify-content:center; }
+
+  /* 2 · router 分数表：一行一个 token、一列一个专家，最高的那格点亮成那个专家的颜色。
+     行高和行距跟第 1 步的格子完全一样，两块的行才一一对得上（这一步不再标 t1…t6）。
+     所以行高被锁死在 --dc 上、放不大，只能往横里放宽 + 加大字号 */
+  /* 列数＝专家个数，由 JS 按 NE 写进 style，别在这儿写死 */
+  .rtab{ display:grid; gap:var(--rg) 5px; align-items:center; }
+  .rtab .eh{ height:var(--ehh); line-height:var(--ehh); font-size:13px; font-weight:800;
+             text-align:center; color:var(--ec,var(--dim)); }
+  /* 行高不再跟着格子走（见上面 .fpflow 的说明），按数字读得清来定 */
+  .rtab .pv{ height:30px;
+             border-radius:5px; font-size:14px; font-weight:700;
+             color:var(--muted); background:rgba(255,255,255,.06);
+             display:flex; align-items:center; justify-content:center; }
+  /* 专家色压暗之后，直接拿来当底色配深字就不够亮了；这两处是要读的数字，兑白提亮一档 */
+  .rtab .pv.win{ background:color-mix(in srgb, var(--ec) 80%, #fff);
+                 color:#14161c; font-weight:800; }
+
+  /* 3 / 4 · 一摞＝一个专家：框的底色和描边就是它的身份 */
+  /* 空专家不再画 FFN 之后，剩下几张小网络之间本来就隔得开，这里只按视觉疏密定 */
+  .dstack{ display:flex; flex-direction:column; gap:20px; }
+  .dblk{ display:flex; flex-direction:column; align-items:stretch;
+         padding:10px 13px 12px; border-radius:11px;
+         /* 参考图那种「浅色块 + 明确描边」：底色只做分组，压得住才不糊住里面的格子和字；
+            认色靠描边和抬头，那两处用足饱和度 */
+         background:color-mix(in srgb, var(--ec) 13%, transparent);
+         border:1.5px dashed color-mix(in srgb, var(--ec) 88%, transparent); }
+  .dhd{ display:flex; align-items:baseline; gap:11px; margin-bottom:9px; }
+  .dhd b{ font-size:14px; font-weight:800; color:var(--ec); white-space:nowrap; }
+  .dhd span{ font-size:12px; font-weight:600; color:var(--muted); white-space:nowrap; }
+  .dbody{ display:flex; align-items:center; gap:9px; }
+  /* 一个 token 都没分到：框和抬头还在、身子空着（当前这组分数下不会出现，留作兜底） */
+  .fpflow .dblk.void .dbody{ min-height:var(--dc); }
+  /* 权重也画成矩阵：nᵢ × 1 的一列，数字就是第 2 步点亮的那一格，底色也一样 */
+  .wgrid{ display:grid; gap:var(--dgr); }
+  .wgrid .wc{ width:44px; height:var(--dc); border:1px solid rgba(11,13,18,.55);
+              font-size:13px; font-weight:800; color:#14161c;
+              background:color-mix(in srgb, var(--ec) 80%, #fff);
+              display:flex; align-items:center; justify-content:center; }
+  .mop{ font-size:17px; font-weight:700; color:var(--arrow); line-height:1; }
+
+  /* ===== TAB6：负载均衡 =====
+     1）坍塌 vs 均衡的两列对照表（示意图 + CV 同列）2）Importance 的定义 3）CV → 辅助损失 */
+  /* 最左一列写定义，右边两列一列一种情形。一行一个量，横着读就是坍塌 vs 均衡 */
+  /* 1000 = 定义列 320 + 两个情形栏各 340。
+     320 卡的是左列最宽那个公式（Auxiliary Loss，1.32em 下实测墨迹 277）左右各留 21。
+     原来写 420 是给 1.5em 的公式留的，字号收到 1.32em 后两边空出 70 多，太散。
+     情形栏保持 340：里面的 .lbfig 画幅就有 284，再窄会挤到图 */
+  .lbtab{ width:100%; max-width:1000px; margin:0 auto;
+          border-collapse:collapse; table-layout:fixed; }
+  .lbtab .cdef{ width:320px; }
+  .lbtab th, .lbtab td{ padding:0; text-align:center; vertical-align:middle; }
+  .lbtab th{ font-family:var(--sans); font-size:19px; font-weight:800;
+             padding:0 0 9px; border-bottom:1px solid var(--line); }
+  .lbtab th.bad { color:var(--tl-red); }
+  .lbtab th.good{ color:var(--tl-green); }
+  /* 三列之间各一条竖线：定义列 | 坍塌 | 均衡 */
+  .lbtab th.bad, .lbtab th.good,
+  .lbtab td:nth-child(2), .lbtab td:last-child{ border-left:1px solid var(--line); }
+  /* 每个量一行，行与行之间一条虚线 */
+  .lbtab tbody tr + tr td{ border-top:1px dashed rgba(255,255,255,.13); }
+  /* 行距对齐 Tab5 的 .tktab（td 上下各 6）。原来是 12/9、11/12、15/8，松了一倍 */
+  .lbtab .distrow td{ padding:8px 0 6px; }
+  .lbtab .valrow td{ padding:6px 0; }
+  .lbtab .lossrow td{ padding:8px 0 6px; }
+
+  /* 行定义那一列：一行一个量的定义，整列居中。
+     字号跟着录屏走，小了看不清——但 1.5em 配 \displaystyle 的分式加求和，
+     单个公式的墨迹就有 55px，整行被它撑到 87，比 Tab5 的 36 松一倍。
+     收到 1.32em（21px）后墨迹约 48px，仍比 Tab5 表里的公式（19.5px）大，够看清 */
+  .lbtab .rowdef{ text-align:center; vertical-align:middle; padding:0 16px; }
+  .lbtab .rowdef .katex{ font-size:1.32em; color:var(--ink); }
+  .rdname{ font-size:18px; font-weight:700; color:var(--ink); }
+
+  /* 情形栏里的四个数：直接列成一个向量，顺序就是 E1..E4。
+     f 绿 / P 琥珀，和上面柱子的颜色对得上 */
+  /* 值也走 KaTeX，和左边的定义同一套字。这一屏的颜色只留给红绿两栏，
+     f / P 本身不上色，白字即可 */
+  .fpvals{ font-size:16px; text-align:center; white-space:nowrap; color:var(--ink); }
+  .fpvals .katex{ font-size:1.42em; }
+  /* 两半拆成两张图各占一格 */
+  .lbfig{ width:100%; max-width:284px; height:auto; display:block; margin:4px auto 2px; }
+  /* Router 和 Top-K 那屏的 .tkfig .rtbox 同一套：实心琥珀底 + 深色字。
+     两屏画的是同一个部件，颜色不该各来一套 */
+  .lbfig .rt  { fill:var(--router); stroke:rgba(240,179,102,.95); stroke-width:2; }
+  /* 两张图也跟着走红绿灯：坍塌那张整条链红，均衡那张整条链绿，
+     一栏一个颜色，扫一眼就知道哪边是哪边 */
+  .lbfig .hot { fill:rgba(255,65,54,.18);   stroke:var(--tl-red);   stroke-width:3; }
+  .lbfig .cold{ fill:var(--off);            stroke:rgba(255,255,255,.2); stroke-width:2; }
+  .lbfig .even{ fill:rgba(46,204,64,.16);   stroke:var(--tl-green); stroke-width:2.6; }
+  .lbfig .flow   { fill:none; stroke:var(--tl-red); stroke-width:15; }
+  .lbfig .trickle{ fill:none; stroke:rgba(255,255,255,.3); stroke-width:2.5; }
+  .lbfig .fair   { fill:none; stroke:var(--tl-green); stroke-width:8; }
+  .lbfig .nlab{ font-family:var(--sans); font-size:16px; font-weight:800;
+                fill:#12121a; text-anchor:middle; }
+
+  /* 一排 token，各自一个 softmax 分布；top-1 那根点亮成琥珀 —— 画法同 Tab4 的 .pdist */
+  .impflow{ display:flex; align-items:flex-end; justify-content:center; gap:10px; }
+  .impcol{ display:flex; flex-direction:column; align-items:center; gap:6px; }
+  .bars{ display:flex; align-items:flex-end; gap:2px; height:54px;
+         padding-bottom:3px; border-bottom:2px solid rgba(240,179,102,.8); }
+  .bars i{ display:block; width:12px; border-radius:2px 2px 0 0;
+           background:rgba(240,179,102,.32); }
+  .bars i.win{ background:var(--router); }
+  /* 总结里的 f_i / P_i 也走 KaTeX，和表格里的定义同一套字；比正文略大一档才不显小 */
+  .wrap.fig6 .keynote .katex{ font-size:1.16em; }
+  /* 最后一行：这一栏代进式子算出来的值 */
+  .lbcase{ display:flex; justify-content:center; font-size:16px; }
+  .lbnum .katex{ font-size:1.85em; }
+  .lbcase.bad  .lbnum{ color:var(--tl-red); }
+  .lbcase.good .lbnum{ color:var(--tl-green); }
+
+  /* ===== TAB4：decoder 里的 MoE Layer 放大（还原参考图）===== */
+  /* viewBox 1494 → 929px，缩放比 0.6218，与 Tab1（920/1480=0.6216）一致 */
+  .layerfig2{ max-width:929px; }
+  .blockfig .moepanel{ fill:rgba(159,140,250,.06); stroke:var(--ffn); stroke-width:2.4; }
+  .blockfig .moetitle{ font-family:var(--sans); font-size:28px; font-weight:800; fill:#f2f3f5; }
+  /* 路由这条链整体高亮：Router 框 + 概率柱圈成一块琥珀区，内部信号线也走琥珀 */
+  .blockfig .rtzone{ fill:rgba(240,179,102,.085); stroke:rgba(240,179,102,.26); stroke-width:1.8; }
+  .blockfig .routerbox{ fill:rgba(240,179,102,.22); stroke:rgba(240,179,102,.85); stroke-width:3;
+                        filter:drop-shadow(0 0 16px rgba(240,179,102,.38)); }
+  .blockfig .stream.rt{ stroke:var(--router); stroke-width:4; }
+  .blockfig .qkvhead.rt{ fill:var(--router); }
+  .blockfig .rtitle{ font-family:var(--sans); font-size:26px; font-weight:800; fill:var(--router); }
+  .blockfig .pill.soft{ fill:var(--t1); }
+  .blockfig .pill.gate{ fill:var(--ffn); }
+  .blockfig .lbl.mid{ font-size:25px; }
+  .blockfig .bar2{ stroke-width:1.6; }
+  .blockfig .bar2.sel{ fill:var(--router); stroke:rgba(240,179,102,.95); stroke-width:2.4;
+                       filter:drop-shadow(0 0 14px rgba(240,179,102,.6)); }
+  /* 没中选的柱子也归琥珀：它们是 Router 的产物，不是专家 */
+  .blockfig .bar2.dim{ fill:rgba(240,179,102,.28); stroke:rgba(240,179,102,.5); }
+  .blockfig .pv2{ font-family:var(--sans); font-size:25px; font-weight:700;
+                  fill:rgba(240,179,102,.72); text-anchor:middle; }
+  .blockfig .pv2.sel{ font-size:28px; font-weight:800; fill:var(--router); }
+  .blockfig .base2{ stroke:rgba(240,179,102,.85); stroke-width:3; }
+  .blockfig .ep{ stroke-width:2.2; }
+  .blockfig .ep.off{ fill:rgba(159,140,250,.16); stroke:rgba(159,140,250,.32); }
+  .blockfig .ep.on{ fill:var(--ffn); stroke:var(--on); stroke-width:2.6;
+                    filter:drop-shadow(0 0 9px rgba(52,211,153,.45)); }
+  .blockfig .eplbl{ font-family:var(--sans); font-size:27px; font-weight:800;
+                    text-anchor:middle; dominant-baseline:central; }
+  .blockfig .eplbl.off{ fill:rgba(214,203,255,.42); }
+  .blockfig .eplbl.on{ fill:#12121a; }
+  .blockfig .wire3{ fill:none; stroke:#f2f3f5; stroke-width:4; }
+  .blockfig .pdash2{ fill:none; stroke:#f2f3f5; stroke-width:2.4; stroke-dasharray:9 8; }
+  .blockfig .mul{ fill:var(--bg); stroke:#f2f3f5; stroke-width:3; }
+  .blockfig .mulsign2{ font-family:var(--sans); font-size:27px; font-weight:800;
+                       fill:#f2f3f5; text-anchor:middle; dominant-baseline:central; }
+  .blockfig .plbl2{ font-family:var(--sans); font-size:23px; font-weight:700;
+                    fill:#f2f3f5; dominant-baseline:central; }
+  .blockfig .plbl2 .sel{ fill:var(--router); font-weight:800; }
+
+  /* ===== TAB3：dense decoder vs sparse decoder（还原参考图）===== */
+  .swapfig{ width:100%; max-width:800px; height:auto; display:block; margin:0 auto; }
+  .swapfig .dtitle{ font-family:var(--sans); font-size:31px; font-weight:800; fill:#f2f3f5; }
+  .swapfig .dtitle .p{ fill:var(--ffn); }
+  .swapfig .dtitle .b{ fill:var(--accent); }
+  .swapfig .dsub{ font-family:var(--sans); font-size:26px; font-weight:700; fill:#dcdce4; }
+  .swapfig .dsub .k{ fill:var(--ffn); font-weight:800; }
+  .swapfig .dbox{ fill:rgba(106,160,255,.045); stroke:var(--accent); stroke-width:2.6; }
+  .swapfig .dstream{ fill:none; stroke:#f2f3f5; stroke-width:3.4; }
+  .swapfig .dstream.dash{ stroke:#5b5b66; stroke-dasharray:7 9; }
+  .swapfig .dresid{ fill:none; stroke:#f2f3f5; stroke-width:2.6; }
+  .swapfig .dhead{ fill:#f2f3f5; }
+  .swapfig .dpill{ stroke:rgba(0,0,0,.55); stroke-width:1.8; }
+  .swapfig .dpill.norm{ fill:var(--t1); }
+  .swapfig .dpill.attn{ fill:var(--t2); }
+  .swapfig .dpill.ffn{ fill:var(--ffn); }
+  /* 右边那一排专家 FFN 单独换成红：和左边 dense 那一个紫色 FFN 拉开，
+     一眼看出「被换掉的是这一块」。字仍是深色，所以红要取中亮那一档 */
+  .swapfig .dpill.ffn.ex{ fill:#f2726e; }
+  .swapfig .dlbl{ font-family:var(--sans); font-weight:800; fill:#12121a;
+                  text-anchor:middle; dominant-baseline:central; }
+  .swapfig .dlbl.n{ font-size:21px; }
+  .swapfig .dlbl.a{ font-size:22px; }
+  .swapfig .dlbl.f{ font-size:27px; }
+  .swapfig .dlbl.e{ font-size:20px; }
+  .swapfig .dplus{ fill:var(--bg); stroke:#f2f3f5; stroke-width:2.6; }
+  .swapfig .dplussign{ font-family:var(--sans); font-size:25px; font-weight:800;
+                       fill:#f2f3f5; text-anchor:middle; dominant-baseline:central; }
+  .swapfig .expwrap{ fill:rgba(159,140,250,.10); stroke:rgba(159,140,250,.8);
+                     stroke-width:2.4; stroke-dasharray:9 7; }
+  .swapfig .midtxt{ font-family:var(--sans); font-size:25px; fill:#dcdce4; }
+  .swapfig .midtxt .b{ font-weight:800; fill:#f2f3f5; }
+  .swapfig .midtxt .p{ font-weight:800; fill:var(--ffn); }
+  .swapfig .bigarrow{ fill:none; stroke:#f2f3f5; stroke-width:7; }
+
+  /* ===== TAB2：Sparse Model —— 一个 token 只走一个专家（还原参考图）===== */
+  .sparsefig{ width:100%; max-width:720px; height:auto; display:block; margin:0 auto; }
+  .sparsefig .stitle{ font-family:var(--sans); font-size:27px; font-weight:800; fill:#f2f3f5; }
+  .sparsefig .stitle .sp{ fill:var(--accent); }
+  .sparsefig .sbox{ fill:rgba(106,160,255,.05); stroke:var(--accent); stroke-width:2.6; }
+  /* 提示词只是「一串输入」，不承担别的语义，走中性灰；颜色留给下面真正要认的东西 */
+  .sparsefig .tokpill{ fill:#33343d; stroke:rgba(255,255,255,.22); stroke-width:1.6; }
+  .sparsefig .toklbl{ font-family:var(--sans); font-size:23px; font-weight:700; fill:#dcdce4;
+                      text-anchor:middle; dominant-baseline:central; }
+  .sparsefig .dotbox{ fill:none; stroke:#8a8a96; stroke-width:2; stroke-dasharray:3 5; }
+  .sparsefig .swire{ fill:none; stroke:#f2f3f5; stroke-width:4; }
+  .sparsefig .swire.dim{ stroke:#6e6e7a; stroke-width:3; }
+  .sparsefig .shead{ fill:#f2f3f5; }
+  .sparsefig .shead.dim{ fill:#6e6e7a; }
+  /* 进出这一层的 token 向量，颜色和 Tab1 的 .tokcell 对齐：
+     进去是蓝 #6aa0ff、出来是黄绿 #b8d96a，两屏之间同一个东西同一个色 */
+  .sparsefig .vcell{ stroke:rgba(0,0,0,.5); stroke-width:1.4; }
+  .sparsefig .vcell.g1, .sparsefig .vcell.g2, .sparsefig .vcell.g3{ fill:#6aa0ff; }
+  .sparsefig .vcell.b1, .sparsefig .vcell.b2, .sparsefig .vcell.b3{ fill:#b8d96a; }
+  .sparsefig .cntlbl{ font-family:var(--sans); font-size:20px; fill:#dcdce4; text-anchor:end; }
+  .sparsefig .cntlbl.b{ font-weight:800; fill:#f2f3f5; }
+  .sparsefig .cntlbl.i{ font-style:italic; font-size:20px; fill:var(--muted); }
+  .sparsefig .expname{ font-family:var(--sans); font-size:21px; font-weight:800;
+                       fill:var(--muted); text-anchor:middle; }
+  .sparsefig .expname.on{ fill:#f2f3f5; }
+  .sparsefig .expbox{ fill:rgba(159,140,250,.10); stroke:rgba(159,140,250,.42);
+                      stroke-width:2.2; stroke-dasharray:7 6; }
+  .sparsefig .expbox.on{ fill:rgba(159,140,250,.30); stroke:var(--on); stroke-dasharray:none;
+                         stroke-width:2.6; filter:drop-shadow(0 0 10px rgba(52,211,153,.45)); }
+  .sparsefig .emesh line{ stroke:#5e5e6c; stroke-width:1.4; }
+  .sparsefig .emesh.on line{ stroke:#8f8fa2; stroke-width:1.6; }
+  .sparsefig .en{ fill:#2a2a31; stroke:#8a8a96; stroke-width:2; }
+  .sparsefig .en.on{ fill:var(--on); stroke:#0d1a15; }
+  .sparsefig .pwire{ fill:none; stroke:#5e5e6c; stroke-width:2.6; }
+  .sparsefig .pwire.on{ stroke:#8f8fa2; }
+  .sparsefig .actlbl{ font-family:var(--sans); font-size:19px; font-weight:600;
+                      fill:var(--dim); text-anchor:middle; }
+  .sparsefig .actlbl.on{ font-weight:800; fill:var(--on-ink); }
+  /* 答案就是上面那个输出向量解出来的，跟它同色，一条链读到底 */
+  .sparsefig .ansbox{ fill:#b8d96a; }
+  .sparsefig .anstext{ font-family:var(--sans); font-size:27px; font-weight:800; fill:#151a0d;
+                       text-anchor:middle; dominant-baseline:central; }
+
+  /* ===== TAB2：MoE Layer 结构图（还原参考图）===== */
+  .moegrid{ display:grid; grid-template-columns:566px 1fr; gap:18px; width:100%; align-items:stretch; }
+  .colstack{ display:flex; flex-direction:column; gap:14px; }
+  .colstack .panel{ flex:0 0 auto; }
+  .moefig{ width:100%; max-width:520px; height:auto; display:block; margin:0 auto; }
+  .moefig .mtitle{ font-family:var(--sans); font-size:36px; font-weight:800; fill:#f2f3f5; }
+  .moefig .moebox{ fill:rgba(159,140,250,.05); stroke:var(--ffn); stroke-width:2.6; }
+  .moefig .mstream{ fill:none; stroke:#f2f3f5; stroke-width:4; }
+  .moefig .mstream.thin{ stroke-width:3.4; }
+  .moefig .mstream.dash{ stroke:#5b5b66; stroke-width:4; stroke-dasharray:6 10; }
+  .moefig .shead2{ fill:#f2f3f5; }
+  .moefig .rtitle{ font-family:var(--sans); font-size:27px; font-weight:800; fill:var(--router); }
+  .moefig .routerbox{ fill:rgba(240,179,102,.13); stroke:rgba(240,179,102,.5); stroke-width:2.2; }
+  .moefig .mpill{ stroke:rgba(0,0,0,.55); stroke-width:2.2; }
+  .moefig .mpill.ffn{ fill:var(--ffn); }
+  .moefig .mpill.soft{ fill:var(--t1); }
+  .moefig .mlbl{ font-family:var(--sans); font-size:28px; font-weight:800; text-anchor:middle; dominant-baseline:central; }
+  .moefig .mlbl.sm{ font-size:24px; }
+  .moefig .mlbl.dark{ fill:#12121a; }
+  .moefig .mlbl.faint{ fill:rgba(214,203,255,.42); }
+  .moefig .bar{ stroke-width:1.6; }
+  .moefig .bar.sel{ fill:var(--router); stroke:rgba(240,179,102,.8); }
+  .moefig .bar.dim{ fill:rgba(159,140,250,.22); stroke:rgba(159,140,250,.38); }
+  .moefig .pv{ font-family:var(--sans); font-size:24px; font-weight:700; fill:var(--dim); text-anchor:middle; }
+  .moefig .pv.sel{ font-size:27px; font-weight:800; fill:var(--router); }
+  .moefig .baseline{ stroke:#f2f3f5; stroke-width:3.4; }
+  .moefig .brk{ fill:none; stroke:#b6b6c4; stroke-width:2.2; }
+  .moefig .leader{ stroke:#7a7a86; stroke-width:1.8; }
+  .moefig .rlbl{ font-family:var(--sans); font-size:25px; font-weight:600; fill:#dcdce4; }
+  .moefig .rlbl .b{ font-weight:800; fill:#f2f3f5; }
+  .moefig .albl{ font-family:var(--sans); font-size:24px; fill:#dcdce4; text-anchor:end; }
+  .moefig .albl.b{ font-weight:800; fill:#f2f3f5; }
+  .moefig .wire2{ fill:none; stroke:#f2f3f5; stroke-width:5; }
+  .moefig .expert{ stroke-width:2.4; }
+  .moefig .expert.on{ fill:var(--ffn); stroke:var(--on); filter:drop-shadow(0 0 9px rgba(52,211,153,.55)); }
+  .moefig .expert.off{ fill:rgba(159,140,250,.16); stroke:rgba(159,140,250,.32); }
+  .moefig .pdash{ fill:none; stroke:#f2f3f5; stroke-width:2.6; stroke-dasharray:9 8; }
+  .moefig .dashmask{ fill:var(--card); }
+  .moefig .plbl{ font-family:var(--sans); font-size:25px; font-weight:700; fill:#f2f3f5; }
+  .moefig .plbl .sel{ fill:var(--router); font-weight:800; }
+  .moefig .mulnode{ fill:var(--bg); stroke:#f2f3f5; stroke-width:3.4; }
+  .moefig .mulsign{ font-family:var(--sans); font-size:29px; font-weight:800; fill:#f2f3f5; text-anchor:middle; dominant-baseline:central; }
+
+  /* ===== 层示意（TAB2）===== */
+  .layerfig{ display:flex; flex-direction:column; align-items:center; gap:9px; }
+  .lblock{ border-radius:10px; color:#12121a; font-weight:800; font-size:16px;
+           display:flex; align-items:center; justify-content:center; height:46px; }
+  .lblock.attn{ background:var(--accent); width:330px; }
+  .lblock.ffn{ background:var(--ffn); width:330px; }
+  .lblock.router{ background:var(--router); width:330px; height:34px; font-size:14px; }
+  .down{ color:var(--arrow); font-size:19px; line-height:1; font-weight:700; }
+  .expgrid{ display:grid; grid-template-columns:repeat(4,74px); gap:8px; justify-content:center; }
+  .exp{ height:46px; border-radius:9px; display:flex; align-items:center; justify-content:center;
+        font-family:var(--mono); font-size:13px; font-weight:700; }
+  .exp.on{ background:var(--ffn); color:#12121a; box-shadow:0 0 0 2.5px var(--on), 0 0 16px rgba(52,211,153,.5); }
+  .exp.off{ background:var(--off); color:var(--dim); border:1px solid var(--line-2); }
+  .figcap{ font-size:15px; color:var(--muted); font-weight:600; }
+  .figcap b{ color:var(--ink); font-weight:800; }
+  .legend{ display:flex; gap:20px; justify-content:center; align-items:center;
+           font-size:15px; color:var(--muted); flex-wrap:wrap; }
+  .legend .k{ display:inline-flex; align-items:center; gap:7px; }
+  .legend .sw{ width:15px; height:15px; border-radius:4px; display:inline-block; }
+
+  /* ===== 代码窗（JSON）===== */
+  .codebox{ background:#1b1b20; border:1px solid var(--line-2); border-radius:12px;
+            overflow:hidden; text-align:left; width:max-content; max-width:100%; }
+  .codebox .cbar{ display:flex; align-items:center; gap:8px; padding:8px 15px;
+                  background:#232329; border-bottom:1px solid var(--line); }
+  .cbar .d{ width:11px; height:11px; border-radius:50%; }
+  .cbar .d.r{ background:#ff5f57; } .cbar .d.y{ background:#febc2e; } .cbar .d.g{ background:#28c840; }
+  .cbar .fname{ margin-left:9px; font-family:var(--mono); font-size:13px; color:#8a8a96; }
+  .codebox pre{ margin:0; padding:13px 18px 15px; font-family:var(--mono); font-size:var(--cfs,15px);
+                line-height:1.6; color:#c3cad9; white-space:pre; }
+  .codebox .k  { color:var(--accent); }              /* json key */
+  .codebox .n  { color:var(--router); }              /* number */
+  .codebox .cmt{ color:#6e6e7a; }
+  .codebox .new{ color:var(--on-ink); font-weight:800;   /* 新增的那两行 */
+                 background:rgba(52,211,153,.16); border-radius:5px;
+                 padding:1px 4px; margin:0 -4px; }
+  .codebox .new .k, .codebox .new .n{ color:var(--on-ink); }
+
+  /* ===== 表 ===== */
+  .tbl{ border-collapse:separate; border-spacing:0; width:100%; font-size:18px; }
+  .tbl th, .tbl td{ padding:9px 14px; border-bottom:1px solid var(--line);
+                    text-align:center; white-space:nowrap; }
+  .tbl thead th{ background:rgba(255,255,255,.045); color:var(--muted);
+                 font-weight:700; font-size:14px; }
+  .tbl thead th:first-child{ background:transparent; }
+  .tbl tbody th{ text-align:left; color:var(--ink); font-weight:700; font-family:var(--sans); }
+  .tbl td{ font-family:var(--mono); font-weight:600; color:var(--ink); }
+  .tbl td.on{ color:var(--on-ink); background:var(--on-soft); font-weight:800; }
+  .tbl td.big{ font-size:19px; font-weight:800; }
+  .tbl tr.hi th{ color:var(--accent-ink); }
+  .tbl tr:last-child th, .tbl tr:last-child td{ border-bottom:none; }
+
+  /* ===== Router 流程（TAB3）===== */
+  .rflow{ display:grid; grid-template-columns:auto 30px auto 30px auto;
+          align-items:center; justify-items:center; gap:0 8px; }
+  .rarrow{ color:var(--arrow); font-size:26px; font-weight:700; line-height:1; }
+  .stk{ display:flex; flex-direction:column; align-items:center; gap:7px; }
+  .stk .cap2{ font-size:14px; color:var(--muted); font-weight:700; }
+  .vec{ display:flex; gap:2px; }
+  .vec .c{ width:19px; height:34px; border-radius:4px; background:#3a3a44; }
+  .wgbox{ background:var(--router); color:#12121a; border-radius:11px; padding:18px 22px;
+          font-family:var(--mono); font-size:18px; font-weight:800; line-height:1.35; text-align:center; }
+  .logits{ display:grid; grid-template-columns:repeat(8,68px); gap:6px; }
+  .lg{ height:46px; border-radius:8px; border:1.5px solid var(--line-2); background:var(--card-2);
+       display:flex; align-items:center; justify-content:center;
+       font-family:var(--mono); font-size:17px; font-weight:700; color:var(--muted); }
+  .lg.win{ border-color:var(--on); background:var(--on-soft); color:var(--on-ink); }
+  .lgi{ display:grid; grid-template-columns:repeat(8,68px); gap:6px;
+        font-family:var(--mono); font-size:13px; color:var(--dim); }
+  .lgi span{ text-align:center; }
+  .wts{ display:grid; grid-template-columns:repeat(8,68px); gap:6px; }
+  .wt{ height:42px; border-radius:8px; display:flex; align-items:center; justify-content:center;
+       font-family:var(--mono); font-size:16px; font-weight:800; }
+  .wt.on{ background:var(--on); color:#0d1a15; }
+  .wt.zero{ background:var(--off); color:var(--dim); border:1px solid var(--line-2); font-weight:600; }
+  .fml{ margin:4px 0 0; }
+  .fml .katex{ font-size:1.85em; color:var(--ink); }
+  .fml.sm .katex{ font-size:1.32em; }
+
+  /* ===== 柱状图（TAB4 / 5 / 7）===== */
+  .chart{ position:relative; display:grid; grid-template-columns:repeat(8,68px);
+          gap:14px; justify-content:center; align-items:end; }
+  .chart .bar{ position:relative; width:68px; border-radius:7px 7px 0 0;
+               background:linear-gradient(180deg,#b7a6ff,#8b76f0); }
+  .chart .bar{ z-index:2; }
+  .chart .bar .val{ position:absolute; top:-25px; left:-4px; right:-4px; z-index:3;
+                    font-family:var(--mono); font-size:14px; font-weight:700; color:var(--muted);
+                    background:var(--card); border-radius:5px; padding:1px 0; }
+  .chart .bar .over{ position:absolute; left:0; right:0; top:0; border-radius:7px 7px 0 0;
+                     background:repeating-linear-gradient(45deg,rgba(255,120,120,.9) 0 6px,rgba(255,120,120,.5) 6px 12px); }
+  .chart.flat .bar{ background:linear-gradient(180deg,#6ee7b0,#2bbd8b); }
+  .xlab{ display:grid; grid-template-columns:repeat(8,68px); gap:14px; justify-content:center;
+         font-family:var(--mono); font-size:13px; color:var(--dim); margin-top:7px; }
+  .xlab span{ text-align:center; }
+  .chartbox{ position:relative; padding-top:26px; padding-right:120px; }
+  .capline{ position:absolute; left:0; right:0; z-index:1; border-top:2.2px dashed var(--bad); }
+  .capline .t{ position:absolute; right:0; top:-19px; font-family:var(--mono); font-size:13px;
+               font-weight:800; color:var(--bad); background:var(--card); padding:0 6px; }
+  .idealline{ position:absolute; left:0; right:0; z-index:1; border-top:2.2px dashed var(--on); }
+  .idealline .t{ position:absolute; right:0; top:-19px; font-family:var(--mono); font-size:13px;
+                 font-weight:800; color:var(--on-ink); background:var(--card); padding:0 6px; }
+
+  /* ===== 正反馈环（TAB4）===== */
+  .loop{ display:flex; flex-direction:column; align-items:center; gap:6px; }
+  .loopitem{ font-size:16px; font-weight:700; color:var(--ink); background:var(--ffn-soft);
+             border:1px solid var(--ffn-line); border-radius:10px; padding:9px 16px; width:250px; }
+  .loopitem.last{ background:var(--on-soft); border-color:var(--on-line); color:var(--on-ink); }
+  .loopback{ font-size:14px; color:var(--router); font-weight:800; margin-top:2px; }
+
+  /* ===== TAB6：切碎 / 共享 ===== */
+  .bigexp{ width:236px; height:122px; border-radius:10px; background:var(--ffn);
+           display:flex; align-items:center; justify-content:center; color:#12121a;
+           font-family:var(--mono); font-size:17px; font-weight:800; }
+  .smallexps{ display:grid; grid-template-columns:repeat(4,53px); gap:8px; justify-content:center; }
+  .smallexps .e{ height:122px; border-radius:8px; background:var(--ffn); }
+  .combo{ font-family:var(--mono); font-size:21px; font-weight:800; color:var(--ink); }
+  .combo .old{ color:var(--dim); } .combo .neu{ color:var(--on-ink); }
+  .sharedfig{ display:grid; grid-template-columns:auto 26px auto; align-items:center;
+              justify-content:center; gap:0 10px; }
+  .shexp{ width:150px; height:122px; border-radius:10px; background:var(--on); color:#0d1a15;
+          display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+          font-size:13px; font-weight:800; line-height:1.25; }
+  .routedgrid{ display:grid; grid-template-columns:repeat(16,16px); grid-template-rows:repeat(4,26px); gap:5px; }
+  .routedgrid .e{ border-radius:6px; background:rgba(159,140,250,.14); border:1px solid rgba(159,140,250,.28); }
+  .routedgrid .e.on{ background:var(--ffn); border-color:var(--ffn); }
+  .eqrows{ display:flex; flex-direction:column; align-items:center; gap:11px; margin:4px 0 2px; }
+  .eqrow{ display:grid; grid-template-columns:34px 430px 330px; align-items:center; gap:0 26px;
+          text-align:left; }
+  .eqrow .n{ font-family:var(--mono); font-size:22px; font-weight:800; color:var(--dim); }
+  .eqrow .eq{ font-family:var(--mono); font-size:25px; white-space:nowrap; font-weight:800; color:var(--ink); }
+  .eqrow .eq b.g{ color:var(--on-ink); } .eqrow .eq b.p{ color:var(--ffn); }
+  .eqrow .why{ font-family:var(--sans); font-size:16px; color:var(--muted); }
+
+  /* ===== TAB7：两条路径 ===== */
+  .paths{ display:grid; grid-template-columns:auto 34px auto; align-items:center;
+          justify-content:center; gap:14px 12px; }
+  .pnode{ border-radius:11px; padding:11px 18px; font-family:var(--mono);
+          font-size:17px; font-weight:700; color:var(--ink); }
+  .pnode.sel{ background:var(--router-soft); border:1.5px dashed var(--router-line); }
+  .pnode.grad{ background:var(--on-soft); border:1.5px solid var(--on-line); }
+  .pnode.src{ background:var(--card-2); border:1.5px solid var(--line-2); }
+  .plabel{ font-size:15px; font-weight:700; }
+  .plabel.no{ color:var(--router); } .plabel.yes{ color:var(--on-ink); }
+  .ba{ display:grid; grid-template-columns:1fr auto 1fr; align-items:center;
+       justify-items:center; gap:18px; width:100%; }
+  .bahead{ font-size:15px; font-weight:800; color:var(--muted); margin-bottom:9px; }
+  .bahead.bad{ color:var(--bad); } .bahead.good{ color:var(--on-ink); }
+  .banum{ font-family:var(--mono); font-size:30px; font-weight:800; }
+  .banum.bad{ color:var(--bad); } .banum.good{ color:var(--on-ink); }
+  .basub{ font-size:14px; color:var(--dim); margin-top:2px; }
+
+  /* ===== TAB8：想象 vs 实测 ===== */
+  .xcard{ border-color:var(--bad-line); background:var(--bad-soft); }
+  .vcard{ border-color:var(--on-line); background:var(--on-soft); }
+  .cardttl{ font-size:19px; font-weight:800; margin-bottom:16px; }
+  .cardttl.bad{ color:var(--bad); } .cardttl.good{ color:var(--on-ink); }
+  .fake{ display:grid; grid-template-columns:auto 26px auto; align-items:center;
+         justify-content:center; gap:9px 10px; }
+  .fakerow{ display:flex; flex-direction:column; gap:16px; }
+  .fexp{ border-radius:10px; padding:17px 30px; font-size:20px; font-weight:700;
+         background:var(--off); color:var(--dim); border:1px solid var(--line-2); }
+  .codelines{ font-family:var(--mono); font-size:19px; line-height:2.15; text-align:left;
+              background:var(--card-2); border:1px solid var(--line-2); border-radius:10px;
+              padding:11px 16px; color:#c3cad9; }
+  .tk{ border-radius:5px; padding:2px 4px; color:#1a1a1a; font-weight:600; }
+  .tklegend{ display:flex; justify-content:center; gap:26px; margin-top:11px;
+             font-size:15px; color:var(--muted); }
+  .tklegend span{ display:inline-flex; align-items:center; gap:8px; }
+  .tklegend .m{ font-family:var(--mono); color:var(--ink); font-weight:700; }
+  .tklegend i{ font-style:normal; }
+  .tk.eA{ background:var(--t3); }     /* 同一个专家 A */
+  .tk.eB{ background:var(--t0); }     /* 同一个专家 B */
+
+  /* ===== TAB9：all-to-all ===== */
+  .a2a{ display:grid; grid-template-columns:repeat(4,120px); gap:12px; justify-content:center; }
+  .gpu{ border:1.5px solid var(--line-2); border-radius:11px; background:var(--card-2); padding:9px 8px; }
+  .gpu .gn{ font-family:var(--mono); font-size:13px; font-weight:800; color:var(--muted); margin-bottom:7px; }
+  .gpu .ge{ display:grid; grid-template-columns:repeat(2,1fr); gap:4px; }
+  .gpu .ge i{ height:20px; border-radius:5px; background:var(--off); display:block; }
+  .gpu .ge i.on{ background:var(--ffn); }
+  .a2alab{ font-size:15px; color:var(--muted); font-weight:700; }
+  .a2alab b{ color:var(--router); font-weight:800; }
+</style>
+</head>
+<body>
+<div class="deck">
+  <div class="topbar">
+    <div class="brand"><span class="ttl">Mixture of Experts：<b>如何实现超大规模参数模型</b></span></div>
+    <nav class="tabs">
+      <button class="tab active" data-i="0">稠密模型</button>
+      <button class="tab" data-i="1">稀疏模型</button>
+      <button class="tab" data-i="2">动态路由</button>
+      <button class="tab" data-i="3">前向计算</button>
+      <button class="tab" data-i="4">Top-K</button>
+      <button class="tab" data-i="5">负载均衡</button>
+    </nav>
+  </div>
+
+  <div class="stage">
+
+    <!-- ===================== TAB 1 · 参数堆在哪 ===================== -->
+    <section class="slide active">
+      <div class="wrap fig">
+        <div class="head">Dense Model：每个 token <span class="hl-p">激活所有 FFN 参数</span></div>
+
+        <div class="panel tight">
+          <svg class="blockfig" viewBox="0 0 1480 690" role="img" aria-label="Transformer 层结构与 Dense FFN 展开">
+            <defs>
+              <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="#f2f3f5"/>
+              </marker>
+              <marker id="ahg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="#b6b6c4"/>
+              </marker>
+            </defs>
+
+            <!-- 放大引导线：左边一叠层里的其中一层 -->
+            <path class="zoomline b" d="M0,78 L85,57"/>
+            <path class="zoomline b" d="M0,548 L85,655"/>
+
+            <!-- 残差主干：从下往上 -->
+            <path class="stream dash" d="M360,690 L360,660"/>
+            <path class="stream" d="M360,660 L360,536"/>
+            <path class="stream" d="M360,413 L360,115"/>
+            <path class="stream" d="M360,81 L360,46"/>
+            <path class="qkvhead" d="M352,47 L368,47 L360,32 Z"/>
+            <path class="stream dash" d="M360,24 L360,0"/>
+
+            <text class="denselbl" x="40" y="40">Decoder</text>
+            <rect class="blockbox" x="85" y="57" width="512" height="598" rx="14"/>
+
+            <!-- 下半层：Layer Norm + Masked Self-Attention + 残差 -->
+            <path class="resid" d="M360,631 H122 V377 H336" marker-end="url(#ah)"/>
+            <rect class="pill norm" x="235" y="562" width="250" height="50" rx="9"/>
+            <text class="lbl dark" x="360" y="587">Layer Norm</text>
+            <path class="qkvbus" d="M251,536 H469"/>
+            <path class="qkvbus" d="M251,536 V518"/>
+            <path class="qkvbus" d="M360,536 V518"/>
+            <path class="qkvbus" d="M469,536 V518"/>
+            <path class="qkvhead" d="M244,519 L258,519 L251,505 Z"/>
+            <path class="qkvhead" d="M353,519 L367,519 L360,505 Z"/>
+            <path class="qkvhead" d="M462,519 L476,519 L469,505 Z"/>
+            <rect class="pill attn" x="195" y="413" width="330" height="92" rx="11"/>
+            <text class="lbl dark big" x="360" y="444">Masked Multi-Head</text>
+            <text class="lbl dark big" x="360" y="474">Attention</text>
+            <circle class="plus" cx="360" cy="377" r="17"/>
+            <text class="plussign" x="360" y="377">+</text>
+
+            <!-- 上半层：Layer Norm + FFN + 残差 -->
+            <path class="resid" d="M360,320 H122 V98 H336" marker-end="url(#ah)"/>
+            <rect class="pill norm" x="235" y="243" width="250" height="50" rx="9"/>
+            <text class="lbl dark" x="360" y="268">Layer Norm</text>
+            <rect class="pill ffn" x="235" y="145" width="250" height="70" rx="11"/>
+            <text class="lbl dark huge" x="360" y="180">FFN</text>
+            <circle class="plus" cx="360" cy="98" r="17"/>
+            <text class="plussign" x="360" y="98">+</text>
+
+            <!-- FFN 展开引导线 -->
+            <path class="zoomline p" d="M485,148 L672,132"/>
+            <path class="zoomline p" d="M485,215 L672,533"/>
+
+            <!-- Dense Model 面板：同样自下而上 -->
+            <rect class="densebox" x="672" y="132" width="768" height="401" rx="14"/>
+            <text class="denselbl" x="700" y="122"><tspan class="pk">Dense</tspan> Model</text>
+
+            <!-- 中心保持 967 / 1022 / 1077（和上下的连线对齐），缩窄格子把间隙让出来 -->
+            <rect class="tokcell in"  x="941" y="587"  width="52" height="46" rx="6"/>
+            <rect class="tokcell in"  x="996" y="587"  width="52" height="46" rx="6"/>
+            <rect class="tokcell in"  x="1051" y="587" width="52" height="46" rx="6"/>
+            <rect class="tokcell out" x="941" y="19"  width="52" height="46" rx="6"/>
+            <rect class="tokcell out" x="996" y="19"  width="52" height="46" rx="6"/>
+            <rect class="tokcell out" x="1051" y="19" width="52" height="46" rx="6"/>
+
+            <path class="wire" d="M967,587 V483"/><path class="wire" d="M1022,587 V483"/><path class="wire" d="M1077,587 V483"/>
+            <path class="wire dk" d="M967,193 V75" marker-end="url(#ahg)"/>
+            <path class="wire dk" d="M1022,193 V75" marker-end="url(#ahg)"/>
+            <path class="wire dk" d="M1077,193 V75" marker-end="url(#ahg)"/>
+
+            <g class="mesh" id="mesh"></g>
+            <g id="neurons"></g>
+
+            <path class="brace" d="M1104,435 h10 v50 h-10"/>
+            <text class="dimlbl" x="1128" y="468">d</text>
+            <path class="brace" d="M1337,312 h10 v50 h-10"/>
+            <text class="dimlbl" x="1361" y="345">d_ff</text>
+            <path class="brace" d="M1104,191 h10 v50 h-10"/>
+            <text class="dimlbl" x="1128" y="224">d</text>
+
+            <!-- d → d_ff 升维，d_ff → d 降维：两条弧关于中间那层（cy 337）对称 -->
+            <path class="projarrow" d="M1190,462 Q1270,448 1324,375" marker-end="url(#ahg)"/>
+            <text class="projlbl" x="1248" y="470">升维</text>
+            <path class="projarrow" d="M1324,299 Q1270,226 1190,212" marker-end="url(#ahg)"/>
+            <text class="projlbl" x="1248" y="208">降维</text>
+          </svg>
+        </div>
+
+        <div class="panel tight slim fit">
+          <div class="mtxhead">
+            假设提示词有 <b class="n">n</b> 个 token、每个 token 向量 <b class="n">d</b> 维，FFN 先升维到 <b class="f">d_ff</b> 再降回 <b class="n">d</b> 维
+          </div>
+          <!-- 三行网格，按列填：符号 / 矩阵 / 尺寸。运算符那几列上下用空占位补齐 -->
+          <div class="mtxflow">
+            <span class="lab x">X</span>
+            <div class="grid" id="fm-x"></div>
+            <span class="dim">n × d</span>
+
+            <i></i><span class="op">×</span><i></i>
+
+            <span class="lab w1">W<sub>1</sub></span>
+            <div class="grid" id="fm-w1"></div>
+            <span class="dim">d × d_ff</span>
+
+            <i></i><span class="op">=</span><i></i>
+
+            <span class="lab h">σ(XW<sub>1</sub>)</span>
+            <div class="grid" id="fm-h"></div>
+            <span class="dim">n × d_ff</span>
+
+            <i></i><span class="op">×</span><i></i>
+
+            <span class="lab w2">W<sub>2</sub></span>
+            <div class="grid" id="fm-w2"></div>
+            <span class="dim">d_ff × d</span>
+
+            <i></i><span class="op">=</span><i></i>
+
+            <span class="lab y">Y</span>
+            <div class="grid" id="fm-y"></div>
+            <span class="dim">n × d</span>
+          </div>
+        </div>
+
+        <div class="whynote">
+          所有 token 都使用<b>同一套完整网络</b>，所有神经元和参数参与运算，模型越大，<b>每 token 计算量越大</b>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== TAB 2 · Sparse Model ===================== -->
+    <section class="slide">
+      <div class="wrap fig2">
+        <div class="head">Sparse Model：FFN 换成<span class="hl-p">一排专家</span>，每个 token <span class="hl-g">只激活其中一个</span></div>
+
+        <div class="panel tight">
+          <div class="mergerow">
+
+          <!-- 左半：原来「专家网络」那一屏的右边那个 decoder。viewBox 直接裁到 x≥646，
+               里面的坐标一个都没改，样式照旧走 .swapfig 那一套。
+               标题从「Sparse Model」改成「Decoder Layer」，右边那张图里已经有
+               Sparse Model 了，同一屏不重复挂两个同名标签。 -->
+          <svg class="swapfig deccrop" viewBox="646 6 586 782" role="img" aria-label="decoder 层里的 FFN 换成一排专家">
+            <!-- 只写 Decoder，写全 Decoder Layer 的话字尾会顶到 x=925 那根输出箭头上 -->
+            <text class="dtitle" x="700" y="70"><tspan class="b">Decoder</tspan></text>
+
+            <rect class="dbox" x="700" y="100" width="450" height="590" rx="14"/>
+            <path class="dstream dash" d="M925,780 L925,752"/>
+            <path class="dstream" d="M925,752 L925,574"/>
+            <path class="dstream" d="M925,452 L925,263"/>
+            <path class="dstream" d="M925,187 L925,155"/>
+            <path class="dstream" d="M925,123 L925,74"/>
+            <path class="dhead" d="M917,74 L933,74 L925,58 Z"/>
+            <path class="dstream dash" d="M925,48 L925,14"/>
+            <path class="dresid" d="M925,666 H742 V418 H895"/>
+            <path class="dhead" d="M895,411 L895,425 L909,418 Z"/>
+            <path class="dstream" d="M817,574 V556"/>
+            <path class="dhead" d="M810,557 L824,557 L817,542 Z"/>
+            <path class="dstream" d="M925,574 V556"/>
+            <path class="dhead" d="M918,557 L932,557 L925,542 Z"/>
+            <path class="dstream" d="M1033,574 V556"/>
+            <path class="dhead" d="M1026,557 L1040,557 L1033,542 Z"/>
+            <path class="dstream" d="M817,574 H1033"/>
+            <rect class="dpill norm" x="800" y="598" width="250" height="48" rx="9"/>
+            <text class="dlbl n" x="925" y="622">Layer Norm</text>
+            <rect class="dpill attn" x="760" y="452" width="330" height="90" rx="11"/>
+            <text class="dlbl a" x="925" y="481">Masked Multi-Head</text>
+            <text class="dlbl a" x="925" y="513">Attention</text>
+            <circle class="dplus" cx="925" cy="418" r="16"/>
+            <text class="dplussign" x="925" y="418">+</text>
+            <rect class="dpill norm" x="800" y="288" width="250" height="48" rx="9"/>
+            <text class="dlbl n" x="925" y="312">Layer Norm</text>
+            <path class="dresid" d="M925,364 H1226 V139 H955"/>
+            <path class="dhead" d="M955,132 L955,146 L941,139 Z"/>
+            <rect class="expwrap" x="652" y="187" width="548" height="76" rx="12"/>
+            <rect class="dpill ffn ex" x="664" y="199" width="116" height="52" rx="10"/>
+            <text class="dlbl e" x="722" y="225">FFN 1</text>
+            <rect class="dpill ffn ex" x="800" y="199" width="116" height="52" rx="10"/>
+            <text class="dlbl e" x="858" y="225">FFN 2</text>
+            <rect class="dpill ffn ex" x="936" y="199" width="116" height="52" rx="10"/>
+            <text class="dlbl e" x="994" y="225">FFN 3</text>
+            <rect class="dpill ffn ex" x="1072" y="199" width="116" height="52" rx="10"/>
+            <text class="dlbl e" x="1130" y="225">FFN 4</text>
+            <circle class="dplus" cx="925" cy="139" r="16"/>
+            <text class="dplussign" x="925" y="139">+</text>
+          </svg>
+
+          <!-- 整张图上下翻过来了：token 从下面进、答案从上面出，和右边 decoder 同向。
+               翻转是一个 scale(1,-1) 的组做的，组里所有坐标还是原来那一套数
+               （原版是「输入在上」），以后要改图还是照着原来的数值改，不用重算。
+               <text> 不能放进这个组，进去会被镜像成倒字，所以文字全都拎到组外，
+               y 是按「墨迹带镜像」重算的，每个后面都标了原值。 -->
+          <svg class="sparsefig" viewBox="0 0 880 748" role="img" aria-label="Sparse Model：4 个专家里只激活一个，token 从下往上流">
+
+            <g transform="translate(0,748) scale(1,-1)">
+              <rect class="dotbox" x="239" y="26" width="396" height="56" rx="6"/>
+              <rect class="tokpill" x="243" y="30" width="106" height="48" rx="8"/>
+              <rect class="tokpill" x="349" y="30" width="66" height="48" rx="8"/>
+              <rect class="tokpill" x="415" y="30" width="54" height="48" rx="8"/>
+              <rect class="tokpill" x="469" y="30" width="54" height="48" rx="8"/>
+              <rect class="tokpill" x="523" y="30" width="54" height="48" rx="8"/>
+              <rect class="tokpill" x="577" y="30" width="54" height="48" rx="8"/>
+
+              <path class="swire" d="M437,82 V118"/>
+              <path class="shead" d="M429,118 L445,118 L437,134 Z"/>
+
+              <rect class="sbox" x="52" y="136" width="776" height="506" rx="14"/>
+
+              <rect class="vcell g1" x="392" y="156" width="30" height="30" rx="5"/>
+              <rect class="vcell g2" x="422" y="156" width="30" height="30" rx="5"/>
+              <rect class="vcell g3" x="452" y="156" width="30" height="30" rx="5"/>
+
+              <path class="swire" d="M437,186 V210 H714 V232"/>
+              <path class="shead" d="M706,232 L722,232 L714,248 Z"/>
+
+              <path class="dotbox" d="M86,268 V258 H802 V268"/>
+
+              <rect class="expbox" x="90" y="298" width="168" height="194" rx="12"/>
+              <rect class="expbox" x="270" y="298" width="168" height="194" rx="12"/>
+              <rect class="expbox" x="450" y="298" width="168" height="194" rx="12"/>
+              <rect class="expbox on" x="630" y="298" width="168" height="194" rx="12"/>
+              <!-- 专家里那几张小网络由 JS 塞进这三个组，也跟着一起翻。
+                   3-6-3 上下对称，翻过来长得一样，只是进出两头的接线互换 -->
+              <g class="emesh" id="emesh"></g>
+              <g class="emesh on" id="emesh-on"></g>
+              <g id="eneurons"></g>
+
+              <path class="swire dim" d="M174,492 V512"/><path class="shead dim" d="M166,512 L182,512 L174,527 Z"/>
+              <path class="swire dim" d="M354,492 V512"/><path class="shead dim" d="M346,512 L362,512 L354,527 Z"/>
+              <path class="swire dim" d="M534,492 V512"/><path class="shead dim" d="M526,512 L542,512 L534,527 Z"/>
+              <path class="swire" d="M714,492 V512"/><path class="shead" d="M706,512 L722,512 L714,527 Z"/>
+
+              <path class="swire" d="M714,566 V574 H437 V582"/>
+              <path class="shead" d="M429,582 L445,582 L437,596 Z"/>
+
+              <rect class="vcell b1" x="392" y="598" width="30" height="30" rx="5"/>
+              <rect class="vcell b2" x="422" y="598" width="30" height="30" rx="5"/>
+              <rect class="vcell b3" x="452" y="598" width="30" height="30" rx="5"/>
+
+              <path class="swire" d="M437,628 V664"/>
+              <path class="shead" d="M429,664 L445,664 L437,680 Z"/>
+              <rect class="ansbox" x="413" y="686" width="48" height="46" rx="9"/>
+            </g>
+
+            <!-- ↓ 文字层。central 基线的直接 748−y；alphabetic 基线的按墨迹带镜像算，
+                 所以不是整数对称，注释里的是原值 -->
+            <text class="anstext" x="437" y="39">2</text>                <!-- 原 709 -->
+
+            <!-- 标题不镜像：镜像会跑到框底下去，和 decoder 的标题一样留在框上方。
+                 框翻完是 y=106，标题照旧压它上面 10 -->
+            <text class="stitle" x="52" y="96"><tspan class="sp">Sparse</tspan> Model</text>
+
+            <text class="actlbl" x="174" y="211">未激活</text>                <!-- 原 552，离箭头尖 6 -->
+            <text class="actlbl" x="354" y="211">未激活</text>
+            <text class="actlbl" x="534" y="211">未激活</text>
+            <text class="actlbl on" x="714" y="211">被激活</text>
+
+            <text class="expname" x="174" y="481">标点</text>                 <!-- 原 284，离专家框 10 -->
+            <text class="expname" x="354" y="481">动词</text>
+            <text class="expname" x="534" y="481">连词</text>
+            <text class="expname on" x="714" y="481">数字</text>
+
+            <text class="cntlbl b" x="196" y="535">4 experts</text>          <!-- 原 228，离括号 25 -->
+
+            <text class="toklbl" x="296" y="694">What</text>                 <!-- 原 54 -->
+            <text class="toklbl" x="382" y="694">is</text>
+            <text class="toklbl" x="442" y="694">1</text>
+            <text class="toklbl" x="496" y="694">+</text>
+            <text class="toklbl" x="550" y="694">1</text>
+            <text class="toklbl" x="604" y="694">?</text>
+          </svg>
+
+          </div>
+        </div>
+
+        <!-- 这一屏讲的是解法，用蓝色 keynote；红色 whynote 留给 Tab1 那个「问题」 -->
+        <div class="keynote">
+          根据输入<b>动态选择计算路径</b>，每个 token 只激活模型中的一部分参数，可以增加总参数量而<b>不增加每 token 计算量</b>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== TAB 3 · decoder 里的 MoE Layer ===================== -->
+    <section class="slide">
+      <div class="wrap fig4">
+        <div class="head">动态路由：FFN 输出 Softmax 表示<span class="hl">每个专家的选中概率</span></div>
+
+        <div class="panel tight">
+          <!-- y 偏移裁掉 MoE 框上下多余的空白，内部坐标全部不动；decoder 仍居中 -->
+          <!-- MoE 面板缩小之后右边和上下都空出来一截，画幅跟着收：
+               1381 = 内容最右 1341 + 40 的右边距（和左边 Decoder 文字前的 40 对称）；
+               105 / 815 是按缩放后的实际内容范围（115～910）上下各留 10 定的。
+               画幅和下面 .wrap.fig4 的宽度按同一个比例改，decoder 的屏幕尺寸才不变 -->
+          <svg class="blockfig layerfig2" viewBox="0 105 1381 815" role="img" aria-label="decoder 里的 MoE Layer 展开：Router 内部与专家路由">
+
+            <!-- 左：decoder 层（几何完全复用 Tab1，整体下移 141 居中） -->
+            <text class="denselbl" x="40" y="181">Decoder</text>
+            <rect class="blockbox" x="85" y="198" width="512" height="598" rx="14"/>
+
+            <path class="stream dash" d="M360,889 L360,853"/>
+            <path class="stream" d="M360,853 L360,677"/>
+            <path class="stream" d="M360,554 L360,256"/>
+            <path class="stream" d="M360,222 L360,187"/>
+            <path class="qkvhead" d="M352,188 L368,188 L360,173 Z"/>
+            <path class="stream dash" d="M360,165 L360,141"/>
+
+            <path class="resid" d="M360,772 H122 V518 H336" marker-end="url(#ah)"/>
+            <rect class="pill norm" x="235" y="703" width="250" height="50" rx="9"/>
+            <text class="lbl dark" x="360" y="728">Layer Norm</text>
+            <path class="qkvbus" d="M251,677 H469"/>
+            <path class="qkvbus" d="M251,677 V659"/>
+            <path class="qkvbus" d="M360,677 V659"/>
+            <path class="qkvbus" d="M469,677 V659"/>
+            <path class="qkvhead" d="M244,660 L258,660 L251,646 Z"/>
+            <path class="qkvhead" d="M353,660 L367,660 L360,646 Z"/>
+            <path class="qkvhead" d="M462,660 L476,660 L469,646 Z"/>
+            <rect class="pill attn" x="195" y="554" width="330" height="92" rx="11"/>
+            <text class="lbl dark big" x="360" y="585">Masked Multi-Head</text>
+            <text class="lbl dark big" x="360" y="615">Attention</text>
+            <circle class="plus" cx="360" cy="518" r="17"/>
+            <text class="plussign" x="360" y="518">+</text>
+
+            <path class="resid" d="M360,461 H122 V239 H336" marker-end="url(#ah)"/>
+            <rect class="pill norm" x="235" y="384" width="250" height="50" rx="9"/>
+            <text class="lbl dark" x="360" y="409">Layer Norm</text>
+            <rect class="pill ffn" x="235" y="286" width="250" height="70" rx="11"/>
+            <text class="lbl dark mid" x="360" y="321">MoE Layer</text>
+            <circle class="plus" cx="360" cy="239" r="17"/>
+            <text class="plussign" x="360" y="239">+</text>
+
+            <!-- 放大引导线 -->
+            <!-- 引导线连到缩放后的面板左上 / 左下角：90 和 921 经变换是 152 和 859 -->
+            <path class="zoomline p" d="M485,289 L700,152"/>
+            <path class="zoomline p" d="M485,353 L700,859"/>
+
+            <!-- 整个 MoE Layer 缩到 0.85。内部坐标一个都没动，靠一层 g 变换整体缩放 ——
+                 逐个改几十个坐标既容易错，也会把内部的相对关系搞乱。
+                 缩放原点取 (700, 505.5)：700 是面板左边缘，缩完还贴着引导线；
+                 505.5 是面板竖直中心，和左边 decoder 的中心（497）基本对齐，缩完仍然并排居中。
+                 translate 的两个数就是 700×(1−0.85) 和 505.5×(1−0.85) -->
+            <g transform="translate(105,75.825) scale(0.85)">
+            <text class="moetitle" x="728" y="76">MoE Layer</text>
+            <rect class="moepanel" x="700" y="90" width="754" height="831" rx="14"/>
+
+            <!-- 路由区：Router + 概率柱是同一件事，圈在一起 -->
+            <rect class="rtzone" x="876" y="376" width="439" height="514" rx="16"/>
+
+            <!-- 残差流从下面进 Router -->
+            <path class="stream dash" d="M1095,981 L1095,960"/>
+            <path class="stream" d="M1095,960 L1095,832"/>
+
+            <!-- Router：一层很小的 FFN 打分 + Softmax 归一化 -->
+            <rect class="routerbox" x="896" y="617" width="399" height="249" rx="13"/>
+            <text class="rtitle" x="918" y="657">Router</text>
+            <rect class="pill gate" x="1010" y="766" width="170" height="66" rx="11"/>
+            <text class="lbl dark mid" x="1095" y="799">FFN</text>
+            <path class="stream rt" d="M1095,766 L1095,733"/>
+            <rect class="pill soft" x="940" y="667" width="311" height="66" rx="11"/>
+            <text class="lbl dark mid" x="1095" y="700">Softmax</text>
+            <path class="stream rt" d="M1095,667 L1095,610"/>
+            <path class="qkvhead rt" d="M1087,610 L1103,610 L1095,592 Z"/>
+
+            <!-- 四个专家各分到一个概率 -->
+            <rect class="bar2 sel" x="957" y="422" width="51" height="130"/>
+            <rect class="bar2 dim" x="1032" y="497" width="51" height="55"/>
+            <rect class="bar2 dim" x="1107" y="538" width="51" height="14"/>
+            <rect class="bar2 dim" x="1182" y="462" width="51" height="90"/>
+            <text class="pv2 sel" x="982" y="410">0.45</text>
+            <text class="pv2" x="1057" y="485">0.19</text>
+            <text class="pv2" x="1132" y="526">0.05</text>
+            <text class="pv2" x="1207" y="450">0.31</text>
+            <path class="base2" d="M937,552 H1253"/>
+
+            <!-- 四个专家，只有 1 号被点亮 -->
+            <rect class="ep on" x="774" y="252" width="144" height="70" rx="12"/>
+            <rect class="ep off" x="940" y="252" width="144" height="70" rx="12"/>
+            <rect class="ep off" x="1106" y="252" width="144" height="70" rx="12"/>
+            <rect class="ep off" x="1272" y="252" width="144" height="70" rx="12"/>
+            <text class="eplbl on" x="846" y="287">FFN 1</text>
+            <text class="eplbl off" x="1012" y="287">FFN 2</text>
+            <text class="eplbl off" x="1178" y="287">FFN 3</text>
+            <text class="eplbl off" x="1344" y="287">FFN 4</text>
+            <!-- 分最高的那根柱子 → 1 号专家 -->
+            <path class="wire3" d="M957,517 H846 V340"/>
+            <path class="qkvhead" d="M837,340 L855,340 L846,322 Z"/>
+
+            <!-- 专家输出 × 它那一份概率 -->
+            <path class="wire3" d="M846,252 V216 H1095 V182"/>
+            <path class="qkvhead" d="M1086,182 L1104,182 L1095,164 Z"/>
+            <path class="pdash2" d="M957,452 H750 V140 H790"/>
+            <text class="plbl2" x="800" y="140">p = <tspan class="sel">0.45</tspan></text>
+            <path class="pdash2" d="M885,140 H1053"/>
+            <path class="qkvhead" d="M1053,133 L1053,147 L1071,140 Z"/>
+            <circle class="mul" cx="1095" cy="140" r="24"/>
+            <text class="mulsign2" x="1095" y="140">×</text>
+
+            <path class="stream" d="M1095,116 L1095,84"/>
+            <path class="qkvhead" d="M1087,84 L1103,84 L1095,66 Z"/>
+            <path class="stream dash" d="M1095,62 L1095,46"/>
+            </g>
+          </svg>
+        </div>
+
+        <div class="panel tight slim">
+          <div class="mtxhead">
+            假设提示词有 <b class="n">n</b> 个 token、每个 token 向量 <b class="n">d</b> 维，一共有 <b class="e">E=4</b> 个专家
+          </div>
+          <div class="mtxflow rt">
+            <span class="lab x">X</span>
+            <div class="grid" id="rm-x"></div>
+            <span class="dim">n × d</span>
+
+            <i></i><span class="op">×</span><i></i>
+
+            <span class="lab wg">W<sub>g</sub></span>
+            <div class="grid" id="rm-wg"></div>
+            <span class="dim">d × E</span>
+
+            <i></i><span class="op">=</span><i></i>
+
+            <span class="lab g">softmax(XW<sub>g</sub>)</span>
+            <div class="grid" id="rm-g"></div>
+            <span class="dim">n × E</span>
+
+            <i></i><span class="op">→</span><i></i>
+
+            <i></i>
+            <div class="pdists" id="rm-pd"></div>
+            <i></i>
+          </div>
+        </div>
+
+        <div class="keynote">
+          <b>Router FFN</b> 给每个专家打个分，softmax 归一化成概率，取 <b>argmax</b> 为目标专家
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== TAB 4 · 一层 MoE 的 forward pass ===================== -->
+    <section class="slide">
+      <div class="wrap fig5">
+        <div class="head">前向计算：每个 token 向量被<span class="hl">分配到不同的专家 FFN</span>，算完再<span class="hl">合并</span></div>
+
+        <div class="panel tight slim">
+          <!-- 三行网格按列填：步骤名 / 图 / 形状；箭头那几列上下用空占位补齐。
+               2 → 3 的连线是绝对定位盖在整块上的一张 svg，坐标按实测位置算 -->
+          <div class="fpwrap">
+          <div class="fpflow">
+            <div class="stp"><i>1</i>输入</div>
+            <div class="fpcell">
+              <div class="fpbody">
+                <div class="tkcol" id="fp-tk1"></div>
+                <div class="dgrid" id="fp-x"></div>
+              </div>
+              <span class="fpdim">n × d</span>
+            </div>
+
+            <i></i><span class="fpar">→</span>
+
+            <div class="stp"><i>2</i>路由打分</div>
+            <div class="fpcell">
+              <div class="rtab" id="fp-rt"></div>
+              <span class="fpdim">n × E</span>
+            </div>
+
+            <i></i><i class="fpgap"></i>
+
+            <div class="stp"><i>3</i>分发（Dispatch）</div>
+            <div class="fpcell">
+              <div class="dstack" id="fp-ds"></div>
+              <span class="fpdim">nᵢ × d</span>
+            </div>
+
+            <i></i><i class="fpgap2"></i>
+
+            <div class="stp"><i>4</i>专家计算 + 加权</div>
+            <div class="fpcell">
+              <div class="dstack" id="fp-fx"></div>
+              <span class="fpdim">nᵢ × d</span>
+            </div>
+
+            <i></i><i class="fpgap"></i>
+
+            <div class="stp"><i>5</i>合并（Combine）</div>
+            <div class="fpcell">
+              <div class="fpbody">
+                <div class="tkcol" id="fp-tk2"></div>
+                <div class="dgrid" id="fp-y"></div>
+              </div>
+              <span class="fpdim">n × d</span>
+            </div>
+          </div>
+          <svg class="fplink" id="fp-link"></svg>
+          <div class="fpffn" id="fp-ffn"></div>
+          </div>
+        </div>
+
+        <div class="keynote">
+          token 会被<b>重新分组</b>，不同 Expert 处理的 <b>token 数通常不同</b>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== TAB 5 · Top-K 路由 =====================
+         结构参照常见的 Top-2 Routing 示意：两个 token 各走一遍
+         Router → 概率柱 → 选中的专家 → ×权重 → ⊕ → 输出向量。
+         专家数保持 E=4（Tab3/Tab5/Tab6 都是 4），概率直接复用 Tab3 底部那两行 -->
+    <section class="slide">
+      <div class="wrap figtk">
+        <div class="head">Top-K 路由：<span class="hl">选中的多个专家</span>各算一遍，再<span class="hl-g">按权重加起来</span></div>
+
+        <div class="panel tight">
+          <table class="tktab">
+            <colgroup><col class="clab"><col><col></colgroup>
+            <tbody>
+            <tr class="figrow">
+              <td class="rlab"></td>
+              <td>
+          <!-- 左右两半原本是同一张 1000 宽的画幅，拆成两个格子各占一栏。
+               坐标一个都没动，靠 viewBox 平移取景 —— 画法同 Tab7 的两张 .lbfig。
+               箭头 marker 只在这一半定义，右半那个 svg 跨过来引用同一个 id
+               （同一份 HTML 文档里的 inline svg，url(#) 是全文档解析的，实测两边都出箭头）-->
+          <svg class="tkfig" viewBox="0 0 500 580" role="img"
+               aria-label="token What 的 Top-2 路由：选中 FFN 1 与 FFN 4，输出加权求和">
+            <defs>
+              <!-- markerUnits 必须写死成 userSpaceOnUse：默认是 strokeWidth，
+                   而 .wire 的 stroke 是 2.6，markerWidth=6 会被放大成 15.6 个单位 ——
+                   比指向 Router 那根 14 单位的线还长，整根线只剩一个箭头 -->
+              <marker id="tkah" viewBox="0 0 10 10" refX="9" refY="5"
+                      markerWidth="11" markerHeight="9" markerUnits="userSpaceOnUse"
+                      orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="#f2f3f5"/>
+              </marker>
+            </defs>
+
+            <!-- ========== 左栏：token「What」，top-2 落在 FFN 1 和 FFN 4 ==========
+                 列心 250，四个专家中心 76 / 192 / 308 / 424（框宽 96、间距 20） -->
+            <!-- 牌子矮 6、向量整体上移 10：原来那根箭头是从蓝格子底边正好起笔的，
+                 一点缝都没有（实测 gap = 0），现在空出 10 -->
+            <rect class="tokpill" x="194" y="0" width="112" height="36" rx="9"/>
+            <text class="toklbl" x="250" y="18">What</text>
+            <path class="wire" d="M250,36 V48"/>
+            <rect class="vin" x="196" y="48" width="34" height="34" rx="5"/>
+            <rect class="vin" x="233" y="48" width="34" height="34" rx="5"/>
+            <rect class="vin" x="270" y="48" width="34" height="34" rx="5"/>
+            <path class="wire" d="M250,90 V108" marker-end="url(#tkah)"/>
+            <!-- 240 而不是 280：比下面那簇概率柱（216）宽出一点点就够，
+                 再宽就把整栏撑满、看着像另一个容器了 -->
+            <rect class="rtbox" x="130" y="112" width="240" height="54" rx="11"/>
+            <text class="rtlbl" x="250" y="139">Router</text>
+
+            <!-- 概率柱是挤在 Router 底下的一小簇（柱宽 36、间距 16、整簇 216），
+                 不跟着专家框摊开 —— 画法同 Tab4 的 .bar2，也同参考图。
+                 柱心 172 / 224 / 276 / 328，和下面专家框的 76 / 192 / 308 / 424 对不齐，
+                 靠下面那两条折线把「这根柱子 → 这个专家」连出来 -->
+            <rect class="bar sel" x="154" y="227" width="36" height="45"/>
+            <rect class="bar"     x="206" y="253" width="36" height="19"/>
+            <rect class="bar"     x="258" y="267" width="36" height="5"/>
+            <rect class="bar sel" x="310" y="241" width="36" height="31"/>
+            <text class="pv sel" x="172" y="218">0.45</text>
+            <text class="pv"     x="224" y="244">0.19</text>
+            <text class="pv"     x="276" y="258">0.05</text>
+            <text class="pv sel" x="328" y="232">0.31</text>
+            <path class="base" d="M142,272 H358"/>
+
+            <!-- 虚线框放大到 116×140。横向能放大是因为专家中心间距从 116 拉到了 124：
+                 右栏那两个专家是挨着的，框宽只能顶到「间距 − 8」，不然两个框贴一起 -->
+            <rect class="pick" x="6"   y="296" width="116" height="160" rx="16"/>
+            <rect class="pick" x="378" y="296" width="116" height="160" rx="16"/>
+            <path class="wire" d="M172,274 V290 H64 V308"  marker-end="url(#tkah)"/>
+            <path class="wire" d="M328,274 V290 H436 V308" marker-end="url(#tkah)"/>
+
+            <rect class="ep on" x="16"  y="310" width="96" height="52" rx="10"/>
+            <rect class="ep"    x="140" y="310" width="96" height="52" rx="10"/>
+            <rect class="ep"    x="264" y="310" width="96" height="52" rx="10"/>
+            <rect class="ep on" x="388" y="310" width="96" height="52" rx="10"/>
+            <text class="eplbl on" x="64"  y="336">FFN 1</text>
+            <text class="eplbl"    x="188" y="336">FFN 2</text>
+            <text class="eplbl"    x="312" y="336">FFN 3</text>
+            <text class="eplbl on" x="436" y="336">FFN 4</text>
+
+            <!-- 乘号整体下移 6：专家框到乘号只有 16 个单位、放不下箭头，
+                 而乘号到加号有 46，把余量匀过来一点 -->
+            <path class="wire" d="M64,364 V384"  marker-end="url(#tkah)"/>
+            <path class="wire" d="M436,364 V384" marker-end="url(#tkah)"/>
+            <circle class="op" cx="64" cy="402" r="18"/>
+            <text class="opsgn" x="64" y="402">×</text>
+            <circle class="op" cx="436" cy="402" r="18"/>
+            <text class="opsgn" x="436" y="402">×</text>
+            <!-- 权重摆在乘号正下方、偏右 7 个单位：连线是从乘号底部竖直下去的，
+                 偏这 7 个单位就不会压在线上，右边到框边还剩 5 个单位 -->
+            <text class="wlbl" x="71"  y="438">0.59</text>
+            <text class="wlbl" x="443" y="438">0.41</text>
+
+            <path class="wire" d="M64,420 V494 H230"  marker-end="url(#tkah)"/>
+            <path class="wire" d="M436,420 V494 H270" marker-end="url(#tkah)"/>
+            <circle class="op" cx="250" cy="494" r="18"/>
+            <text class="opsgn" x="250" y="494">+</text>
+            <path class="wire" d="M250,512 V534" marker-end="url(#tkah)"/>
+            <rect class="vout" x="196" y="536" width="34" height="34" rx="5"/>
+            <rect class="vout" x="233" y="536" width="34" height="34" rx="5"/>
+            <rect class="vout" x="270" y="536" width="34" height="34" rx="5"/>
+          </svg>
+              </td>
+              <td>
+          <!-- 右半：坐标全部沿用原来那张 1000 宽画幅里的值，viewBox 平移到 500 起 -->
+          <svg class="tkfig" viewBox="500 0 500 580" role="img"
+               aria-label="token is 的 Top-2 路由：选中 FFN 2 与 FFN 3，输出加权求和">
+            <!-- ========== 右栏：token「is」，同一层、同一个 router，落点完全不同 ==========
+                 列心 750，四个专家中心 576 / 692 / 808 / 924 -->
+            <rect class="tokpill" x="694" y="0" width="112" height="36" rx="9"/>
+            <text class="toklbl" x="750" y="18">is</text>
+            <path class="wire" d="M750,36 V48"/>
+            <rect class="vin" x="696" y="48" width="34" height="34" rx="5"/>
+            <rect class="vin" x="733" y="48" width="34" height="34" rx="5"/>
+            <rect class="vin" x="770" y="48" width="34" height="34" rx="5"/>
+            <path class="wire" d="M750,90 V108" marker-end="url(#tkah)"/>
+            <rect class="rtbox" x="630" y="112" width="240" height="54" rx="11"/>
+            <text class="rtlbl" x="750" y="139">Router</text>
+
+            <!-- 同左栏：柱心 672 / 724 / 776 / 828，整簇 216 宽 -->
+            <rect class="bar"     x="654" y="263" width="36" height="9"/>
+            <rect class="bar sel" x="706" y="259" width="36" height="13"/>
+            <rect class="bar sel" x="758" y="206" width="36" height="66"/>
+            <rect class="bar"     x="810" y="260" width="36" height="12"/>
+            <text class="pv"     x="672" y="254">0.09</text>
+            <text class="pv sel" x="724" y="250">0.13</text>
+            <text class="pv sel" x="776" y="197">0.66</text>
+            <text class="pv"     x="828" y="251">0.12</text>
+            <path class="base" d="M642,272 H858"/>
+
+            <!-- 这一栏选中的两个专家是挨着的：虚线框 106、专家中心间距 116，
+                 中间正好留 10 的缝，不然两个框贴在一起像把俩专家圈成了一个 -->
+            <!-- 这两个专家是挨着的：框宽 116、中心间距 124，中间留 8 的缝 -->
+            <rect class="pick" x="630" y="296" width="116" height="160" rx="16"/>
+            <rect class="pick" x="754" y="296" width="116" height="160" rx="16"/>
+            <path class="wire" d="M724,274 V290 H688 V308" marker-end="url(#tkah)"/>
+            <path class="wire" d="M776,274 V290 H812 V308" marker-end="url(#tkah)"/>
+
+            <rect class="ep"    x="516" y="310" width="96" height="52" rx="10"/>
+            <rect class="ep on" x="640" y="310" width="96" height="52" rx="10"/>
+            <rect class="ep on" x="764" y="310" width="96" height="52" rx="10"/>
+            <rect class="ep"    x="888" y="310" width="96" height="52" rx="10"/>
+            <text class="eplbl"    x="564" y="336">FFN 1</text>
+            <text class="eplbl on" x="688" y="336">FFN 2</text>
+            <text class="eplbl on" x="812" y="336">FFN 3</text>
+            <text class="eplbl"    x="936" y="336">FFN 4</text>
+
+            <path class="wire" d="M688,364 V384" marker-end="url(#tkah)"/>
+            <path class="wire" d="M812,364 V384" marker-end="url(#tkah)"/>
+            <circle class="op" cx="688" cy="402" r="18"/>
+            <text class="opsgn" x="688" y="402">×</text>
+            <circle class="op" cx="812" cy="402" r="18"/>
+            <text class="opsgn" x="812" y="402">×</text>
+            <text class="wlbl" x="695" y="438">0.16</text>
+            <text class="wlbl" x="819" y="438">0.84</text>
+
+            <path class="wire" d="M688,420 V494 H730" marker-end="url(#tkah)"/>
+            <path class="wire" d="M812,420 V494 H770" marker-end="url(#tkah)"/>
+            <circle class="op" cx="750" cy="494" r="18"/>
+            <text class="opsgn" x="750" y="494">+</text>
+            <path class="wire" d="M750,512 V534" marker-end="url(#tkah)"/>
+            <rect class="vout" x="696" y="536" width="34" height="34" rx="5"/>
+            <rect class="vout" x="733" y="536" width="34" height="34" rx="5"/>
+            <rect class="vout" x="770" y="536" width="34" height="34" rx="5"/>
+          </svg>
+              </td>
+            </tr>
+            <!-- 图那两栏各自的 softmax 向量，一步一步算成最后的权重。全部现算，不写死 -->
+            <tr><td class="rlab">softmax 输出</td><td id="tk-p-0"></td><td id="tk-p-1"></td></tr>
+            <tr><td class="rlab">取 Top-2</td>    <td id="tk-t-0"></td><td id="tk-t-1"></td></tr>
+            <tr class="hl"><td class="rlab">归一化</td>      <td id="tk-g-0"></td><td id="tk-g-1"></td></tr>
+            <tr><td class="rlab">输出</td>        <td id="tk-y-0"></td><td id="tk-y-1"></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== TAB 6 · 负载均衡 ===================== -->
+    <section class="slide">
+      <div class="wrap fig6">
+        <div class="head">负载均衡：激活的专家应该<span class="hl">尽量多样、平均</span></div>
+
+        <!-- 坍塌 vs 均衡：一栏一种情形。最左一列写定义，右边两栏拿同一批 token
+             各算一遍 f / P / loss —— 一行一个量，横着读就是对比 -->
+        <div class="panel tight">
+          <table class="lbtab">
+            <colgroup><col class="cdef"><col><col></colgroup>
+            <thead>
+              <tr>
+                <th class="rowdef"></th>
+                <th class="bad">⚠ Expert Collapse</th>
+                <th class="good">✓ Balanced Routing</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="figrow">
+                <td class="rowdef">
+                  <div class="rdname">Router 把 token 发给谁</div>
+                </td>
+                <td>
+                  <!-- 坍塌。三个槽位的中心是 48 / 118 / 178，一个被喂爆、两个几乎没被选中过。
+                       曲线画法同 Tab5：控制点取两端横向距离的一半，进出都是水平的。
+                       viewBox 的 330×220 是两半共用的画幅，换算过来两张图同一个缩放比 -->
+                  <svg class="lbfig" viewBox="27 -12 330 220" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                      <!-- refX = 0：把三角的「底边」对到路径终点，不是尖端。
+                           对到尖端的话，线本身也画到那一点为止，而尖端附近三角几乎没有宽度，
+                           于是 15px 的平头会从尖端两边支出来 —— 看上去就是一根带鳍的钝棍。
+                           底边（35 宽）盖得住线头，尖端再往前伸出去，才是个箭头。
+                           代价是每条线要短掉一个头长，见下面各 path 的终点。
+                           形状统一 12:10 的长条三角（≈45° 的尖），整体放大到比线宽粗一圈 -->
+                      <marker id="ahBad" viewBox="0 0 12 10" refX="0" refY="5"
+                              markerWidth="42" markerHeight="35" markerUnits="userSpaceOnUse" orient="auto">
+                        <path d="M0,0 L12,5 L0,10 Z" fill="#ff4136"/>
+                      </marker>
+                      <marker id="ahDim" viewBox="0 0 12 10" refX="0" refY="5"
+                              markerWidth="14" markerHeight="11" markerUnits="userSpaceOnUse" orient="auto">
+                        <path d="M0,0 L12,5 L0,10 Z" fill="rgba(255,255,255,.5)"/>
+                      </marker>
+                    </defs>
+                    <rect class="rt" x="40" y="86" width="84" height="64" rx="10"/>
+                    <text class="nlab" x="82" y="124">Router</text>
+                    <path class="flow"    d="M130,118 C169,118 169,48 208,48"   marker-end="url(#ahBad)"/>
+                    <path class="trickle" d="M130,118 L263,118"                 marker-end="url(#ahDim)"/>
+                    <path class="trickle" d="M130,118 C198,118 198,178 265,178" marker-end="url(#ahDim)"/>
+                    <rect class="hot"  x="257" y="5"   width="86" height="86" rx="12"/>
+                    <rect class="cold" x="284" y="102" width="32" height="32" rx="7"/>
+                    <rect class="cold" x="286" y="164" width="28" height="28" rx="6"/>
+                  </svg>
+                </td>
+                <td>
+                  <!-- 均衡。同样三个槽位，三份差不多。坐标没动，靠 viewBox 平移到这一格 -->
+                  <svg class="lbfig" viewBox="568 8 330 220" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                      <marker id="ahAcc" viewBox="0 0 12 10" refX="0" refY="5"
+                              markerWidth="34" markerHeight="28" markerUnits="userSpaceOnUse" orient="auto">
+                        <path d="M0,0 L12,5 L0,10 Z" fill="#2ecc40"/>
+                      </marker>
+                    </defs>
+                    <rect class="rt" x="600" y="86" width="84" height="64" rx="10"/>
+                    <text class="nlab" x="642" y="124">Router</text>
+                    <path class="fair" d="M690,118 C729,118 729,48  768,48"  marker-end="url(#ahAcc)"/>
+                    <path class="fair" d="M690,118 L768,118"                 marker-end="url(#ahAcc)"/>
+                    <path class="fair" d="M690,118 C729,118 729,188 768,188" marker-end="url(#ahAcc)"/>
+                    <rect class="even" x="810" y="20"  width="56" height="56" rx="10"/>
+                    <rect class="even" x="810" y="90"  width="56" height="56" rx="10"/>
+                    <rect class="even" x="810" y="160" width="56" height="56" rx="10"/>
+                  </svg>
+                </td>
+              </tr>
+              <!-- 同一批 token 走两个 router，得到两组概率分布。两边共用一把柱高刻度 -->
+              <tr class="distrow">
+                <td class="rowdef">
+                  <div class="rdname">token 的概率分布</div>
+                </td>
+                <td><div class="impflow" id="lb-tok-bad"></div></td>
+                <td><div class="impflow" id="lb-tok-good"></div></td>
+              </tr>
+              <tr class="valrow">
+                <td class="rowdef">
+                  \(\displaystyle P_i=\frac{1}{n}\sum_{x\in B}p_i(x)\)
+                </td>
+                <td><div class="fpvals p" id="lb-p-bad"></div></td>
+                <td><div class="fpvals p" id="lb-p-good"></div></td>
+              </tr>
+              <tr class="valrow">
+                <td class="rowdef">
+                  \(\displaystyle f_i=\frac{1}{n}\sum_{x\in B}\mathbf{1}\{\arg\max p(x)=i\}\)
+                </td>
+                <td><div class="fpvals f" id="lb-f-bad"></div></td>
+                <td><div class="fpvals f" id="lb-f-good"></div></td>
+              </tr>
+              <!-- Switch Transformers（Fedus et al., 2021）式 (4) -->
+              <tr class="lossrow">
+                <td class="rowdef">
+                  \(\displaystyle\text{Auxiliary Loss}=\alpha\cdot E\sum_{i=1}^{E} f_i\,P_i\)
+                </td>
+                <td><div class="lbcase bad"  id="lb-loss-bad"></div></td>
+                <td><div class="lbcase good" id="lb-loss-good"></div></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="keynote">
+          \(P_i\) 表示 Router 有多重视 Expert，是需要训练的路由参数<br>
+          \(f_i\) 表示真实数据上 Expert 到底收到多少流量<br>
+          \(\text{Auxiliary Loss}\) 会尽量让每个 Expert 的<b>计算变均匀</b>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script>
+  // ---- TAB1：三层神经元 + 全连接网 ----
+  (function(){
+    const NS='http://www.w3.org/2000/svg';
+    const L1=[967,1022,1077], L3=[967,1022,1077];
+    const MID=Array.from({length:12},(_,i)=>738+i*52);
+    const mesh=document.getElementById('mesh'), neu=document.getElementById('neurons');
+    if(!mesh||!neu) return;
+    const line=(x1,y1,x2,y2)=>{const l=document.createElementNS(NS,'line');
+      l.setAttribute('x1',x1);l.setAttribute('y1',y1);l.setAttribute('x2',x2);l.setAttribute('y2',y2);mesh.appendChild(l);};
+    L1.forEach(a=>MID.forEach(b=>line(a,460,b,337)));
+    MID.forEach(b=>L3.forEach(c=>line(b,337,c,216)));
+    const circ=(cx,cy)=>{const c=document.createElementNS(NS,'circle');
+      c.setAttribute('cx',cx);c.setAttribute('cy',cy);c.setAttribute('r',23);
+      c.setAttribute('class','neuron');neu.appendChild(c);};
+    L1.forEach(x=>circ(x,460)); MID.forEach(x=>circ(x,337)); L3.forEach(x=>circ(x,216));
+  })();
+
+  // ---- TAB2：4 个专家各画一张小网络 ----
+  (function(){
+    const NS='http://www.w3.org/2000/svg';
+    const mesh=document.getElementById('emesh'), meshOn=document.getElementById('emesh-on'),
+          neu=document.getElementById('eneurons');
+    if(!mesh||!neu) return;
+    const seg=(g,x1,y1,x2,y2)=>{const l=document.createElementNS(NS,'line');
+      l.setAttribute('x1',x1);l.setAttribute('y1',y1);l.setAttribute('x2',x2);l.setAttribute('y2',y2);g.appendChild(l);};
+    const circ=(cx,cy,on)=>{const c=document.createElementNS(NS,'circle');
+      c.setAttribute('cx',cx);c.setAttribute('cy',cy);c.setAttribute('r',11);
+      c.setAttribute('class','en'+(on?' on':''));neu.appendChild(c);};
+    const wire=(cx,y1,y2,on)=>{const p=document.createElementNS(NS,'path');
+      p.setAttribute('d','M'+cx+','+y1+' V'+y2);p.setAttribute('class','pwire'+(on?' on':''));
+      neu.parentNode.insertBefore(p,neu);};
+    for(let i=0;i<4;i++){
+      // 输入 / 输出各 3 个，和上下那条 3 格的向量对得上；中间一层更宽，是 6 个
+      const cx=90+i*180+84, on=(i===3), g=on?meshOn:mesh;
+      const top=[cx-28,cx,cx+28], mid=[cx-65,cx-39,cx-13,cx+13,cx+39,cx+65], bot=[cx-28,cx,cx+28];
+      // 专家框是 298..492，三排节点连着上下两截引线一共占 118，剩 76 的余量。
+      // 这一整套坐标是「输入在上」那版的，图在外面被 scale(1,-1) 翻过来了，
+      // 所以这里的上下和屏幕上正好相反：这里留 49 上 / 27 下，翻完屏幕上是 27 上 / 49 下。
+      top.forEach(a=>mid.forEach(b=>seg(g,a,358,b,406)));
+      mid.forEach(a=>bot.forEach(b=>seg(g,a,406,b,454)));
+      top.forEach(x=>wire(x,300,347,on));
+      bot.forEach(x=>wire(x,465,490,on));
+      top.forEach(x=>circ(x,358,on)); mid.forEach(x=>circ(x,406,on)); bot.forEach(x=>circ(x,454,on));
+    }
+  })();
+
+  // ---- TAB1：FFN 两次矩阵乘法的格子 ----
+  (function(){
+    const g=(id,rows,cols,cls)=>{
+      const el=document.getElementById(id); if(!el) return;
+      el.style.gridTemplateColumns='repeat('+cols+',1fr)';
+      for(let i=0;i<rows*cols;i++){
+        const c=document.createElement('div');
+        c.className='cell '+cls; el.appendChild(c);
+      }
+    };
+    // 高度卡在 W₂ 上（它有 DFF 行），DFF 收窄才能把格子放大到看得清
+    const N=5, D=3, DFF=8;
+    g('fm-x',  N,   D,   'c-x');
+    g('fm-w1', D,   DFF, 'c-w1');
+    g('fm-h',  N,   DFF, 'c-h');
+    g('fm-w2', DFF, D,   'c-w2');
+    g('fm-y',  N,   D,   'c-y');
+
+    // TAB4：Router 的 d × E —— E 是专家个数，和上面那张图的四个专家对上
+    const NE=4, N4=2;
+    g('rm-x',  N4, D,  'c-x');
+    g('rm-wg', D,  NE, 'c-wg');
+    g('rm-g',  N4, NE, 'c-g');
+
+    // softmax 每一行摊开成一个概率分布，每行加起来正好是 1。
+    // 第一行就是上面那张图里画的那组 .45 / .19 / .05 / .31
+    const PD=[[.45,.19,.05,.31],[.09,.13,.66,.12]];   // 行数＝N4，两边对不上会少画一行
+    const MAXH=30, host=document.getElementById('rm-pd');
+    if(host){
+      const top=Math.max(...PD.flat());
+      PD.forEach(row=>{
+        const d=document.createElement('div'); d.className='pdist';
+        const win=row.indexOf(Math.max(...row));
+        row.forEach((p,k)=>{
+          const b=document.createElement('i');
+          b.style.height=Math.max(3,Math.round(p/top*MAXH))+'px';
+          if(k===win) b.className='win';
+          d.appendChild(b);
+        });
+        host.appendChild(d);
+      });
+    }
+  })();
+
+  // ---- Top-K 路由：把上图两列那两个 softmax 向量各算一遍 ----
+  (function(){
+    // 和 Tab4 底部那两行是同一组数：第一行就是 Tab4 大图里的 .45/.19/.05/.31。
+    // 换数只改这里，上面 svg 里的柱高和权重要跟着手动对一遍（图是静态的）
+    const P=[[.45,.19,.05,.31],[.09,.13,.66,.12]];
+    const K=2;
+    const AMB='#f6c486', GRN='#6ee7b0', OFF='#6e6e7a';
+    if(!document.getElementById('tk-p-0')) return;
+
+    const fmt=v=>v.toFixed(2);                             // 0.45 这种写法，和图上、和 Tab5 一致
+    const tc=(c,s)=>'\\textcolor{'+c+'}{'+s+'}';
+    const vec=a=>'[\\;'+a.join(',\\;')+'\\;]';
+    // 塞 \( \) 源码，等页面底部的 auto-render 来扫
+    const put=(k,t,tex)=>{ const c=document.getElementById('tk-'+k+'-'+t);
+      c.textContent='\\('+tex+'\\)'; return c; };
+
+    P.forEach((p,t)=>{
+      // top-K 的下标，再按专家原顺序排回来 —— 读起来才和图上从左到右一致
+      const sel=p.map((_,i)=>i).sort((a,b)=>p[b]-p[a]).slice(0,K).sort((a,b)=>a-b);
+      const on=i=>sel.indexOf(i)>=0;
+      const sum=sel.reduce((s,i)=>s+p[i],0);
+      // 没选中的权重是 0：softmax 里把它们的 logit 置成 -∞，取完指数就是 0
+      const g=p.map((v,i)=>on(i)? v/sum : 0);
+
+      // 单元格里只留向量本身，变量名和除数都不写 —— 最左那列的步骤名已经说明这一行是什么
+      put('p',t,vec(p.map((v,i)=>on(i)?tc(AMB,fmt(v)):fmt(v))));
+      // 丢掉的两个不换成横杠，而是把原数字划掉：能看出丢的到底是哪两个、原来多大
+      put('t',t,vec(p.map((v,i)=>on(i)?tc(AMB,fmt(v)):tc(OFF,'\\cancel{'+fmt(v)+'}'))));
+      // 归一化这一行不列四个数了，直接把除法写出来：选中的那个 ÷ 选中的那几个的和。
+      // 没选中的两个 0.00 去掉——「丢了哪两个」上一行的划掉已经交代过，
+      // 这一行要观众看清的是 0.59 这个数是怎么来的。
+      // 分子沿用上一行选中项的琥珀色，结果用绿色，颜色本身就说明了输入→输出。
+      // 分母直接写和（0.76），不写 0.45+0.31——那个加法上一行末尾已经做过了
+      const den=fmt(sum);
+      put('g',t,sel.map(i=>'\\dfrac{'+tc(AMB,fmt(p[i]))+'}{'+den+'}='+tc(GRN,fmt(g[i])))
+                    .join('\\quad'));
+      put('y',t,sel.map(i=>tc(GRN,fmt(g[i]))+'\\cdot\\text{FFN}_'+(i+1)+'(x)').join('+'));
+    });
+  })();
+
+  // ---- TAB5：一层 MoE 的 forward pass ----
+  (function(){
+    // 六个 token 的 router 概率，每行 softmax 过、加起来是 1。
+    // top-1 的那个专家接走这一行，那个概率同时就是最后的加权系数。
+    // E3 那一列六行都不是最大值 —— 这一轮它一个 token 都没接到，是常态不是故障
+    const P=[[.11,.62,.09,.18],[.70,.12,.08,.10],[.15,.18,.09,.58],
+             [.19,.52,.11,.18],[.66,.16,.08,.10],[.14,.55,.10,.21]];
+    const D=3, NE=4;   // d 和 E 是两回事：一个是向量维数，一个是专家个数，故意取不一样的数
+    if(!document.getElementById('fp-x')) return;
+
+    const pick=P.map(r=>r.indexOf(Math.max(...r))+1);   // 这一行落到哪个专家
+    const wgt =P.map(r=>Math.max(...r));                // 加权用的就是 top-1 那个概率
+    const all =P.map((_,i)=>i);
+    // 专家 e 收到的 token 下标。这组分数下是 2/3/0/1 —— 谁分到几行是天然不等的，
+    // 有的专家这一轮干脆一行都没有
+    const rows=e=>all.filter(i=>pick[i]===e);
+
+    // 一个 token 一个颜色。牌子和连线都用这一份，全屏认色就认这六个。
+    // 六个色相拉开：玫红 / 橙 / 黄 / 绿 / 青 / 紫。青色特意偏 cyan，免得和蓝格子看混
+    const TC=['#ff8b9e','#ff9d5c','#f5df4d','#6fdc8c','#4dd0e1','#c99cf5'];
+
+    const el=id=>document.getElementById(id);
+    const add=(host,tag,cls,txt)=>{ const n=document.createElement(tag);
+      if(cls) n.className=cls; if(txt!=null) n.textContent=txt; host.appendChild(n); return n; };
+    // 格子只表示「一个 d 维向量」，全程同一个灰；是谁、归谁都不靠格子说
+    const grid=(host,idx)=>{
+      host.style.gridTemplateColumns='repeat('+D+',1fr)';
+      idx.forEach(()=>{ for(let c=0;c<D;c++) add(host,'div','cell'); });
+    };
+    // 只能设 backgroundColor：background 简写会把 background-clip 一并重置回 border-box，
+    // 牌子那圈用来留缝的透明描边就白设了（底色会一直画满整个格子、彼此贴死）
+    const ticks=(host,idx)=>idx.map(i=>{
+      const s=add(host,'span','tk','t'+(i+1)); s.style.backgroundColor=TC[i]; return s; });
+
+    // 1 · 刚进来的 n 行，还没打分
+    ticks(el('fp-tk1'),all); grid(el('fp-x'),all);
+
+    // 2 · 分数表：表头一行 + 每个 token 一行，最高的那格点亮成那个专家的颜色
+    const rt=el('fp-rt'), srcRow=[];                // srcRow[i]：第 i 行最右那格，连线从这儿出发
+    rt.style.gridTemplateColumns='repeat('+NE+',44px)';
+    for(let e=1;e<=NE;e++) add(rt,'span','eh c-e'+e,'E'+e);
+    P.forEach((row,i)=>{
+      row.forEach((p,k)=>{
+        const c=add(rt,'span','pv c-e'+(k+1)+(k+1===pick[i]?' win':''),p.toFixed(2));
+        if(k===NE-1) srcRow[i]=c;
+      });
+    });
+
+    // 3 / 4 · 一个专家一个框。3 抬头写它收到哪几个 token；4 是 输出 × 权重
+    // dst / out：token i 在第 3 / 4 步落在哪个框、哪一行 —— 连线的起止点
+    // blk3 / blk4：两列的框本身，FFN 要卡在它们中间
+    const dst={}, out={}, blk3=[], blk4=[];
+    const stack=(host,withW)=>{
+      for(let e=1;e<=NE;e++){
+        const idx=rows(e), blk=add(host,'div','dblk c-e'+e+(idx.length?'':' void'));
+        (withW?blk4:blk3)[e]=blk;
+        // 抬头只留 Expert N：收到哪几个 token 左边的牌子已经写着了，不重复一遍
+        add(add(blk,'div','dhd'),'b',null,'Expert '+e);
+        const bd=add(blk,'div','dbody');
+        const chips=ticks(add(bd,'div','tkcol'),idx);
+        idx.forEach((i,j)=>{ (withW?out:dst)[i]={tk:chips[j],blk:blk}; });
+        if(!idx.length) continue;
+        grid(add(bd,'div','dgrid'),idx);
+        // 只画到 输出 × 权重 为止：乘完还是一样的一片蓝格子，画出来白占一屏宽度
+        if(withW){
+          add(bd,'span','mop','×');
+          const wg=add(bd,'div','wgrid');
+          idx.forEach(i=>add(wg,'span','wc',wgt[i].toFixed(2)));
+        }
+      }
+    };
+    stack(el('fp-ds'),false);
+    stack(el('fp-fx'),true);
+
+    // 5 · 按 token 原顺序放回去，形状和第 1 步一模一样
+    const tk5=ticks(el('fp-tk2'),all); grid(el('fp-y'),all);
+
+    // 3 → 4 之间那四个 FFN，各画一张 3 → 4 → 3 的小网络：中间层比两头宽，就是升维那一步。
+    // 先建好，位置在 draw() 里按实测坐标摆
+    const NS='http://www.w3.org/2000/svg';
+    // 两头各 d=3 个点、中间 d_ff=6 个点，铺得也更开 —— 升维再降维，和格子的列数对得上。
+    // 画布竖着 110：最挤的一档是空的 E3 和只有一行的 E4，靠 .dstack 的 gap 保证不叠
+    const FW=80, FH=110, LX=[8,40,72], LIO=[29,55,81], LMID=[5,25,45,65,85,105];
+    const ffn=[], ffnHost=el('fp-ffn');
+    for(let e=1;e<=NE;e++){
+      if(!rows(e).length) continue;   // 这一轮没 token 进来的专家，连 FFN 都不画
+      const chip=add(ffnHost,'div','ffn c-e'+e);
+      const g=document.createElementNS(NS,'svg');
+      g.setAttribute('width',FW); g.setAttribute('height',FH); g.setAttribute('class','net');
+      const seg=(x1,y1,x2,y2)=>{ const l=document.createElementNS(NS,'line');
+        l.setAttribute('x1',x1); l.setAttribute('y1',y1);
+        l.setAttribute('x2',x2); l.setAttribute('y2',y2); g.appendChild(l); };
+      const dot=(x,y)=>{ const c=document.createElementNS(NS,'circle');
+        c.setAttribute('cx',x); c.setAttribute('cy',y); c.setAttribute('r',4); g.appendChild(c); };
+      LIO.forEach(a=>LMID.forEach(b=>seg(LX[0],a,LX[1],b)));   // 先连线，圆点盖在上面
+      LMID.forEach(a=>LIO.forEach(b=>seg(LX[1],a,LX[2],b)));
+      LIO.forEach(y=>dot(LX[0],y)); LMID.forEach(y=>dot(LX[1],y)); LIO.forEach(y=>dot(LX[2],y));
+      chip.appendChild(g);
+      ffn[e]=chip;
+    }
+
+    // 三段连线 + 四个 FFN 的位置，只能排完版再量；而这一屏没激活时量出来全是 0，
+    // 所以挂 ResizeObserver：切到这个 tab（0 → 有尺寸）和改窗口大小都会重画
+    const svg=el('fp-link'), box=svg.parentNode;
+    const R=n=>n.getBoundingClientRect();
+    const draw=()=>{
+      const B=R(box);
+      if(!B.width) return;
+      while(svg.firstChild) svg.removeChild(svg.firstChild);
+      // 一段贝塞尔 + 落点的小箭头。起止都留几像素，免得压住两头的描边
+      const link=(x1,y1,x2,y2,col)=>{
+        const c=(x2-x1)*.5;
+        const p=document.createElementNS(NS,'path');
+        p.setAttribute('d','M'+x1+','+y1+' C'+(x1+c)+','+y1+' '+(x2-c)+','+y2+' '+(x2-5)+','+y2);
+        p.setAttribute('class','lk'); p.setAttribute('stroke',col); svg.appendChild(p);
+        const h=document.createElementNS(NS,'path');
+        h.setAttribute('d','M'+x2+','+y2+' l-6,-4 l0,8 z');
+        h.setAttribute('fill',col); svg.appendChild(h);
+      };
+      const midY=r=>r.top+r.height/2-B.top;
+
+      // 2 → 3：分数表的每一行拉到它归的那个专家框
+      all.forEach(i=>{
+        const a=R(srcRow[i]), t=R(dst[i].tk), f=R(dst[i].blk);
+        link(a.right-B.left+6, midY(a), f.left-B.left-7, midY(t), TC[i]);
+      });
+
+      // 3 → 4：每摞过自己那个 FFN。FFN 摆在两个框的正中间、和框同一条水平线上
+      for(let e=1;e<=NE;e++){
+        const chip=ffn[e];
+        if(!chip) continue;                        // 没收到 token 的那个专家：没 FFN，也没流向
+        const r3=R(blk3[e]), r4=R(blk4[e]);
+        const cx=(r3.right+r4.left)/2-B.left, cy=midY(r3);
+        chip.style.left=cx+'px'; chip.style.top=cy+'px';
+        const col=getComputedStyle(blk3[e]).getPropertyValue('--ec').trim();
+        const hw=R(chip).width/2;             // 网络没有外框了，箭头贴到最外那列圆点跟前
+        link(r3.right-B.left+6, cy, cx-hw-2,          cy, col);
+        link(cx+hw+2,           cy, r4.left-B.left-7, cy, col);
+      }
+
+      // 4 → 5：加权之后按 token 原来的位置放回去 —— 和 2 → 3 那几条正好交叉回来
+      all.forEach(i=>{
+        const s=R(out[i].tk), f=R(out[i].blk), t=R(tk5[i]);
+        link(f.right-B.left+6, midY(s), t.left-B.left-7, midY(t), TC[i]);
+      });
+    };
+    new ResizeObserver(draw).observe(box);
+    if(document.fonts) document.fonts.ready.then(draw);   // 字体换过之后行高会变，再画一次
+    draw();
+  })();
+
+  // ---- TAB6：Switch 的辅助损失 α·E·Σ f_i·P_i ----
+  (function(){
+    // 四个 token，各自 softmax 出一个 4 维分布（每行加起来是 1）。
+    // 坍塌的这一份：四个 token 的 top-1 全落在 E1，另外三个专家一个都没接到，
+    // 于是 f = 1/0/0/0。分布形状仍然各不一样（第四个的次高在 E4），只是峰都在同一个专家上。
+    // 代进式子得 2.33
+    const P_BAD =[[.58,.22,.12,.08],[.49,.28,.14,.09],
+                  [.71,.11,.10,.08],[.55,.14,.09,.22]];
+    // 均衡的这一份：4 个 token 4 个专家，一人一个，所以 f 是四个 0.25。
+    // P 故意不做成整齐的 0.25 —— 真实 router 不会那么听话，列和各是
+    // 1.12 / 0.92 / 1.08 / 0.88，除以 4 得 P = 0.28 / 0.23 / 0.27 / 0.22，在 0.2~0.3 之间小幅抖。
+    // 这不影响落点：f 一旦均匀，E·Σf·P = E·(1/E)·ΣP = ΣP = 1，P 怎么抖整式都还是 1.00。
+    // 改这个矩阵要守住两条 —— 每行加起来是 1，且第 t 行的最大值必须落在第 t 个专家上
+    const P_GOOD=[[.55,.17,.16,.12],[.19,.47,.20,.14],
+                  [.20,.15,.51,.14],[.18,.13,.21,.48]];
+    if(!document.getElementById('lb-tok-bad')) return;
+
+    const add=(h,tag,cls,txt)=>{ const n=document.createElement(tag);
+      if(cls) n.className=cls; if(txt!=null) n.textContent=txt; h.appendChild(n); return n; };
+    // 柱高默认按自己那组的最大值归一；传 top 就用同一把尺子 ——
+    // 坍塌和均衡两组必须共用刻度，各归各的会把「均衡」画得和「坍塌」一样高
+    const bars=(h,vals,top,win)=>{
+      const b=add(h,'div','bars'); top=top||Math.max(...vals);
+      const H=parseFloat(getComputedStyle(b).height)-3;
+      vals.forEach((v,i)=>{ add(b,'i',i===win?'win':null)
+        .style.height=Math.max(3,Math.round(v/top*H))+'px'; });
+      return b;
+    };
+
+    const argmax=r=>r.indexOf(Math.max(...r));
+    // f_i：这一批里 top-1 落到专家 i 的 token 比例（数出来的，不可导）
+    const fOf=P=>P[0].map((_,i)=>P.filter(r=>argmax(r)===i).length/P.length);
+    // P_i：router 给专家 i 的概率在这一批上的平均（softmax 来的，可导）
+    const pOf=P=>P[0].map((_,i)=>P.reduce((s,r)=>s+r[i],0)/P.length);
+    // Switch 式 (4) 里 α 之后的那部分：E·Σ f_i·P_i。完全均衡时 f=P=1/E，整式正好是 1
+    const eSum=P=>{ const f=fOf(P), p=pOf(P);
+      return P[0].length*f.reduce((s,v,i)=>s+v*p[i],0); };
+
+    // 两栏共用一把柱高刻度：各归各的话，均衡那栏的 0.46 会画得和坍塌那栏的 0.71 一样高，
+    // 「一个偏一个平」就全看不出来了
+    const PTOP=Math.max(...P_BAD.flat(),...P_GOOD.flat());
+    const fill=(sfx,M)=>{
+      // 这一批 token 的概率分布，top-1 那根染绿 —— f 数的就是它。
+      // 柱子下面不挂 token 名：这一屏要看的是「四组柱子的峰是挤在一起还是散开」，
+      // 具体哪个 token 叫什么和这个对比无关，挂上去只是噪音
+      const flow=document.getElementById('lb-tok-'+sfx);
+      M.forEach(row=>{
+        const c=add(flow,'div','impcol');
+        bars(c,row,PTOP,argmax(row));
+      });
+      // f / P / loss 三行，全部现算，不写死。四个数列成一个向量，顺序就是 E1..E4。
+      // 值和左边的定义走同一套 KaTeX：塞 \( \) 源码，等页面底部的 auto-render 来扫
+      const put=(k,vals)=>{ document.getElementById('lb-'+k+'-'+sfx)
+        .textContent='\\(['+vals.map(v=>v.toFixed(2)).join(',\\;')+']\\)'; };
+      put('f',fOf(M));
+      put('p',pOf(M));
+      add(document.getElementById('lb-loss-'+sfx),'span','lbnum',
+          '\\('+eSum(M).toFixed(2)+'\\)');
+    };
+    fill('bad',P_BAD);
+    fill('good',P_GOOD);
+  })();
+
+  const tabs=[...document.querySelectorAll('.tab')];
+  const slides=[...document.querySelectorAll('.slide')];
+  let cur=0;
+  function go(i){
+    i=(i+slides.length)%slides.length;
+    tabs.forEach((t,k)=>t.classList.toggle('active',k===i));
+    slides.forEach((s,k)=>s.classList.toggle('active',k===i));
+    cur=i;
+  }
+  tabs.forEach((t,i)=>t.addEventListener('click',()=>go(i)));
+  document.addEventListener('keydown',e=>{
+    const s=slides[cur];
+    if(e.key==='ArrowRight'||e.key===' ') go(cur+1);
+    else if(e.key==='ArrowLeft') go(cur-1);
+    else if(/^[1-9]$/.test(e.key) && +e.key<=slides.length) go(+e.key-1);
+    // 窗口比 1080p 矮时，用上下键 / PageUp·PageDown / Home·End 滚当前这页
+    else if(e.key==='ArrowDown')  { s.scrollTop+=80;  e.preventDefault(); }
+    else if(e.key==='ArrowUp')    { s.scrollTop-=80;  e.preventDefault(); }
+    else if(e.key==='PageDown')   { s.scrollTop+=s.clientHeight*0.85; e.preventDefault(); }
+    else if(e.key==='PageUp')     { s.scrollTop-=s.clientHeight*0.85; e.preventDefault(); }
+    else if(e.key==='Home')       { s.scrollTop=0; e.preventDefault(); }
+    else if(e.key==='End')        { s.scrollTop=s.scrollHeight; e.preventDefault(); }
+  });
+</script>
+</body>
+</html>
