@@ -1,0 +1,1008 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codex 081 · 正弦位置编码：一步步试出 Transformer 怎么知道谁在前</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+  * { box-sizing:border-box; margin:0; padding:0; }
+
+  :root{
+    /* —— 白色 deck 外壳 —— */
+    --bg:#f7f7f8; --card:#ffffff; --card-head:#fbfbfc;
+    --ink:#0d0d0d; --muted:#6e6e80; --dim:#8e8ea0;
+    --line:#e6e6e8; --line-2:#ececef;
+    --arrow:#c2c2cc;
+    --accent:#10a37f; --accent-deep:#0a7d61;            /* OpenAI 绿：UI 重点色 / 角度 / 成立 */
+    --accent-soft:rgba(16,163,127,.10); --accent-line:rgba(16,163,127,.32);
+
+    /* —— 图内语义色：全 deck 固定 —— */
+    --q:#3b7ddd;   --q-ink:#245ea8;  --q-soft:rgba(59,125,221,.11); --q-line:rgba(59,125,221,.40);
+    --k:#c2622f;   --k-ink:#9c4d22;  --k-soft:rgba(194,98,47,.11);  --k-line:rgba(194,98,47,.40);
+    --bad:#d64545; --bad-soft:rgba(214,69,69,.10); --bad-line:rgba(214,69,69,.38);
+    --good:#0a7d61; --good-soft:rgba(16,163,127,.12); --good-line:rgba(16,163,127,.42);
+    --grey-fill:#eef0f2; --grey-line:#d8dbdf;
+    --score:#6b7280;    /* 分数格：抄 078 */
+
+    --mono:"JetBrains Mono","SF Mono",Menlo,monospace;
+    --sans:"Inter","PingFang SC",-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;
+  }
+
+  html,body{ height:100%; }
+  body{ background:var(--bg); color:var(--ink); font-family:var(--sans);
+        -webkit-font-smoothing:antialiased; overflow:hidden; }
+
+  .deck{ height:100vh; display:flex; flex-direction:column; }
+
+  /* 顶栏（持久） */
+  .topbar{ flex:0 0 auto; display:flex; align-items:center; justify-content:space-between;
+           gap:20px; padding:16px 44px; border-bottom:1px solid var(--line); background:var(--bg); }
+  .brand .ttl{ font-size:19px; font-weight:700; color:var(--ink); white-space:nowrap; }
+  .brand .ttl b{ color:var(--accent); font-weight:800; }
+  .tabs{ display:flex; gap:4px; padding:4px; border:1px solid var(--line);
+         border-radius:999px; background:#fff; }
+  .tab{ appearance:none; border:1px solid transparent; border-radius:999px; cursor:pointer;
+        background:transparent; color:var(--muted); font-family:var(--sans);
+        font-size:14.5px; font-weight:700; padding:8px 15px; white-space:nowrap; transition:.18s; }
+  .tab:hover{ color:var(--ink); }
+  .tab.active{ color:var(--accent-deep); background:var(--accent-soft); border-color:var(--accent-line); }
+
+  /* 舞台 + slide */
+  .stage{ position:relative; flex:1 1 auto; }
+  /* 底部 padding 里塞进 50vh：内容是顶对齐的，所以这段空白不影响初始构图，
+     只是把可滚动范围往下延长 —— 滚到底时屏幕下半屏是空的，方便讲解时把某一块顶上来 */
+  .slide{ position:absolute; inset:0; display:none; flex-direction:column;
+          padding:30px 58px calc(22px + 50vh); overflow-y:auto; overflow-x:hidden; }
+  .slide.active{ display:flex; }
+  .wrap{ width:100%; max-width:1620px; margin:0 auto; flex:1 0 auto;
+         display:flex; flex-direction:column; justify-content:flex-start;
+         align-items:center; text-align:center; gap:22px; }
+
+  .head{ font-size:40px; line-height:1.18; font-weight:800; letter-spacing:-.4px; }
+  .head .hl{ color:var(--accent); }
+  .sub{ font-size:19px; color:var(--muted); line-height:1.5; max-width:1220px; }
+  .sub b{ color:var(--ink); font-weight:700; }
+  .sub code{ font-family:var(--mono); font-size:17px; color:var(--accent-deep); }
+
+  /* —— 通用容器 —— */
+  .panel{ background:var(--card); border-radius:14px; border:1px solid var(--line); overflow:hidden;
+          box-shadow:0 1px 2px rgba(13,13,13,.04), 0 8px 24px rgba(13,13,13,.03); }
+  .panel-header{ padding:14px 22px; border-bottom:1px solid var(--line-2); background:var(--card-head);
+                 font-size:16px; font-weight:700; display:flex; align-items:center; gap:10px; color:var(--ink); }
+  .panel-header .dot{ width:9px; height:9px; border-radius:50%; background:var(--accent); }
+  .panel-header .meth{ margin-left:auto; font-size:14.5px; font-weight:500; color:var(--dim); font-family:var(--mono); }
+  .pbody{ padding:20px 22px; }
+  .cols{ display:grid; gap:24px; width:100%; align-items:start; }
+  .c2{ grid-template-columns:1fr 1fr; }
+  .c2a{ grid-template-columns:1.25fr .75fr; }
+  .c2b{ grid-template-columns:.72fr 1.28fr; }
+
+  .cap{ font-size:14.5px; color:var(--dim); font-family:var(--sans); }
+  .mono{ font-family:var(--mono); }
+  .badge{ font-size:13.5px; font-weight:700; padding:4px 11px; border-radius:7px; white-space:nowrap;
+          font-family:var(--sans); display:inline-block; }
+  .badge.ok  { background:var(--good-soft); color:var(--accent-deep); border:1px solid var(--good-line); }
+  .badge.no  { background:var(--bad-soft);  color:var(--bad);         border:1px solid var(--bad-line); }
+
+  /* 数据表 */
+  table.tbl{ width:100%; border-collapse:collapse; font-family:var(--mono); font-size:16px; }
+  table.tbl th{ font-family:var(--sans); font-size:13.5px; font-weight:700; color:var(--dim);
+                text-align:right; padding:8px 14px; border-bottom:1px solid var(--line-2); white-space:nowrap; }
+  table.tbl td{ text-align:right; padding:8px 14px; border-bottom:1px solid #f2f2f4; white-space:nowrap; color:#3a3a44; }
+  table.tbl tr:last-child td{ border-bottom:none; }
+  table.tbl td.l, table.tbl th.l{ text-align:left; }
+  table.tbl td.big{ font-weight:700; color:var(--accent-deep); }
+  table.tbl tr.mark td{ background:var(--accent-soft); }
+  table.tbl tr.dead td{ background:var(--bad-soft); color:var(--bad); }
+
+  /* 关键数字 */
+  .kpi{ display:flex; flex-direction:column; align-items:center; gap:2px; }
+  .kpi .v{ font-family:var(--mono); font-size:38px; font-weight:700; letter-spacing:-.5px; }
+  .kpi .v.r{ color:var(--bad); } .kpi .v.g{ color:var(--accent); }
+  .kpi .l{ font-size:14.5px; color:var(--dim); }
+
+  /* 顶部公式条（版式沿用 078 Tab2 的 formula-recap） */
+  .formula-recap{ display:flex; justify-content:center; background:var(--card-head);
+                  border:1px solid var(--line-2); border-radius:12px;
+                  padding:10px 22px; width:100%; }
+  .formula-recap .katex{ font-size:2.0em; color:var(--ink); }
+
+  /* 两句大字例句 */
+  .sent{ display:flex; align-items:baseline; justify-content:center; gap:3px; white-space:nowrap; }
+  .sent .tg{ font-size:28px; font-weight:800; letter-spacing:1px; color:var(--ink);
+             padding:1px 8px; border-radius:8px; white-space:nowrap; }
+  .sent .tg.a{ background:var(--q-soft); color:var(--q-ink); }
+  .sent .tg.b{ background:var(--k-soft); color:var(--k-ink); }
+
+  /* 对照行：例句 | → | 该句的 softmax */
+  .cmp{ display:grid; grid-template-columns:auto auto auto; gap:20px; align-items:center;
+        width:100%; justify-content:center; }
+  .cmp-div{ border-top:1px dashed var(--line-2); margin:2px 0; }
+
+  /* qk 分数条（卡片版式沿用 075 的 .p1kvf，内容交给 KaTeX 渲染） */
+  .qkf{ display:flex; align-items:center; justify-content:center; width:100%;
+        background:var(--card-head); border:1px solid var(--line-2); border-radius:14px;
+        padding:9px 18px; }
+  .qkf .katex{ font-size:1.95em; color:var(--ink); }
+
+  /* token 行 / 权重格 */
+  .toks{ display:grid; grid-template-columns:repeat(6, 1fr); gap:10px; width:100%; }
+  .tk{ border:1px solid var(--line); border-radius:10px; padding:12px 4px; background:#fff; }
+  .tk .w{ font-family:var(--mono); font-size:24px; font-weight:700; color:var(--ink); }
+  .tk .n{ font-family:var(--mono); font-size:14px; color:var(--dim); margin-top:3px; }
+  .tk.same{ border-color:var(--accent-line); background:var(--accent-soft); }
+  .tk.same .w{ color:var(--accent-deep); }
+  .rowlab{ font-family:var(--mono); font-size:15px; color:var(--muted); text-align:left; margin-bottom:7px; }
+
+  /* 位网格 */
+  .bitgrid{ display:inline-grid; gap:6px; font-family:var(--mono); }
+  .bit{ width:56px; height:50px; display:flex; align-items:center; justify-content:center;
+        border-radius:7px; font-size:22px; font-weight:600; }
+  .bit.b0{ background:var(--grey-fill); color:#9a9aa6; }
+  .bit.b1{ background:#e2e5e9; color:#3a3a44; }
+  .bit.flip{ background:var(--bad-soft); color:var(--bad); border:1px solid var(--bad-line); }
+  .bit.lab{ background:transparent; color:var(--dim); font-size:17px; width:72px; justify-content:flex-end; padding-right:10px; }
+
+  /* 位置条（绝对 / 相对） */
+  .posrow{ display:grid; grid-template-columns:150px repeat(7, 1fr); gap:9px; align-items:center; width:100%; }
+  .posrow .lab{ font-size:15px; font-weight:700; color:var(--muted); text-align:right; padding-right:6px; }
+  .posrow .cell{ border:1px solid var(--line); border-radius:10px; padding:12px 6px; background:#fff; }
+  .posrow .cell .wd{ font-size:19px; font-weight:700; color:var(--ink); }
+  .posrow .cell .nu{ font-family:var(--mono); font-size:22px; font-weight:700; margin-top:4px; }
+  .posrow.abs .cell .nu{ color:var(--q-ink); }
+  .posrow.rel .cell .nu{ color:var(--k-ink); }
+  .posrow .cell.anchor{ border-color:var(--accent-line); background:var(--accent-soft); }
+  .posrow .cell.anchor .nu{ color:var(--accent-deep); }
+  .posrow .cell.anchor2{ border-style:dashed; border-color:var(--accent-line); }
+
+  /* Tab2：token 行（位置号在上、词在下）+ 挂在高亮 token 下面的向量列 */
+  .trow{ display:flex; justify-content:center; align-items:flex-end; gap:14px; width:100%; }
+  .trow .pre{ font-size:26px; color:var(--dim); padding-bottom:3px; }
+  .trow .t .p{ font-family:var(--mono); font-size:15px; color:var(--dim);
+               text-align:center; margin-bottom:5px; }
+  .trow .t .w{ font-size:28px; font-weight:800; letter-spacing:1px; color:var(--ink);
+               padding:2px 10px; border-radius:8px; white-space:nowrap; }
+  .trow .t.hit .p{ color:var(--accent-deep); font-weight:700; }
+  .trow .t.hit .w{ background:var(--accent-soft); color:var(--accent-deep); }
+
+  .vecs{ display:flex; gap:12px; justify-content:center; margin-top:12px; align-items:center; }
+  .vec{ display:flex; flex-direction:column; align-items:center; }
+  .vec .vbox{ border:2.5px solid; border-radius:5px; overflow:hidden; }
+  .vec .cv{ width:100px; padding:9px 0; text-align:center; border-bottom:1.5px solid; }
+  .vec .cv:last-child{ border-bottom:0; }
+  .vec .cv .katex{ font-size:1.18em; }
+  .vec .vd{ font-size:14px; color:var(--dim); line-height:1.1; margin-top:6px; }
+  .vec.x  .vbox{ border-color:#0d3b30; }
+  .vec.x  .cv{ background:#9a9aa4; color:#0d3b30; border-bottom-color:rgba(13,59,48,.55); }
+  .vec.p1 .vbox{ border-color:var(--k-ink); }
+  .vec.p1 .cv{ background:var(--k-soft); color:var(--k-ink); border-bottom-color:rgba(156,77,34,.45); }
+  .vec.p2 .vbox{ border-color:var(--bad); }
+  .vec.p2 .cv{ background:var(--bad-soft); color:var(--bad); border-bottom-color:rgba(214,69,69,.45); }
+  .binnote{ align-self:center; margin-left:24px; color:var(--q-ink); white-space:nowrap; }
+  .binnote .katex{ font-size:1.55em; }
+  .pefml{ align-self:center; margin-left:26px; color:var(--q-ink); text-align:left; white-space:nowrap; }
+  .pefml .katex{ font-size:1.85em; }
+  /* 总结框：正文黑字，只有 <b> 里的重点上色（抄 Tab1 的 keynote） */
+  .okbox{ width:100%; margin-top:6px; border-radius:14px; padding:16px 26px;
+          background:rgba(16,163,127,.10); border:1.5px solid var(--accent-line);
+          font-size:20px; font-weight:700; line-height:1.62; color:var(--ink);
+          text-align:center; }
+  .okbox b{ color:var(--accent-deep); font-weight:800; }
+  .okbox.list{ white-space:normal; text-align:left; padding:16px 30px; }
+  .okbox.list ul{ margin:0; padding-left:26px; list-style:disc; }
+  .okbox.list li{ margin:6px 0; }
+  .okbox.list li::marker{ color:var(--accent); }
+  /* Tab6：四个独立的单位圆 + 右边的定义式 */
+  table.tbl.bigtbl td.cfc{ padding:3px 30px; }
+  .spdbar{ display:flex; align-items:center; gap:12px; }
+  .spdbar input[type=range]{ width:196px; accent-color:var(--accent); cursor:pointer; }
+  .spdbar .lab{ font-size:15px; font-weight:600; color:var(--dim); }
+  .deflab{ color:var(--q-ink); white-space:nowrap; }
+  .deflab .katex{ font-size:1.34em; }
+  .rotmat .katex{ font-size:1.5em; }
+  /* Tab7 推导上面那行设问：让下面那坨公式变成「在回答一个问题」而不是凭空出现 */
+  .qhead{ font-size:22px; font-weight:700; color:var(--ink); line-height:1.5; text-align:left;
+          padding-bottom:12px; margin-bottom:6px; border-bottom:1px dashed var(--line-2); }
+  .qhead .katex{ font-size:1.12em; }   /* 压掉上面 .rotmat .katex 的 1.72em */
+  .qhead.q2{ margin-top:12px; padding-top:12px; border-top:1px solid var(--line-2); }
+  /* 推导末尾的结论行：把矩阵那步翻回 PE 记号，回答标题那个问句 */
+  .qconc{ margin-top:14px; text-align:center; background:var(--accent-soft);
+          border:1px solid var(--accent-line); border-radius:12px; padding:9px 20px; }
+  .qconc .katex{ font-size:1.46em; }
+  .scrow{ display:flex; align-items:center; gap:20px; }
+  .scrow .ilab{ font-size:21px; font-weight:700; min-width:70px; text-align:right; }
+  .scrow .ilab .katex{ font-size:1.24em; }
+  .posbig{ font-size:40px; color:var(--accent-deep); min-width:250px;
+           white-space:nowrap; text-align:center; }
+  .defrow{ display:flex; align-items:center; justify-content:center; gap:10px; width:100%; }
+  .whf{ white-space:nowrap; }
+  .whf .whr{ font-size:19px; font-weight:600; color:var(--muted); }
+  .whf .katex{ font-size:1.72em; }
+  /* Tab6 圆左边的推导链：把 Tab4 那两行定义原样搬过来，再在同一行里换成 ω_i 的写法，
+     免得 ω_i 在这一页凭空冒出来 */
+  .pedef{ display:flex; flex-direction:column; align-items:flex-start; gap:14px; flex:0 0 auto; }
+  .pedef .pedef-f{ color:var(--q-ink); white-space:nowrap; margin:0; }
+  .pedef .pedef-f .katex-display{ margin:0; }
+  .pedef .pedef-f .katex{ font-size:1.3em; }
+  .pedef .whf .whr{ font-size:17px; }
+  .pedef .whf .katex{ font-size:1.32em; }
+  .vec.bin .vbox{ border-color:var(--q-ink); }
+  .vec.bin .cv{ background:var(--q-soft); color:var(--q-ink); border-bottom-color:rgba(59,125,221,.45); }
+  .vec.pe .vbox{ border-color:#8a93a0; }
+  .vec.pe .cv{ width:212px; padding:8px 0; border-bottom-color:#c9ced6; }
+  .vec.pe .cv .katex{ font-size:1.42em; }
+  .vec.pe .cv.s{ background:var(--q-soft); color:var(--q-ink); }
+  .vec.pe .cv.c{ background:var(--k-soft); color:var(--k-ink); }
+
+  .grprow{ display:flex; justify-content:center; margin-top:26px; }
+  .grp{ display:flex; flex-direction:column; align-items:center; gap:14px;
+        width:500px; padding:0 26px; }
+  .grp + .grp{ border-left:1px dashed var(--line-2); }
+  .grph{ font-size:18px; font-weight:700; }
+  .grph .sfx{ color:var(--muted); font-weight:500; }
+  .wlrow{ display:grid; grid-template-columns:240px 1fr 250px; align-items:center; gap:20px;
+          padding:17px 4px; border-bottom:1px dashed var(--line-2); text-align:left; }
+  .wlrow:last-child{ border-bottom:0; }
+  .wlrow .fn .katex{ font-size:1.55em; }
+  .wlrow .cond{ color:var(--muted); }
+  .wlrow .cond .katex{ font-size:1.15em; }
+  .wlrow .res{ color:var(--accent-deep); font-weight:700; text-align:right; font-size:17px; }
+  .wlrow .res .katex{ font-size:1.3em; }
+  .wlfig{ width:100%; padding:6px 0 10px; border-bottom:1px dashed var(--line-2); }
+  .wlhead{ display:flex; align-items:baseline; justify-content:center; gap:30px; }
+  .wlfig svg{ margin:0 auto; }
+  table.tbl.bigtbl td, table.tbl.bigtbl th{ padding:11px 30px; text-align:center; }
+  table.tbl.bigtbl th{ font-size:18px; font-weight:700; color:var(--muted); }
+  table.tbl.bigtbl th .katex{ font-size:1.24em; }
+  table.tbl.bigtbl td .katex{ font-size:1.34em; }
+  table.tbl.bigtbl td.wl{ background:rgba(16,163,127,.12); }
+  table.tbl.bigtbl td.wl .katex{ color:var(--accent-deep); }
+  table.tbl.bigtbl th.wl{ color:var(--accent-deep); }
+  table.tbl.bigtbl td.wcv{ padding:4px 0 4px 28px; }
+  .wlhead .fn .katex{ font-size:1.5em; }
+  .wlhead .res{ color:var(--accent-deep); font-weight:700; font-size:17px; }
+  .wlhead .res .katex{ font-size:1.28em; }
+  .flaw{ width:100%; margin-top:6px; border-radius:11px; padding:15px 18px;
+         background:rgba(214,69,69,.13); border:1.5px solid var(--bad);
+         font-size:18.5px; font-weight:700; line-height:1.6; color:var(--bad);
+         white-space:nowrap; text-align:center; }
+  /* Tab3 底下那条是总结框，跟 Tab2 里的短「缺点」条不同：黑字 + 红色重点 */
+  .flaw.sum{ background:rgba(214,69,69,.10); border-color:var(--bad-line); color:var(--ink);
+             font-size:20px; line-height:1.62; border-radius:14px; padding:16px 26px; white-space:normal; }
+  .flaw.sum b{ color:var(--bad); font-weight:800; }
+  .vplus{ font-family:var(--mono); font-size:20px; color:var(--arrow); align-self:center; padding:0 2px; }
+
+  /* 结论高亮框：版式沿用 078 Tab1 的 keynote */
+  .keynote{ font-family:var(--sans); font-size:20px; line-height:1.62; font-weight:700;
+            color:var(--ink); text-align:center; width:100%;
+            background:rgba(16,163,127,.07); border:1px solid rgba(16,163,127,.32);
+            border-radius:14px; padding:16px 26px; }
+  .keynote b{ color:var(--accent-deep); font-weight:800; }
+
+  .fbox{ background:#fff; border:1px solid var(--line); border-radius:14px; padding:18px 22px;
+         box-shadow:0 1px 2px rgba(13,13,13,.03); }
+  .fbox.acc{ border-color:var(--accent-line); background:var(--accent-soft); }
+  .quote{ font-size:18px; line-height:1.65; color:#3a3a44; text-align:left; }
+  .quote b{ color:var(--accent-deep); font-weight:700; }
+  .arrowtxt{ color:var(--arrow); font-size:24px; font-weight:600; }
+  .katex{ font-size:1.08em; }
+</style>
+</head>
+<body>
+<div class="deck">
+  <div class="topbar">
+    <div class="brand"><span class="ttl">正弦位置编码</span></div>
+    <nav class="tabs">
+      <button class="tab active" data-i="0">自注意力的问题</button>
+      <button class="tab" data-i="1">两个简单尝试</button>
+      <button class="tab" data-i="2">二进制编码</button>
+      <button class="tab" data-i="3">正弦位置编码</button>
+      <button class="tab" data-i="4">波长</button>
+      <button class="tab" data-i="5">钟表指针</button>
+      <button class="tab" data-i="6">相对位置</button>
+    </nav>
+  </div>
+
+  <div class="stage">
+
+    <!-- ═══════════ Tab1 · 没有位置编码会发生什么 ═══════════ -->
+    <section class="slide active">
+      <div class="wrap" style="max-width:1140px">
+        <div class="head">自注意力：没有位置编码，<span class="hl">会发生什么</span></div>
+
+        <div class="formula-recap">
+          \[\text{Attention}(Q,K,V)=\text{softmax}\!\left(\frac{QK^{\top}}{\sqrt{d_k}}\right)V\]
+        </div>
+        <div class="sub" style="margin-top:-10px">假设当前是Decode阶段，最后一个token是<b>「疼」</b>，那下一个token的计算结果就是：</div>
+
+        <div class="panel" style="width:100%">
+          <div class="pbody" style="display:flex;flex-direction:column;gap:10px">
+
+            <div class="cmp">
+              <div class="sent">
+                <span class="tg a">张三</span><span class="tg">打</span><span class="tg b">李四</span><span class="tg">谁</span><span class="tg">疼</span>
+              </div>
+              <span class="arrowtxt">→</span>
+              <div class="qkf">
+                \(\text{softmax}\bigl(\textcolor{#245ea8}{q_{\text{疼}}k_{\text{张三}}},\;q_{\text{疼}}k_{\text{打}},\;\textcolor{#9c4d22}{q_{\text{疼}}k_{\text{李四}}},\;\cdots\bigr)\def\arraystretch{0.85}\begin{bmatrix}\textcolor{#245ea8}{v_{\text{张三}}}\\ v_{\text{打}}\\ \textcolor{#9c4d22}{v_{\text{李四}}}\\ \cdots\end{bmatrix}\)
+              </div>
+            </div>
+
+            <div class="cmp-div"></div>
+
+            <div class="cmp">
+              <div class="sent">
+                <span class="tg b">李四</span><span class="tg">打</span><span class="tg a">张三</span><span class="tg">谁</span><span class="tg">疼</span>
+              </div>
+              <span class="arrowtxt">→</span>
+              <div class="qkf">
+                \(\text{softmax}\bigl(\textcolor{#9c4d22}{q_{\text{疼}}k_{\text{李四}}},\;q_{\text{疼}}k_{\text{打}},\;\textcolor{#245ea8}{q_{\text{疼}}k_{\text{张三}}},\;\cdots\bigr)\def\arraystretch{0.85}\begin{bmatrix}\textcolor{#9c4d22}{v_{\text{李四}}}\\ v_{\text{打}}\\ \textcolor{#245ea8}{v_{\text{张三}}}\\ \cdots\end{bmatrix}\)
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <div class="keynote">两行的项<b>一模一样</b>，只是换了个顺序，加法不看顺序，<b>两句算出来是同一个结果向量</b>。</div>
+      </div>
+    </section>
+
+    <!-- ═══════════ Tab2 · 整数 ═══════════ -->
+    <section class="slide">
+      <div class="wrap" style="max-width:1100px">
+        <div class="head"><span class="hl">绝对</span>位置编码 和 <span class="hl">分数</span>位置编码</div>
+        <div class="sub">假设token序列长度<b>L=64</b>，「李四」是<b>第24个</b>token，每个token是一个<b>d维</b>embedding向量</div>
+
+        <div class="trow">
+          <div class="pre">…</div>
+          <div class="t"><div class="p">22</div><div class="w">张三</div></div>
+          <div class="t"><div class="p">23</div><div class="w">打</div></div>
+          <div class="t hit"><div class="p">24</div><div class="w">李四</div></div>
+          <div class="t"><div class="p">25</div><div class="w">谁</div></div>
+          <div class="t"><div class="p">26</div><div class="w">疼</div></div>
+        </div>
+
+        <div class="panel" style="width:100%">
+          <div class="pbody" style="padding:28px 22px 30px">
+
+            <div class="grprow" style="margin-top:0">
+              <div class="grp">
+                <div class="grph" style="color:var(--k-ink)">绝对位置编码<span class="sfx">：向量值 + 绝对位置</span></div>
+                <div class="vecs">
+                  <div class="vec x">
+                    <div class="vbox">
+                      <div class="cv">\(0.418\)</div><div class="cv">\(-1.132\)</div><div class="cv">\(0.874\)</div>
+                      <div class="cv">\(-0.352\)</div><div class="cv">\(1.241\)</div><div class="cv">\(-0.683\)</div>
+                    </div>
+                    <div class="vd">⋮</div>
+                  </div>
+                  <div class="vplus">+</div>
+                  <div class="vec p1">
+                    <div class="vbox">
+                      <div class="cv">\(24\)</div><div class="cv">\(24\)</div><div class="cv">\(24\)</div>
+                      <div class="cv">\(24\)</div><div class="cv">\(24\)</div><div class="cv">\(24\)</div>
+                    </div>
+                    <div class="vd">⋮</div>
+                  </div>
+                </div>
+                <div class="flaw">位置号远大于向量值，语义会被淹没</div>
+              </div>
+
+              <div class="grp">
+                <div class="grph" style="color:var(--bad)">分数位置编码<span class="sfx">：向量值 + 绝对位置 / 总长L</span></div>
+                <div class="vecs">
+                  <div class="vec x">
+                    <div class="vbox">
+                      <div class="cv">\(0.418\)</div><div class="cv">\(-1.132\)</div><div class="cv">\(0.874\)</div>
+                      <div class="cv">\(-0.352\)</div><div class="cv">\(1.241\)</div><div class="cv">\(-0.683\)</div>
+                    </div>
+                    <div class="vd">⋮</div>
+                  </div>
+                  <div class="vplus">+</div>
+                  <div class="vec p2">
+                    <div class="vbox">
+                      <div class="cv">\(0.375\)</div><div class="cv">\(0.375\)</div><div class="cv">\(0.375\)</div>
+                      <div class="cv">\(0.375\)</div><div class="cv">\(0.375\)</div><div class="cv">\(0.375\)</div>
+                    </div>
+                    <div class="vd">⋮</div>
+                  </div>
+                </div>
+                <div class="flaw">同一个位置，换个序列长度编码就变了</div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════ Tab3 · 二进制 ═══════════ -->
+    <section class="slide">
+      <div class="wrap" style="max-width:980px">
+        <div class="head">把位置<span class="hl">转化成二进制</span></div>
+
+        <div class="panel" style="width:100%">
+          <div class="pbody" style="padding:24px 22px 26px;display:flex;align-items:center;justify-content:center;gap:44px">
+              <div class="grp" style="width:auto;padding:0">
+                <div class="grph" style="color:var(--q-ink);white-space:nowrap">二进制位置编码<span class="sfx">：向量值 + 位置的二进制编码</span></div>
+                <div class="vecs">
+                  <div class="vec x">
+                    <div class="vbox">
+                      <div class="cv">\(0.418\)</div><div class="cv">\(-1.132\)</div><div class="cv">\(0.874\)</div>
+                      <div class="cv">\(-0.352\)</div><div class="cv">\(1.241\)</div><div class="cv">\(-0.683\)</div>
+                    </div>
+                    <div class="vd">⋮</div>
+                  </div>
+                  <div class="vplus">+</div>
+                  <div class="vec bin">
+                    <div class="vbox" id="binvec">
+                      <div class="cv">\(0\)</div><div class="cv">\(0\)</div><div class="cv">\(0\)</div>
+                      <div class="cv">\(1\)</div><div class="cv">\(1\)</div><div class="cv">\(0\)</div>
+                    </div>
+                    <div class="vd">⋮</div>
+                  </div>
+                  <div class="binnote" id="binnote">\(24 = 011000_{(2)}\)</div>
+                </div>
+              </div>
+
+          </div>
+        </div>
+
+        <div class="panel" style="width:100%">
+          <div class="pbody" style="padding:18px 24px 12px">
+            <svg id="bitwave" viewBox="0 0 780 322" style="width:100%;max-width:780px;height:auto;display:block;margin:0 auto"></svg>
+          </div>
+        </div>
+
+        <div class="flaw sum">编码值域在 \([0,\,1]\)，不同长序列编码也一致，但是值域是<b>跳变的</b>，深度学习喜欢<b>平滑连续</b>的函数</div>
+      </div>
+    </section>
+
+    <!-- ═══════════ Tab4 · 正弦 ═══════════ -->
+    <section class="slide">
+      <div class="wrap" style="max-width:880px">
+        <div class="head">Transformer<span class="hl">正弦位置编码</span></div>
+
+        <div class="panel" style="width:100%">
+          <div class="pbody" style="padding:24px 22px 26px;display:flex;align-items:center;justify-content:center;gap:40px">
+              <div class="grp" style="width:auto;padding:0">
+                <div class="grph" style="color:var(--q-ink);white-space:nowrap">正弦位置编码<span class="sfx">：位置pos的编码向量</span></div>
+                <div class="vecs">
+                  <div class="vec pe">
+                    <div class="vbox">
+                      <div class="cv s">\(\mathrm{PE}_{(pos,\,2\cdot 0)\phantom{+1}}\)</div><div class="cv c">\(\mathrm{PE}_{(pos,\,2\cdot 0+1)}\)</div>
+                      <div class="cv s">\(\mathrm{PE}_{(pos,\,2\cdot 1)\phantom{+1}}\)</div><div class="cv c">\(\mathrm{PE}_{(pos,\,2\cdot 1+1)}\)</div>
+                      <div class="cv s">\(\mathrm{PE}_{(pos,\,2\cdot 2)\phantom{+1}}\)</div><div class="cv c">\(\mathrm{PE}_{(pos,\,2\cdot 2+1)}\)</div>
+                    </div>
+                    <div class="vd">⋮</div>
+                  </div>
+                  <div class="pefml">
+                    $$\begin{aligned}
+                      \textcolor{#245ea8}{\mathrm{PE}_{(pos,\,2i)}}&\textcolor{#245ea8}{{}=\sin\dfrac{pos}{10000^{2i/d}}}\\[12pt]
+                      \textcolor{#9c4d22}{\mathrm{PE}_{(pos,\,2i+1)}}&\textcolor{#9c4d22}{{}=\cos\dfrac{pos}{10000^{2i/d}}}
+                    \end{aligned}$$
+                  </div>
+                </div>
+              </div>
+          </div>
+        </div>
+
+        <div class="panel" style="width:100%">
+          <div class="pbody" style="padding:18px 24px 10px">
+            <svg id="sinewave" viewBox="0 0 780 322" style="width:100%;max-width:780px;height:auto;display:block;margin:0 auto"></svg>
+          </div>
+        </div>
+
+        <div class="okbox">编码值域在 <b>\([-1,\,1]\)</b>，不同长序列编码也一致，而且是<b>连续变化</b>的</div>
+      </div>
+    </section>
+
+
+    <!-- ═══════════ Tab5 · 成对→旋转 ═══════════ -->
+    <section class="slide">
+      <div class="wrap" style="max-width:1120px">
+        <div class="head">正弦位置编码的<span class="hl">波长规律</span></div>
+
+        <div class="panel" style="width:100%">
+          <div class="pbody" style="padding:20px 30px 22px">
+            <div class="wlfig">
+              <div class="wlhead" style="gap:52px">
+                <span class="fn" style="color:var(--q-ink)">\(y=\sin x\)</span>
+                <span class="fn" style="color:var(--k-ink)">\(y=\sin\dfrac{x}{2}\)</span>
+              </div>
+              <svg id="wavefig" viewBox="0 0 660 196" style="width:100%;max-width:700px;height:auto;display:block"></svg>
+            </div>
+            <div class="wlhead" style="padding-top:18px;gap:30px">
+              <span class="fn">\(y=\sin\dfrac{x}{10000^{2i/d}}\)</span>
+              <span class="arrowtxt" style="font-size:26px">⟶</span>
+              <span class="res">波长 \(=2\pi\cdot 10000^{2i/d}\)</span>
+            </div>
+
+            <div style="margin-top:12px;text-align:center">
+              <div style="font-size:20px;font-weight:700;margin-bottom:8px">\(d=8\)</div>
+              <div style="display:flex;justify-content:center">
+                <table class="tbl bigtbl" style="width:auto">
+                  <tr>
+                    <th>\(i\)</th><th>\(2i/d\)</th><th>\(10000^{2i/d}\)</th><th class="wl">波长</th><th>曲线</th>
+                  </tr>
+                  <tr><td>\(0\)</td><td>\(0\)</td><td>\(1\)</td><td class="wl">\(2\pi\)</td>
+                    <td class="wcv"><svg id="wcv0" viewBox="0 0 400 36" style="width:400px;height:36px;display:block"></svg></td></tr>
+                  <tr><td>\(1\)</td><td>\(0.25\)</td><td>\(10\)</td><td class="wl">\(20\pi\)</td>
+                    <td class="wcv"><svg id="wcv1" viewBox="0 0 400 36" style="width:400px;height:36px;display:block"></svg></td></tr>
+                  <tr><td>\(2\)</td><td>\(0.5\)</td><td>\(100\)</td><td class="wl">\(200\pi\)</td>
+                    <td class="wcv"><svg id="wcv2" viewBox="0 0 400 36" style="width:400px;height:36px;display:block"></svg></td></tr>
+                  <tr><td>\(3\)</td><td>\(0.75\)</td><td>\(1000\)</td><td class="wl">\(2000\pi\)</td>
+                    <td class="wcv"><svg id="wcv3" viewBox="0 0 400 36" style="width:400px;height:36px;display:block"></svg></td></tr>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="okbox">位置编码函数的波长是一个从 \(2\pi\) 到 \(2\pi\cdot 10000\) 的<b>等比数列</b>，波长代表经过多少个token会<b>出现重复值</b></div>
+      </div>
+    </section>
+
+    <!-- ═══════════ Tab6 · 一对 sin/cos = 圆上的一个点 ═══════════ -->
+    <section class="slide">
+      <div class="wrap" style="max-width:1080px;gap:14px">
+        <div class="head">把每一对sin/cos想象成一只<span class="hl">钟表指针</span></div>
+
+        <div class="panel" style="width:100%">
+          <div class="pbody" style="padding:22px 20px 24px">
+            <div class="defrow" style="gap:34px">
+              <div class="pedef">
+                <div class="whf"><span class="whr">令角频率</span>&nbsp;&nbsp;\(\omega_i=\dfrac{1}{10000^{2i/d}}\)</div>
+                <div class="pedef-f">
+                  $$\begin{aligned}
+                    \textcolor{#245ea8}{\mathrm{PE}_{(pos,\,2i)}}&\textcolor{#245ea8}{{}=\sin\dfrac{pos}{10000^{2i/d}}=\sin(\omega_i\cdot pos)}\\[8pt]
+                    \textcolor{#9c4d22}{\mathrm{PE}_{(pos,\,2i+1)}}&\textcolor{#9c4d22}{{}=\cos\dfrac{pos}{10000^{2i/d}}=\cos(\omega_i\cdot pos)}
+                  \end{aligned}$$
+                </div>
+              </div>
+              <svg id="defcirc" viewBox="0 0 388 180" style="width:388px;height:180px;display:block;flex:0 0 auto"></svg>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" style="width:100%">
+          <div class="pbody" style="padding:10px 26px;display:flex;align-items:center;justify-content:center;gap:48px">
+            <div id="spincol" style="display:flex;flex-direction:column;align-items:flex-end;gap:4px"></div>
+            <div style="display:flex;flex-direction:column;align-items:center;gap:13px">
+              <div class="posbig" id="posv">pos = 0</div>
+              <span class="spdbar">
+                <span class="lab">慢</span>
+                <input id="spd" type="range" min="0" max="100" step="1" value="25">
+                <span class="lab">快</span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="okbox">把指针从快到慢想象成<b>秒针、分针和时针</b>，它们的位置合起来就是<b>时间 \(pos\)</b></div>
+      </div>
+    </section>
+
+    <!-- ═══════════ Tab7 · pos → pos+k 只是一次旋转 ═══════════ -->
+    <section class="slide">
+      <div class="wrap" style="max-width:1080px;gap:14px">
+        <div class="head"><span class="hl">相对位置</span>的指针变换</div>
+
+        <div class="panel" style="width:100%">
+          <div class="pbody" style="padding:6px 26px;display:flex;align-items:center;justify-content:center">
+            <svg id="rot0" viewBox="0 0 340 272" style="width:262px;height:210px;display:block;flex:0 0 auto"></svg>
+          </div>
+        </div>
+
+        <div class="panel" style="width:100%">
+          <div class="pbody rotmat" style="padding:16px 26px 10px;text-align:center">
+            <!-- pos 写成「?」：观众手上只有编码本身，绝对位置是未知的 —— 下面推出来的矩阵里
+                 只有 ω_i·k、一个 pos 都没有，正好回答了「不知道 ? 是几也照样能算」 -->
+            <div class="qhead">只知道位置编码 \(\mathrm{PE}(\mathbf{?})\)，不知道它的绝对位置，能否得到间距 \(k\) 的编码 \(\mathrm{PE}(\mathbf{?}+k)\)？</div>
+            <!-- 推导过程照旧用 pos：这几步是要看清怎么凑出矩阵的，符号换成 ? 会读不下去 -->
+            \[\begin{aligned}
+              \begin{bmatrix}\cos\omega_i(pos+k)\\[2pt] \sin\omega_i(pos+k)\end{bmatrix}
+              &=\begin{bmatrix}\cos\omega_i\,pos\cdot\textcolor{#0a7d61}{\cos\omega_i k}-\sin\omega_i\,pos\cdot\textcolor{#0a7d61}{\sin\omega_i k}\\[4pt]
+                               \sin\omega_i\,pos\cdot\textcolor{#0a7d61}{\cos\omega_i k}+\cos\omega_i\,pos\cdot\textcolor{#0a7d61}{\sin\omega_i k}\end{bmatrix}\\[14pt]
+              &=\textcolor{#0a7d61}{\begin{bmatrix}\cos\omega_i k & -\sin\omega_i k\\[2pt] \sin\omega_i k & \cos\omega_i k\end{bmatrix}}
+                \begin{bmatrix}\cos\omega_i\,pos\\[2pt] \sin\omega_i\,pos\end{bmatrix}
+            \end{aligned}\]
+            <!-- 结论行回到 ?：推完才看得出绿色矩阵里没有 pos，所以 pos 是几并不需要知道 -->
+            <div class="qconc">\(\mathrm{PE}(\mathbf{?}+k)=\textcolor{#0a7d61}{R(\omega_i k)}\cdot\mathrm{PE}(\mathbf{?})\)</div>
+
+            <div class="qhead q2">只知道位置编码 \(\mathrm{PE}(\mathbf{?}_1)\) 和 \(\mathrm{PE}(\mathbf{?}_2)\)，不知道它们的绝对位置，能否知道它们的位置间隔 \(\mathbf{?}_1-\mathbf{?}_2\)？</div>
+            \[\begin{aligned}
+              \begin{bmatrix}\cos\omega_i\,pos_1\\[2pt] \sin\omega_i\,pos_1\end{bmatrix}\cdot
+              \begin{bmatrix}\cos\omega_i\,pos_2\\[2pt] \sin\omega_i\,pos_2\end{bmatrix}
+              &=\cos\omega_i\,pos_1\cdot\cos\omega_i\,pos_2+\sin\omega_i\,pos_1\cdot\sin\omega_i\,pos_2\\[9pt]
+              &=\cos\bigl(\omega_i\,pos_1-\omega_i\,pos_2\bigr)\\[9pt]
+              &=\textcolor{#0a7d61}{\cos\bigl(\omega_i(pos_1-pos_2)\bigr)}
+            \end{aligned}\]
+            <!-- 同第一问：推完才看得出结果里只剩下差，所以两个绝对位置是几都不需要知道 -->
+            <div class="qconc">\(\mathrm{PE}(\mathbf{?}_1)\cdot\mathrm{PE}(\mathbf{?}_2)=\textcolor{#0a7d61}{\cos\bigl(\omega_i(\mathbf{?}_1-\mathbf{?}_2)\bigr)}\)</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script>
+  // —— Tab3 / Tab4 两张波形图共用的「点哪儿读哪儿」 ——
+  // 两张图都是 width:100% + height:auto，viewBox 不会被 letterbox，所以按包围盒等比换算就是准的
+  function svgPosFromEvent(svg, e, x0, cw, N){
+    const r=svg.getBoundingClientRect(); if(!r.width) return null;
+    const vb=svg.viewBox.baseVal;
+    const vx=vb.x+(e.clientX-r.left)/r.width*vb.width;
+    // 第 p 格的中心画在 x0+p*cw+cw/2，反解回去再四舍五入 = 离鼠标最近的那个整数位置
+    return Math.max(0, Math.min(N-1, Math.round((vx-x0)/cw-0.5)));
+  }
+  // 按下就跟手，按住横向拖可以连续扫过整段位置，松开结束
+  function makeScrubbable(svg, onPick){
+    let down=false;
+    svg.style.cursor='pointer'; svg.style.touchAction='none';
+    const fire=e=>{ e.preventDefault(); onPick(e); };
+    const up=e=>{ down=false; if(e&&e.pointerId!=null){ try{ svg.releasePointerCapture(e.pointerId); }catch(_){} } };
+    svg.addEventListener('pointerdown',e=>{ down=true; try{ svg.setPointerCapture(e.pointerId); }catch(_){} fire(e); });
+    svg.addEventListener('pointermove',e=>{ if(down) fire(e); });
+    svg.addEventListener('pointerup',up);
+    svg.addEventListener('pointercancel',up);
+  }
+
+  // Tab3：六位二进制的方波。顶行是最低位 bit0（每 1 个位置翻一次），底行是最高位 bit5（每 32 个翻一次），
+  // 行序跟上面那列编码从上到下一一对应；红色虚线 = 当前位置，默认 24，点一下或拖着扫可以换位置，
+  // 右边那一列 0/1、上面那列编码、以及「24 = 011000」都跟着重算
+  (function drawBits(){
+    const svg=document.getElementById('bitwave'); if(!svg) return;
+    const N=64, W=6, x0=60, x1=716, cw=(x1-x0)/N;
+    const top=20, rowH=45, amp=26;
+    const bottom=top+(W-1)*rowH+amp+22;
+    const cells=[...document.querySelectorAll('#binvec .cv')];
+    const note=document.getElementById('binnote');
+    const tex=(el,src)=>{ if(!el) return; if(window.katex) katex.render(src,el,{throwOnError:false}); else el.textContent=src; };
+
+    // 方波本身和左边的位号跟位置无关，只拼一次；拖动时每帧只重拼跟着走的那几件
+    let STATIC='';
+    for(let r=0;r<W;r++){
+      const k=r, base=top+r*rowH+amp;
+      let d='';
+      for(let p=0;p<N;p++){
+        const y=base-((p>>k)&1)*amp, xa=x0+p*cw, xb=xa+cw;
+        d+=(p===0?`M${xa} ${y}`:` L${xa} ${y}`)+` L${xb} ${y}`;
+      }
+      STATIC+=`<path d="${d}" fill="none" stroke="#3b7ddd" stroke-width="2.4" stroke-linejoin="round"/>`;
+      STATIC+=`<text x="${x0-14}" y="${base-amp/2+7}" text-anchor="end" font-family="JetBrains Mono" font-size="16" fill="#8e8ea0">${k}</text>`;
+    }
+    STATIC+=`<line x1="${x0}" y1="${bottom}" x2="${x1}" y2="${bottom}" stroke="#e6e6e8" stroke-width="1.4"/>`;
+
+    function render(mark){
+      const cx=x0+mark*cw+cw/2;
+      // 虚线摆在最前面，方波压在它上面 —— 和改造之前的层序一致
+      let s=`<line x1="${cx}" y1="${top-8}" x2="${cx}" y2="${bottom}" stroke="#d64545" stroke-width="1.6" stroke-dasharray="5 5"/>`;
+      s+=STATIC;
+      for(let r=0;r<W;r++){
+        const k=r, base=top+r*rowH+amp, bit=(mark>>k)&1;
+        s+=`<text x="${x1+20}" y="${base-amp/2+8}" text-anchor="start" font-family="JetBrains Mono" font-size="20" font-weight="700" fill="#245ea8">${bit}</text>`;
+        s+=`<circle cx="${cx}" cy="${base-bit*amp}" r="5" fill="#d64545"/>`;
+      }
+      // 位置挪到两端时，0 / 63 会跟红色的当前位置叠在一起，那就不画端点
+      if(Math.abs(cx-x0)>30) s+=`<text x="${x0}" y="${bottom+23}" text-anchor="middle" font-family="JetBrains Mono" font-size="14" fill="#b0b0bc">0</text>`;
+      if(Math.abs(cx-x1)>30) s+=`<text x="${x1}" y="${bottom+23}" text-anchor="middle" font-family="JetBrains Mono" font-size="14" fill="#b0b0bc">${N-1}</text>`;
+      s+=`<text x="${cx}" y="${bottom+23}" text-anchor="middle" font-family="JetBrains Mono" font-size="16" font-weight="700" fill="#d64545">${mark}</text>`;
+      svg.innerHTML=s;
+      cells.forEach((el,k)=>tex(el, String((mark>>k)&1)));
+      tex(note, `${mark} = ${mark.toString(2).padStart(W,'0')}_{(2)}`);
+    }
+
+    render(24);
+    makeScrubbable(svg, e=>{ const p=svgPosFromEvent(svg,e,x0,cw,N); if(p!==null) render(p); });
+  })();
+
+  // Tab5：sin(x) 和 sin(x/2) 画在同一副坐标里 —— 蓝的一个周期 2π，橙的一个周期 4π，
+  // 下面两条箭头量的就是各自的波长，橙的正好是蓝的两倍长
+  (function drawTwoWaves(){
+    const svg=document.getElementById('wavefig'); if(!svg) return;
+    const xmin=-1.05*Math.PI, xmax=4.55*Math.PI, ticks=[[1,'π'],[2,'2π'],[3,'3π'],[4,'4π']];
+    const ox=125, oy=70, A=40, k=34.4;
+    const X=t=>ox+k*t, Y=v=>oy-A*v;
+    const curve=m=>{ const p=[]; for(let t=xmin;t<=xmax+1e-9;t+=0.03) p.push(`${X(t).toFixed(1)},${Y(Math.sin(t/m)).toFixed(1)}`); return p.join(' '); };
+    // SVG 的 <text> 走不了 KaTeX，用 foreignObject 塞一段 HTML 进去，auto-render 才认
+    const fo=(cx,cy,w,h,html,css='')=>`<foreignObject x="${cx-w/2}" y="${cy-h/2}" width="${w}" height="${h}">`
+      +`<div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%;display:flex;align-items:center;`
+      +`justify-content:center;line-height:1;${css}">${html}</div></foreignObject>`;
+    let s='';
+    s+=`<line x1="${X(xmin)-8}" y1="${oy}" x2="${X(xmax)+14}" y2="${oy}" stroke="#0d0d0d" stroke-width="1.5"/>`;
+    s+=`<polygon points="${X(xmax)+22},${oy} ${X(xmax)+12},${oy-4.5} ${X(xmax)+12},${oy+4.5}" fill="#0d0d0d"/>`;
+    s+=fo(X(xmax)+32,oy,26,22,'\\(x\\)','font-size:15px;color:#0d0d0d');
+    s+=`<line x1="${ox}" y1="${Y(1.5)}" x2="${ox}" y2="${Y(-1.4)}" stroke="#0d0d0d" stroke-width="1.5"/>`;
+    s+=`<polygon points="${ox},${Y(1.68)} ${ox-4.5},${Y(1.5)} ${ox+4.5},${Y(1.5)}" fill="#0d0d0d"/>`;
+    s+=fo(ox-14,Y(1.42),26,22,'\\(y\\)','font-size:15px;color:#0d0d0d');
+    for(const v of [1,-1]){
+      s+=`<line x1="${ox-4}" y1="${Y(v)}" x2="${ox+4}" y2="${Y(v)}" stroke="#0d0d0d" stroke-width="1.4"/>`;
+      s+=fo(ox-22,Y(v),32,22,v>0?'\\(1\\)':'\\(-1\\)','font-size:14px;color:#0d0d0d');
+    }
+    s+=`<polyline points="${curve(1)}" fill="none" stroke="#3b7ddd" stroke-width="2.4"/>`;
+    s+=`<polyline points="${curve(2)}" fill="none" stroke="#c2622f" stroke-width="2.4"/>`;
+    for(const [mult,txt] of ticks){
+      const t=mult*Math.PI;
+      s+=`<line x1="${X(t)}" y1="${oy-4}" x2="${X(t)}" y2="${oy+4}" stroke="#0d0d0d" stroke-width="1.4"/>`;
+      s+=fo(X(t),oy+18,46,22,`<span style="background:#fff;padding:0 4px">\\(${txt}\\)</span>`,'font-size:14px;color:#0d0d0d');
+    }
+    // 两条波长标注：蓝 0→2π 在上，橙 0→4π 在下
+    [[2*Math.PI,oy+64,'#245ea8','2\\pi'],[4*Math.PI,oy+108,'#9c4d22','4\\pi']].forEach(([P,wy,col,tex])=>{
+      s+=`<line x1="${X(0)}" y1="${oy}" x2="${X(0)}" y2="${wy}" stroke="#c2c2cc" stroke-width="1.2" stroke-dasharray="4 4"/>`;
+      s+=`<line x1="${X(P)}" y1="${oy}" x2="${X(P)}" y2="${wy}" stroke="#c2c2cc" stroke-width="1.2" stroke-dasharray="4 4"/>`;
+      s+=`<line x1="${X(0)+7}" y1="${wy}" x2="${X(P)-7}" y2="${wy}" stroke="${col}" stroke-width="1.8"/>`;
+      s+=`<polygon points="${X(0)},${wy} ${X(0)+9},${wy-4.5} ${X(0)+9},${wy+4.5}" fill="${col}"/>`;
+      s+=`<polygon points="${X(P)},${wy} ${X(P)-9},${wy-4.5} ${X(P)-9},${wy+4.5}" fill="${col}"/>`;
+      s+=fo(X(P/2),wy-15,190,24,`<span style="background:#fff;padding:0 6px">波长 = \\(${tex}\\)</span>`,`font-size:15.5px;font-weight:700;color:${col}`);
+    });
+    svg.innerHTML=s;
+  })();
+
+  // Tab5：表格里每一行右边挂一条曲线，画的是层级关系而不是真实倍率 ——
+  // 每往下一档波长翻一倍（8 / 4 / 2 / 1 个周期）；真实相邻两档差 10 倍，那样画后两条会成直线
+  (function drawTableWaves(){
+    for(let i=0;i<4;i++){
+      const svg=document.getElementById('wcv'+i); if(!svg) continue;
+      const X0=2, W=396, mid=18, amp=12, cycles=8/Math.pow(2,i);
+      const pts=[];
+      for(let p=0;p<=1.0001;p+=0.002) pts.push(`${(X0+p*W).toFixed(1)},${(mid-amp*Math.sin(2*Math.PI*cycles*p)).toFixed(1)}`);
+      // 把一个周期整段涂成高亮带 + 两头竖虚线；四行都从同一个左边界起步，
+      // 带子宽度逐行翻倍（50/100/200/400），层级关系一眼就能看出来
+      const per=W/cycles, dash=x=>`<line x1="${x}" y1="1" x2="${x}" y2="35" `
+        +`stroke="#0a7d61" stroke-width="1.8" stroke-dasharray="4 3"/>`;
+      svg.innerHTML=`<rect x="${X0}" y="1" width="${per.toFixed(1)}" height="34" fill="rgba(16,163,127,.17)"/>`
+        +`<line x1="${X0}" y1="${mid}" x2="${X0+W}" y2="${mid}" stroke="#eceef1" stroke-width="1"/>`
+        +(i>0 ? `<line x1="${(X0+per/2).toFixed(1)}" y1="1" x2="${(X0+per/2).toFixed(1)}" y2="35" `
+                +`stroke="#0a7d61" stroke-opacity=".38" stroke-width="1" stroke-dasharray="2 3"/>` : '')
+        +`<polyline points="${pts.join(' ')}" fill="none" stroke="#3b7ddd" stroke-width="1.9"/>`
+        +dash(X0)+dash(X0+per);
+    }
+  })();
+
+  // Tab4：正弦位置编码的波形。每一组 i 画两行：偶数维的 sin（蓝）和奇数维的 cos（橙）。
+  // 演示用 d=20（真实模型是几百维）：这样前三组 i=0/1/2 的波长就是 6.28 / 15.78 / 39.64，
+  // 相邻差 2.5 倍，六行正好是编码向量的前 6 维，跟上面那一列逐行对应。
+  // 红色虚线 = 当前位置，默认 24，点一下或拖着扫可以换位置，右边那一列六个数跟着重算
+  (function drawSinePE(){
+    const svg=document.getElementById('sinewave'); if(!svg) return;
+    const N=64, x0=84, x1=644, cw=(x1-x0)/N;
+    const top=20, rowH=41, amp=24, D=20, BASE=10000;
+    const IS=[0,1,2], FN=[['sin',Math.sin,'#3b7ddd','#245ea8'],['cos',Math.cos,'#c2622f','#9c4d22']];
+    const xOf=p=>x0+p*cw+cw/2;
+    const rows=IS.length*2;
+    const bottom=top+(rows-1)*rowH+amp+20;
+    // 每一行摊平成 {角频率, 基线, 函数, 配色}，静态曲线和动态取值都照着它走
+    const LINES=[];
+    IS.forEach((i,g)=>{
+      const th=Math.pow(BASE,-2*i/D);
+      FN.forEach(([name,f,stroke,ink],k)=>{
+        LINES.push({i,th,f,stroke,ink,mid:top+(g*2+k)*rowH+amp/2,a:amp/2});
+      });
+    });
+
+    // 曲线和左边的 i 标签跟位置无关，只拼一次；拖动时每帧只重拼跟着走的那几件
+    let STATIC='';
+    LINES.forEach(L=>{
+      const pts=[];
+      for(let t=0;t<=N-1;t+=0.1) pts.push(`${xOf(t).toFixed(1)},${(L.mid-L.a*L.f(t*L.th)).toFixed(1)}`);
+      STATIC+=`<polyline points="${pts.join(' ')}" fill="none" stroke="${L.stroke}" stroke-width="2.3"/>`;
+      STATIC+=`<text x="${x0-14}" y="${L.mid+6}" text-anchor="end" font-family="JetBrains Mono" font-size="14" fill="${L.ink}">i = ${L.i}</text>`;
+    });
+    STATIC+=`<line x1="${x0}" y1="${bottom}" x2="${x1}" y2="${bottom}" stroke="#e6e6e8" stroke-width="1.4"/>`;
+
+    function render(mark){
+      const cx=xOf(mark);
+      // 虚线摆在最前面，曲线压在它上面 —— 和改造之前的层序一致
+      let s=`<line x1="${cx}" y1="${top-8}" x2="${cx}" y2="${bottom}" stroke="#d64545" stroke-width="1.6" stroke-dasharray="5 5"/>`;
+      s+=STATIC;
+      LINES.forEach(L=>{
+        const v=L.f(mark*L.th);
+        s+=`<text x="${x1+18}" y="${L.mid+6}" text-anchor="start" font-family="JetBrains Mono" font-size="17" font-weight="700" fill="${L.ink}">${v.toFixed(3)}</text>`;
+        s+=`<circle cx="${cx}" cy="${(L.mid-L.a*v).toFixed(1)}" r="4.6" fill="#d64545"/>`;
+      });
+      // 位置挪到两端时，0 / 63 会跟红色的当前位置叠在一起，那就不画端点
+      if(Math.abs(cx-x0)>30) s+=`<text x="${x0}" y="${bottom+23}" text-anchor="middle" font-family="JetBrains Mono" font-size="14" fill="#b0b0bc">0</text>`;
+      if(Math.abs(cx-x1)>30) s+=`<text x="${x1}" y="${bottom+23}" text-anchor="middle" font-family="JetBrains Mono" font-size="14" fill="#b0b0bc">${N-1}</text>`;
+      s+=`<text x="${cx}" y="${bottom+23}" text-anchor="middle" font-family="JetBrains Mono" font-size="16" font-weight="700" fill="#d64545">${mark}</text>`;
+      svg.innerHTML=s;
+    }
+
+    render(24);
+    makeScrubbable(svg, e=>{ const p=svgPosFromEvent(svg,e,x0,cw,N); if(p!==null) render(p); });
+  })();
+
+  // Tab6：四对 (sin, cos) 各画一个单位圆，从上到下 i=0…3；pos 每加 1，四个向量各自逆时针跳过 θi 弧度。
+  // 角度就是真实值 θi = 10000^(-2i/d)（d=8）：1 / 0.1 / 0.01 / 0.001 弧度 = 57.3° / 5.73° / 0.573° / 0.0573°，
+  // 所以 i=3 那个圆几乎不动 —— 它本来就要 6283 个 token 才转一圈
+  const D=8, BASE=10000, th=i=>Math.pow(BASE,-2*i/D);
+
+  // Tab6 顶部的定义图：一个单位圆 + 一支指向 (cosθ, sinθ) 的向量
+  (function drawDefCircle(){
+    const svg=document.getElementById('defcirc'); if(!svg) return;
+    // 只画第一象限：原点在左下，一段 90° 的圆弧，向量落在弧上，坐标就标在箭头旁边
+    const cx=32, cy=158, r=120, a=52*Math.PI/180;
+    const ux=Math.cos(a), uy=-Math.sin(a), vx=Math.sin(a), vy=Math.cos(a);
+    const tx=cx+r*ux, ty=cy+r*uy, bx=cx+(r-15)*ux, by=cy+(r-15)*uy;
+    let s='';
+    s+=`<line x1="16" y1="${cy}" x2="188" y2="${cy}" stroke="#0d0d0d" stroke-width="1.4"/>`;
+    s+=`<polygon points="196,${cy} 186,${cy-5} 186,${cy+5}" fill="#0d0d0d"/>`;
+    s+=`<line x1="${cx}" y1="174" x2="${cx}" y2="22" stroke="#0d0d0d" stroke-width="1.4"/>`;
+    s+=`<polygon points="${cx},14 ${cx-5},24 ${cx+5},24" fill="#0d0d0d"/>`;
+    // sweep-flag=0 → 屏幕上逆时针，从 0° 扫到 90° 正好是第一象限那段弧
+    s+=`<path d="M${cx+r} ${cy} A${r} ${r} 0 0 0 ${cx} ${cy-r}" fill="none" stroke="#10a37f" stroke-width="1.9"/>`;
+    // 从 x 轴量到向量的那个角就是 ω_i·pos —— 扇形样式跟 Tab7 的 ω_i·k 一致，
+    // 这样到了 Tab7 观众能认出「同一种东西，只是改成从 pos 量到 pos+k」
+    // 标注挂在角平分线偏下一点（0.42a 而不是 0.5a）、半径 82 —— 压在平分线上会蹭到向量
+    const AR=38, am=a*0.42;
+    const [aex,aey]=[cx+AR*Math.cos(a), cy-AR*Math.sin(a)];
+    s+=`<path d="M${cx} ${cy} L${cx+AR} ${cy} A${AR} ${AR} 0 0 0 ${aex.toFixed(1)} ${aey.toFixed(1)} Z" fill="rgba(16,163,127,.17)"/>`;
+    s+=`<path d="M${cx+AR} ${cy} A${AR} ${AR} 0 0 0 ${aex.toFixed(1)} ${aey.toFixed(1)}" fill="none" stroke="#0a7d61" stroke-width="2.2"/>`;
+    s+=`<foreignObject x="${(cx+82*Math.cos(am)-48).toFixed(1)}" y="${(cy-82*Math.sin(am)-13).toFixed(1)}" width="96" height="26">`
+      +`<div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%;display:flex;align-items:center;`
+      +`justify-content:center;line-height:1;white-space:nowrap;font-size:15px;font-weight:700;color:#0a7d61">`
+      +`<span style="background:#fff;padding:0 5px;border-radius:4px">\\(\\omega_i\\cdot pos\\)</span></div></foreignObject>`;
+    s+=`<line x1="${cx}" y1="${cy}" x2="${bx.toFixed(1)}" y2="${by.toFixed(1)}" stroke="#3b7ddd" stroke-width="2.8"/>`;
+    s+=`<polygon points="${tx.toFixed(1)},${ty.toFixed(1)} ${(bx+vx*6.2).toFixed(1)},${(by+vy*6.2).toFixed(1)} `
+      +`${(bx-vx*6.2).toFixed(1)},${(by-vy*6.2).toFixed(1)}" fill="#3b7ddd"/>`;
+    // SVG 的 <text> 走不了 KaTeX，坐标标签用 foreignObject 塞 HTML 进去，贴在箭头尖旁边
+    s+=`<foreignObject x="116" y="32" width="272" height="34"><div xmlns="http://www.w3.org/1999/xhtml"`
+      +` style="width:100%;height:100%;display:flex;align-items:center;line-height:1;white-space:nowrap;font-size:19px;color:#245ea8">`
+      +`\\(\\bigl(\\cos(\\omega_i\\cdot pos),\\ \\sin(\\omega_i\\cdot pos)\\bigr)\\)</div></foreignObject>`;
+    svg.innerHTML=s;
+  })();
+
+  // Tab6 下半：一列四个单位圆，pos 连续增长，每个圆按自己的角速度 θi 匀速转。
+  // θi 是真实值 10000^(-2i/8) = 1 / 0.1 / 0.01 / 0.001 弧度/pos，所以相邻两圈差 10 倍转速。
+  // 滑杆调的是 pos 每秒走多快（对数刻度 0.2 ~ 2000），拉快了才看得见 i=2 / i=3 在转
+  const spinCol = (function drawSpinCol(){
+    const tb=document.getElementById('spincol');
+    const slider=document.getElementById('spd'), posv=document.getElementById('posv');
+    if(!tb || !slider) return {start(){},stop(){}};
+    const CIRCS=[{i:0,col:'#3b7ddd'},{i:1,col:'#c2622f'},{i:2,col:'#10a37f'},{i:3,col:'#7c5cd6'}];
+    const C=75, R=56, AL=13, AW=5.6;   // 圆心 / 半径 / 箭头长 / 箭头半宽
+    // 向量箭头：杆画到箭头根部，尖端落在圆上
+    function vec(a){
+      const ux=Math.cos(a), uy=-Math.sin(a), vx=Math.sin(a), vy=Math.cos(a);
+      const tx=C+R*ux, ty=C+R*uy, bx=C+(R-AL)*ux, by=C+(R-AL)*uy;
+      return {bx,by, head:`${tx.toFixed(1)},${ty.toFixed(1)} ${(bx+vx*AW).toFixed(1)},${(by+vy*AW).toFixed(1)} `
+                          +`${(bx-vx*AW).toFixed(1)},${(by-vy*AW).toFixed(1)}`};
+    }
+    const v0=vec(0);
+    let h='';
+    CIRCS.forEach(K=>{
+      h+=`<div class="scrow"><span class="ilab" style="color:${K.col}">\\(i=${K.i}\\)</span>`
+        +`<svg id="sc${K.i}" viewBox="0 0 150 150" style="width:128px;height:128px;display:block;flex:0 0 auto">`
+        +`<line x1="${C-R-10}" y1="${C}" x2="${C+R+10}" y2="${C}" stroke="#e2e2e8" stroke-width="1"/>`
+        +`<line x1="${C}" y1="${C-R-10}" x2="${C}" y2="${C+R+10}" stroke="#e2e2e8" stroke-width="1"/>`
+        +`<circle cx="${C}" cy="${C}" r="${R}" fill="none" stroke="${K.col}" stroke-opacity=".42" stroke-width="1.7"/>`
+        +`<line class="cl" x1="${C}" y1="${C}" x2="${v0.bx.toFixed(1)}" y2="${v0.by.toFixed(1)}" stroke="${K.col}" stroke-width="2.6"/>`
+        +`<polygon class="cp" points="${v0.head}" fill="${K.col}"/>`
+        +`<circle cx="${C}" cy="${C}" r="2.6" fill="#b0b0bc"/>`
+        +`</svg></div>`;
+    });
+    tb.innerHTML=h;
+    const el=CIRCS.map(K=>{
+      const s=document.getElementById('sc'+K.i);
+      return {step:th(K.i), line:s.querySelector('.cl'), head:s.querySelector('.cp')};
+    });
+
+    const rateOf=v=>0.2*Math.pow(10, v/100*4);   // 滑杆 0→100 映射到 0.2→2000 pos/秒
+    let rate=rateOf(+slider.value), pos=0, raf=null, last=0, lastN=null;
+    slider.addEventListener('input',()=>{ rate=rateOf(+slider.value); });
+    // pos 走 KaTeX，跟上面定义里的 pos 同一套字形；只在整数变了才重渲染，不然每帧都渲染太浪费
+    function showPos(n){
+      if(n===lastN) return;
+      lastN=n;
+      if(window.katex) katex.render(`pos = ${n}`, posv, {throwOnError:false});
+      else posv.textContent='pos = '+n;
+    }
+    function draw(){
+      el.forEach(({step,line,head})=>{
+        const v=vec(pos*step);
+        line.setAttribute('x2',v.bx.toFixed(1)); line.setAttribute('y2',v.by.toFixed(1));
+        head.setAttribute('points',v.head);
+      });
+      showPos(Math.floor(pos));
+    }
+    function frame(now){
+      const dt=Math.min(0.1,(now-last)/1000); last=now;
+      pos+=rate*dt; draw();
+      raf=requestAnimationFrame(frame);
+    }
+    function stop(){ if(raf) cancelAnimationFrame(raf); raf=null; }
+    function start(){ if(raf) return; pos=0; draw(); last=performance.now(); raf=requestAnimationFrame(frame); }
+    draw();
+    return {start,stop};
+  })();
+
+  // Tab7：pos 走到 pos+k，圆上扫过的那块扇形就是 ωi·k —— 扇形多大只由 k 决定，跟起点在哪无关
+  (function drawRotPair(){
+    const CFG=[
+      {id:'rot0', a0: 35, a1:105, l0:'pos', l1:'pos+k'}
+    ];
+    const C=170, CY=150, R=100, AL=15, AW=6.4, AR=52;   // 圆心 / 半径 / 箭头长宽 / 角弧半径
+    const rad=d=>d*Math.PI/180;
+    const P=(r,a)=>[C+r*Math.cos(a), CY-r*Math.sin(a)];
+    function arrow(a,col){
+      const ux=Math.cos(a), uy=-Math.sin(a), vx=Math.sin(a), vy=Math.cos(a);
+      const tx=C+R*ux, ty=CY+R*uy, bx=C+(R-AL)*ux, by=CY+(R-AL)*uy;
+      return `<line x1="${C}" y1="${CY}" x2="${bx.toFixed(1)}" y2="${by.toFixed(1)}" stroke="${col}" stroke-width="3"/>`
+        +`<polygon points="${tx.toFixed(1)},${ty.toFixed(1)} ${(bx+vx*AW).toFixed(1)},${(by+vy*AW).toFixed(1)} `
+        +`${(bx-vx*AW).toFixed(1)},${(by-vy*AW).toFixed(1)}" fill="${col}"/>`;
+    }
+    // SVG 的 <text> 走不了 KaTeX，标签用 foreignObject 塞 HTML 进去
+    const fo=(x,y,w,h,html,css)=>`<foreignObject x="${(x-w/2).toFixed(1)}" y="${(y-h/2).toFixed(1)}" width="${w}" height="${h}">`
+      +`<div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%;display:flex;align-items:center;`
+      +`justify-content:center;line-height:1;white-space:nowrap;${css}">${html}</div></foreignObject>`;
+    CFG.forEach(K=>{
+      const svg=document.getElementById(K.id); if(!svg) return;
+      const a0=rad(K.a0), a1=rad(K.a1), am=rad((K.a0+K.a1)/2);
+      const [sx,sy]=P(AR,a0), [ex,ey]=P(AR,a1);
+      // 弧末端的箭头：切线方向 (-sin a, -cos a) 就是屏幕上逆时针前进的方向
+      const ux=-Math.sin(a1), uy=-Math.cos(a1), px=Math.cos(a1), py=-Math.sin(a1);
+      const hx=ex-11*ux, hy=ey-11*uy;
+      let s='';
+      s+=`<line x1="${C-R-14}" y1="${CY}" x2="${C+R+14}" y2="${CY}" stroke="#e2e2e8" stroke-width="1.2"/>`;
+      s+=`<line x1="${C}" y1="${CY-R-14}" x2="${C}" y2="${CY+R+14}" stroke="#e2e2e8" stroke-width="1.2"/>`;
+      s+=`<circle cx="${C}" cy="${CY}" r="${R}" fill="none" stroke="#c9ced6" stroke-width="1.6"/>`;
+      // sweep-flag=0 → 屏幕上逆时针；两段都不超过 180°，large-arc 恒为 0
+      s+=`<path d="M${C} ${CY} L${sx.toFixed(1)} ${sy.toFixed(1)} A${AR} ${AR} 0 0 0 ${ex.toFixed(1)} ${ey.toFixed(1)} Z" fill="rgba(16,163,127,.17)"/>`;
+      s+=`<path d="M${sx.toFixed(1)} ${sy.toFixed(1)} A${AR} ${AR} 0 0 0 ${hx.toFixed(1)} ${hy.toFixed(1)}" fill="none" stroke="#0a7d61" stroke-width="2.6"/>`;
+      s+=`<polygon points="${ex.toFixed(1)},${ey.toFixed(1)} ${(hx+px*5).toFixed(1)},${(hy+py*5).toFixed(1)} `
+        +`${(hx-px*5).toFixed(1)},${(hy-py*5).toFixed(1)}" fill="#0a7d61"/>`;
+      s+=arrow(a0,'#3b7ddd')+arrow(a1,'#c2622f');
+      s+=`<circle cx="${C}" cy="${CY}" r="3" fill="#8e8ea0"/>`;
+      const [lx0,ly0]=P(R+26,a0), [lx1,ly1]=P(R+26,a1), [mx,my]=P(80,am);
+      s+=fo(lx0,ly0,92,28,`\\(${K.l0}\\)`,'font-size:18px;font-weight:700;color:#245ea8');
+      s+=fo(lx1,ly1,116,28,`\\(${K.l1}\\)`,'font-size:18px;font-weight:700;color:#9c4d22');
+      s+=fo(mx,my,78,28,`<span style="background:#fff;padding:0 5px;border-radius:4px">\\(\\omega_i k\\)</span>`,
+            'font-size:17px;font-weight:700;color:#0a7d61');
+      svg.innerHTML=s;
+    });
+  })();
+
+  document.addEventListener('DOMContentLoaded', () => {
+    if (window.renderMathInElement) {
+      renderMathInElement(document.body, {
+        delimiters: [
+          {left:'$$',  right:'$$',  display:true},
+          {left:'\\[', right:'\\]', display:true},
+          {left:'\\(', right:'\\)', display:false},
+          {left:'$',   right:'$',   display:false}
+        ],
+        throwOnError: false
+      });
+    }
+  });
+
+  const tabs=[...document.querySelectorAll('.tab')];
+  const slides=[...document.querySelectorAll('.slide')];
+  let cur=0;
+  function go(i){
+    i=(i+slides.length)%slides.length;
+    tabs.forEach((t,k)=>t.classList.toggle('active',k===i));
+    slides.forEach((s,k)=>s.classList.toggle('active',k===i));
+    cur=i;
+    // Tab6 的匀速旋转：进来从 pos=0 开始转，离开就停
+    if(i===5) spinCol.start(); else spinCol.stop();
+  }
+  tabs.forEach((t,i)=>t.addEventListener('click',()=>go(i)));
+  // ←/→/空格 顺序翻页，数字键 1–7 直接跳
+  document.addEventListener('keydown',e=>{
+    // 焦点在滑杆上时把方向键让给滑杆
+    if(e.target && e.target.tagName==='INPUT') return;
+    if(e.key==='ArrowRight'||e.key===' ') { e.preventDefault(); go(cur+1); }
+    else if(e.key==='ArrowLeft') go(cur-1);
+    else if(/^[1-7]$/.test(e.key)) go(+e.key-1);
+  });
+</script>
+</body>
+</html>
