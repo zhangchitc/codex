@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codex 082 · 旋转位置编码 RoPE：位置为什么要用「转角度」来表示</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+  * { box-sizing:border-box; margin:0; padding:0; }
+
+  :root{
+    /* —— 暗色 deck 外壳（沿用 074 / 079 那套） —— */
+    --bg:#0d0d0d; --card:#161618; --card-head:#1b1b1e; --card-2:#1b1b1e;
+    --ink:#f2f3f5; --muted:#9a9aa6; --dim:#8b8b96;
+    --line:rgba(255,255,255,.09); --line-2:rgba(255,255,255,.14);
+    /* Tab4 那些格子专用：--line-2 在 1080p 上几乎看不见，格线得比它亮一档 */
+    --grid-line:rgba(255,255,255,.32);
+    --arrow:#b6b6c4;
+    /* 蓝灰：UI 重点色，同时也是本期主角 —— 角度 / 相对位置 / 成立的结论 */
+    --accent:#6aa0ff; --accent-deep:#cfe0ff;
+    --accent-soft:rgba(106,160,255,.15); --accent-line:rgba(106,160,255,.55);
+
+    /* —— 图内语义色：全 deck 固定 ——
+       承接 081 的蓝/橙分工：蓝=位置 m / query，橙=位置 n / key。
+       蓝挑了偏青的天蓝，跟 UI 重点色那个蓝灰拉开一个色相，同屏出现也分得清 */
+    --q:#38bdf8;   --q-ink:#7dd3fc;  --q-soft:rgba(56,189,248,.14); --q-line:rgba(56,189,248,.5);
+    --k:#f6a960;   --k-ink:#f6a960;  --k-soft:rgba(246,169,96,.15); --k-line:rgba(246,169,96,.6);
+    --bad:#ff9d9d; --bad-soft:rgba(255,120,120,.09); --bad-line:rgba(255,120,120,.34);
+    --good:#6aa0ff; --good-soft:rgba(106,160,255,.15); --good-line:rgba(106,160,255,.55);
+    --grey-fill:#24242a; --grey-line:rgba(255,255,255,.14);
+
+    --mono:"JetBrains Mono","SF Mono",Menlo,monospace;
+    --sans:"Inter","PingFang SC",-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;
+  }
+
+  html,body{ height:100%; }
+  body{ background:
+          radial-gradient(1200px 420px at 50% -8%, rgba(106,160,255,.07), transparent 60%),
+          var(--bg);
+        color:var(--ink); font-family:var(--sans);
+        -webkit-font-smoothing:antialiased; overflow:hidden; }
+
+  .deck{ height:100vh; display:flex; flex-direction:column; }
+
+  /* 顶栏（持久） */
+  .topbar{ flex:0 0 auto; display:flex; align-items:center; justify-content:space-between;
+           gap:20px; padding:16px 40px; border-bottom:1px solid var(--line); }
+  .brand .ttl{ font-size:19px; font-weight:700; color:var(--ink); white-space:nowrap; }
+  .brand .ttl b{ color:var(--accent); font-weight:800; }
+  .tabs{ display:flex; gap:3px; padding:4px; border:1px solid var(--line);
+         border-radius:999px; background:rgba(255,255,255,.03); }
+  .tab{ appearance:none; border:1px solid transparent; border-radius:999px; cursor:pointer;
+        background:transparent; color:var(--muted); font-family:var(--sans);
+        font-size:14px; font-weight:700; padding:8px 13px; white-space:nowrap; transition:.18s; }
+  .tab:hover{ color:var(--ink); }
+  .tab:focus, .tab:focus-visible{ outline:none; }   /* 键盘翻页时别留焦点环 */
+  .tab.active{ color:var(--accent-deep); background:var(--accent-soft); border-color:var(--accent-line); }
+
+  /* 舞台 + slide */
+  .stage{ position:relative; flex:1 1 auto; }
+  /* 底部 padding 里塞进 50vh：内容是顶对齐的，所以这段空白不影响初始构图，
+     只是把可滚动范围往下延长 —— 滚到底时屏幕下半屏是空的，方便讲解时把某一块顶上来 */
+  .slide{ position:absolute; inset:0; display:none; flex-direction:column;
+          padding:28px 58px calc(22px + 50vh); overflow-y:auto; overflow-x:hidden; }
+  .slide.active{ display:flex; }
+  .wrap{ width:100%; max-width:1620px; margin:0 auto; flex:1 0 auto;
+         display:flex; flex-direction:column; justify-content:flex-start;
+         align-items:center; text-align:center; gap:20px; }
+
+  .head{ font-size:40px; line-height:1.18; font-weight:800; letter-spacing:-.4px; }
+  .head .hl{ color:var(--accent); }
+  .head .katex{ font-size:.94em; }
+  .sub{ font-size:19px; color:var(--muted); line-height:1.5; max-width:1220px; }
+  /* 副标题里出现带中文下标的公式（q_疼ᵀk_张三），默认字号下标会糊成一团 */
+  .sub .katex{ font-size:1.26em; }
+  .sub b{ color:var(--ink); font-weight:700; }
+  .sub code{ font-family:var(--mono); font-size:17px; color:var(--accent-deep); }
+
+  /* —— 通用容器 —— */
+  .panel{ background:var(--card); border-radius:14px; border:1px solid var(--line); overflow:hidden; }
+  .panel-header{ padding:13px 22px; border-bottom:1px solid var(--line); background:rgba(255,255,255,.03);
+                 font-size:16px; font-weight:700; display:flex; align-items:center; gap:10px; color:var(--ink); }
+  .panel-header .dot{ width:9px; height:9px; border-radius:50%; background:var(--accent); flex:0 0 auto; }
+  .pbody{ padding:20px 22px; }
+  .cols{ display:grid; gap:22px; width:100%; align-items:start; }
+  .c2{ grid-template-columns:1fr 1fr; }
+  .c2a{ grid-template-columns:1.22fr .78fr; }
+  .c2b{ grid-template-columns:.82fr 1.18fr; }
+
+
+  /* 结论 / 缺口 框（沿用 081） */
+  .okbox{ width:100%; border-radius:14px; padding:16px 26px;
+          background:var(--accent-soft); border:1.5px solid var(--accent-line);
+          font-size:20px; font-weight:700; line-height:1.62; color:var(--ink); text-align:center; }
+  .okbox b{ color:var(--accent-deep); font-weight:800; }
+  .keynote{ font-family:var(--sans); font-size:20px; line-height:1.62; font-weight:700;
+            color:var(--ink); text-align:center; width:100%;
+            background:rgba(106,160,255,.11); border:1px solid var(--accent-line);
+            border-radius:14px; padding:16px 26px; }
+  .keynote b{ color:var(--accent-deep); font-weight:800; }
+  /* 收尾条目清单：Tab3 是红叉（坏掉了），Tab4 是绿勾（这两条修好了） */
+  .flaws{ width:100%; border-radius:14px; padding:18px 28px 20px;
+          background:var(--card-2); border:1px solid var(--line-2);
+          display:flex; flex-direction:column; gap:11px; }
+  .flawrow{ display:flex; align-items:flex-start; gap:13px; text-align:left;
+            font-size:20px; line-height:1.68; color:var(--muted); }
+  .flawrow b{ color:var(--ink); font-weight:800; }
+  .flawrow .katex{ font-size:1.06em; color:var(--ink); }
+  .fx{ color:var(--bad); font-size:21px; font-weight:900; line-height:1.62; flex:0 0 auto; }
+  .fx.ok{ color:#34d399; }
+
+  .fbox{ background:var(--card-2); border:1px solid var(--line); border-radius:14px; padding:18px 22px; }
+  .fbox.acc{ border-color:var(--accent-line); background:var(--accent-soft); }
+  .arrowtxt{ color:var(--arrow); font-size:24px; font-weight:600; }
+
+  /* —— Tab1：token 行，版式沿用 081 Tab2（位置号在上、词在中、距离在下，不套格子） ——
+     两行留同样宽的 .pre 槽位（上面那行藏起来），token 列就能上下严丝合缝地对齐 */
+  /* 尺寸和间距照抄 081 Tab2：.t 不设 min-width，格子宽度由词本身撑开，token 才不会散开 */
+  .trow{ display:flex; align-items:flex-end; gap:14px; }
+  .trow .pre{ font-size:26px; color:var(--dim); padding-bottom:3px; }
+  .trow .t{ display:flex; flex-direction:column; align-items:center; }
+  .trow .t .p{ font-family:var(--mono); font-size:15px; color:var(--dim); margin-bottom:5px; }
+  .trow .t .w{ font-size:28px; font-weight:800; letter-spacing:1px; color:var(--ink);
+               padding:2px 10px; border-radius:8px; white-space:nowrap; }
+  /* 两个主角：琥珀 = key「张三」，绿 = query「疼」 */
+  .trow .t.ktok .p{ color:var(--k-ink); font-weight:700; }
+  .trow .t.ktok .w{ background:var(--k-soft); color:var(--k-ink); }
+  .trow .t.qtok .p{ color:var(--q-ink); font-weight:700; }
+  .trow .t.qtok .w{ background:var(--q-soft); color:var(--q-ink); }
+  /* 1fr auto 1fr：让中间那句「张三打李四谁疼」永远居中，前缀挂在它左边探出去 */
+  .trowwrap{ display:grid; grid-template-columns:1fr auto 1fr; align-items:flex-end; width:100%; }
+  /* 前缀字号压小、颜色压灰，不跟主句抢戏 */
+  .pfx{ justify-self:end; padding-right:16px; gap:11px; }
+  .pfx .t .p{ font-size:13px; margin-bottom:4px; }
+  .pfx .t .w{ font-size:21px; color:var(--dim); padding:2px 7px; }
+  .pfx .pre{ font-size:22px; padding-bottom:2px; }
+  /* Tab1 两行 token 底下那一条：把这个分数写成「两个词的向量 + 距离」的函数。
+     两行共用这一条 —— 不管句子落在哪，右半边都是它 */
+  /* 括号、逗号、f 全部交给 KaTeX，整条读起来就是一个数学式；向量条压到跟括号差不多高 */
+  .fexp{ display:flex; align-items:center; justify-content:center; gap:10px; white-space:nowrap; }
+  .fexp .katex{ font-size:2.5em; }
+  /* 间距那个 3 压回 1.75em：40px 的实心数字比旁边 14px 粗的向量条重太多，
+     喧宾夺主。它是个取值，不该跟 f( ) 这些结构件一样大 */
+  .fexp .dnum .katex{ color:var(--accent-deep); font-size:1.75em; }
+  /* query 侧横着放（行向量），key 侧竖着放（列向量）；颜色跟上面那两个 token 一一对上 */
+  .vbar{ display:flex; gap:3px; }
+  .vbar span{ width:14px; height:14px; border-radius:3px; }
+  .vbar.qv span{ background:var(--q-soft); border:1px solid var(--q-line); }
+  .vbar.kv{ flex-direction:column; }
+  .vbar.kv span{ background:var(--k-soft); border:1px solid var(--k-line); }
+
+  /* Tab3：q 和 k 各自怎么被造出来。两行等宽，好让 = 号左右的结构一眼对上 */
+  .flowgrid{ display:flex; flex-direction:column; align-items:center; gap:12px; }
+  /* min-width 让两行一样宽：q/k 那几个字母本身宽度不同，不锁死的话两个框会差十几像素 */
+  .fnode{ border-radius:10px; padding:12px 22px; border:1.5px solid var(--line-2);
+          background:var(--card-2); white-space:nowrap; min-width:346px; text-align:center; }
+  .fnode .katex{ font-size:1.72em; }
+  .fnode.q{ border-color:var(--q-line); background:var(--q-soft); color:var(--q-ink); }
+  .fnode.k{ border-color:var(--k-line); background:var(--k-soft); color:var(--k-ink); }
+  .expand{ margin-top:15px; padding-top:14px; border-top:1px dashed var(--line-2); }
+  .expand .katex{ font-size:1.35em; }
+
+  /* —— Tab2 / Tab5：推导块（沿用 081 Tab7 版式） —— */
+  .drv{ text-align:center; }
+  .drv .katex{ font-size:1.04em; }
+  .qhead{ font-size:19.5px; font-weight:700; color:var(--ink); line-height:1.5; text-align:left;
+          padding-bottom:11px; margin-bottom:2px; border-bottom:1px dashed var(--line-2); }
+  .qhead b{ color:var(--accent-deep); }
+  .qhead .katex{ font-size:1.08em; }
+  .qconc{ margin-top:13px; text-align:center; background:var(--accent-soft);
+          border:1px solid var(--accent-line); border-radius:12px; padding:9px 20px; }
+  .qconc .katex{ font-size:1.42em; }
+  /* Tab2 上半：081 Tab6 的角度定义 —— 一对 sin/cos 怎么变成单位圆上的一个点，
+     下半那两段推导全靠它打底，所以摆在同一屏上面 */
+  .pedef{ display:flex; flex-direction:column; align-items:flex-start; gap:16px; flex:0 0 auto; }
+  .pedef .pedef-f{ color:var(--q-ink); white-space:nowrap; margin:0; }
+  .pedef .pedef-f .katex-display{ margin:0; }
+  .pedef .pedef-f .katex{ font-size:1.6em; }
+  .whf{ white-space:nowrap; }
+  .whf .whr{ font-size:19px; font-weight:600; color:var(--muted); }
+  .whf .katex{ font-size:1.6em; }
+
+  /* Tab2 的两段矩阵推导（沿用 081 Tab7）：整块放大，但 .qhead 里的符号别跟着涨 */
+  .rotmat .katex{ font-size:1.34em; }
+  .rotmat .qhead .katex{ font-size:1.06em; }
+  .tinynote{ margin-top:12px; padding-top:11px; border-top:1px dashed var(--line-2);
+             font-size:14.5px; color:var(--dim); text-align:left; line-height:1.7; }
+  .tinynote .katex{ font-size:1.05em; color:var(--muted); }
+
+
+  /* Tab4：块对角矩阵定义。M_i 在说明句和两个式子里都刷成 accent，
+     一眼能把「块对角里的那一格」和「下面这个 2×2」认成同一个东西 */
+  .ropedef{ display:flex; flex-direction:column; align-items:center; gap:2px; }
+  .ropedef .katex-display{ margin:14px 0 4px; }
+  .ropedef .katex{ font-size:1.24em; }
+  /* 向量竖着摆（沿用 081 Tab4）：左列是原始 d 维，右列把相邻两维圈进一个 accent 框。
+     两列顶端对齐 + 内容区锁同一个高度（--vh），否则两边的框会一高一低错开 */
+  .pairdiag{ display:flex; align-items:flex-start; justify-content:center; gap:18px; --vh:236px; }
+  .vcell{ display:flex; flex-direction:column; align-items:center; gap:10px; }
+  .pdlab{ font-size:15.5px; font-weight:700; color:var(--muted); white-space:nowrap; }
+  .pdlab.acc{ color:var(--accent); }
+  .pdlab .katex{ font-size:1em; color:var(--muted); }
+  .dbox{ width:78px; display:flex; align-items:center; justify-content:center;
+         background:var(--card-2); box-sizing:border-box; }
+  .dbox .katex{ font-size:1.6em; }   /* 对齐 Tab2 上半 .pedef-f 的字号 */
+  .dbox.dots{ color:var(--dim); font-size:17px; }
+  /* 左列：一个整框，中间用分隔线切开，跟 081 那一列同款。
+     格子用 flex:1 平分 --vh，行高自然和右列对上 */
+  /* 这里原来叫 .vbox，跟 KaTeX 撞了：\mathrlap 会把内容裹进一个同名 span，
+     我们这条的 overflow:hidden 就把公式裁成 4px 宽的一根竖条，KaTeX 还不报错。
+     自定义类名一律避开 KaTeX 内部名（base / mord / rule / vbox / thinbox …） */
+  .vstack{ display:flex; flex-direction:column; height:var(--vh); box-sizing:border-box;
+         border:2px solid var(--grid-line); border-radius:8px; overflow:hidden; }
+  .vstack .dbox{ flex:1 1 0; border-bottom:2px solid var(--grid-line); }
+  .vstack .dbox:last-child{ border-bottom:none; }
+  /* 右列：每两格一个 accent 小框，右边挂组号 */
+  .vgrp{ display:flex; flex-direction:column; align-items:flex-start;
+         height:var(--vh); box-sizing:border-box; justify-content:space-between; }
+  /* 组号绝对定位甩到框外：留在流里会把这一列撑宽，标题就跟着偏离格子中线 */
+  .grow{ display:flex; align-items:center; position:relative; }
+  .pbox{ display:flex; flex-direction:column; gap:4px; padding:4px; border-radius:10px;
+         border:2.5px solid #6aa0ff; background:var(--accent-soft); }
+  .pbox .dbox{ height:44px; border:1.5px solid var(--grid-line); border-radius:5px; }
+  .ptag{ position:absolute; left:100%; top:50%; transform:translateY(-50%); margin-left:12px;
+         font-size:13.5px; color:var(--dim); font-family:var(--sans); white-space:nowrap; }
+  .gdots{ font-size:17px; color:var(--dim); align-self:center; }
+  .onegrp{ display:flex; flex-direction:column; align-items:center; margin-left:82px;
+           align-self:center; }
+  .onegrp .katex-display{ margin:6px 0; }
+  .onegrp .katex{ font-size:1.6em; }   /* 同上，跟 Tab2 的公式一个字号 */
+  .rline{ font-size:16px; color:var(--muted); line-height:1.8; text-align:center; }
+  .rline b{ color:var(--ink); font-weight:700; }
+  .rline .katex{ font-size:1.02em; color:var(--ink); }
+
+
+  /* —— Tab6：正弦 vs RoPE 对比表（三列 grid 版式承接 063 Tab7）——
+     配色沿用本期已经建立的语义：正弦 = 红（Tab3 的红叉），RoPE = 蓝灰（deck 主角色） */
+  .vs{ display:grid; grid-template-columns:170px 1fr 1fr; width:100%;
+       border-radius:14px; overflow:hidden; border:1px solid var(--line); }
+  .vs > div{ padding:15px 20px; border-bottom:1px solid var(--line); }
+  /* 最后一行（3 格）不画底线，否则会跟外框重一道 */
+  .vs > div:nth-last-of-type(-n+3){ border-bottom:none; }
+  .vs-hd{ background:var(--bg); color:var(--dim); font-size:13px; font-weight:700;
+          letter-spacing:2px; display:flex; align-items:center; justify-content:center; }
+  .vs-ha, .vs-hb{ color:#fff; font-weight:800; font-size:21px; letter-spacing:.5px;
+                  display:flex; align-items:center; justify-content:center; }
+  .vs-ha{ background:linear-gradient(180deg,#5c2b2b 0%,#452020 100%); border-bottom:3px solid var(--bad); }
+  .vs-hb{ background:linear-gradient(180deg,#1f3a63 0%,#172b4a 100%); border-bottom:3px solid var(--accent); }
+  .vs-dim{ background:var(--card-2); color:var(--ink); font-weight:700; font-size:16px;
+           display:flex; align-items:center; justify-content:center;
+           text-align:center; line-height:1.45; }
+  .vs-a, .vs-b{ font-size:19px; line-height:1.68; display:flex; align-items:center;
+                justify-content:center; text-align:center; }
+  .vs-a{ background:rgba(255,120,120,.07); color:#f4e8e8; }
+  .vs-b{ background:rgba(106,160,255,.08); color:#e6ecf7; }
+  .vs-a b{ color:var(--bad); font-weight:800; }
+  /* 用 --accent 不用 --accent-deep：后者接近白，跟左列的红一比完全没有强调感 */
+  .vs-b b{ color:var(--accent); font-weight:800; }
+  .vs-a .katex, .vs-b .katex{ font-size:1.14em; }
+
+  .katex{ font-size:1.08em; }
+</style>
+</head>
+<body>
+<div class="deck">
+  <div class="topbar">
+    <div class="brand"><span class="ttl">旋转位置编码 <b>RoPE</b></span></div>
+    <nav class="tabs">
+      <button class="tab active" data-i="0">绝对与相对</button>
+      <button class="tab" data-i="1">指针变换</button>
+      <button class="tab" data-i="2">正弦编码的问题</button>
+      <button class="tab" data-i="3">旋转位置编码</button>
+      <button class="tab" data-i="4">带入点积</button>
+      <button class="tab" data-i="5">两者对比</button>
+    </nav>
+  </div>
+
+  <div class="stage">
+
+    <!-- ═══════════ Tab1 · 绝对位置 vs 相对位置 ═══════════ -->
+    <section class="slide active">
+      <!-- 这一屏内容本来就窄（一句话 + 一条式子），框子跟着收到 900，别撑满一屏全是空白 -->
+      <div class="wrap" style="max-width:900px;gap:16px">
+        <div class="head">绝对位置和<span class="hl">相对位置</span></div>
+        <div class="sub">注意力分数并不关心当前处理的token的<b>具体位置</b>，而更在乎token之间的<b>相对远近</b></div>
+
+        <div class="panel" style="width:100%">
+          <div class="pbody" style="padding:26px 34px 28px;display:flex;flex-direction:column;gap:26px;align-items:center">
+
+            <div class="trowwrap">
+              <div></div>
+              <div class="trow">
+                <div class="t"><div class="p">0</div><div class="w">张三</div></div>
+                <div class="t ktok"><div class="p">1</div><div class="w">打</div></div>
+                <div class="t"><div class="p">2</div><div class="w">李四</div></div>
+                <div class="t"><div class="p">3</div><div class="w">谁</div></div>
+                <div class="t qtok"><div class="p">4</div><div class="w">疼</div></div>
+              </div>
+              <div></div>
+            </div>
+
+            <div class="trowwrap">
+              <div class="pfx trow">
+                <div class="t"><div class="p">0</div><div class="w">很久</div></div>
+                <div class="t"><div class="p">1</div><div class="w">很久</div></div>
+                <div class="t"><div class="p">2</div><div class="w">以前</div></div>
+                <div class="pre">…</div>
+              </div>
+              <div class="trow">
+                <div class="t"><div class="p">1473</div><div class="w">张三</div></div>
+                <div class="t ktok"><div class="p">1474</div><div class="w">打</div></div>
+                <div class="t"><div class="p">1475</div><div class="w">李四</div></div>
+                <div class="t"><div class="p">1476</div><div class="w">谁</div></div>
+                <div class="t qtok"><div class="p">1477</div><div class="w">疼</div></div>
+              </div>
+              <div></div>
+            </div>
+
+            <!-- 两行共用的一条：不管落在哪，我们都希望这个分数等于右边这个东西 -->
+            <div class="fexp" style="width:100%;border-top:1px dashed var(--line-2);padding-top:24px">
+              <span>\(\text{Score}\;=\;f(\)</span>
+              <span class="vbar qv"><span></span><span></span><span></span><span></span></span>
+              <span>\(,\)</span>
+              <span class="vbar kv"><span></span><span></span><span></span><span></span></span>
+              <span>\(,\)</span>
+              <span class="dnum">\(3\)</span>
+              <span>\()\)</span>
+            </div>
+
+          </div>
+        </div>
+
+        <div class="keynote">我们希望注意力分数只和token本身的<b>语义</b>以及它们的<b>相对位置</b>有关</div>
+      </div>
+    </section>
+
+    <!-- ═══════════ Tab2 · 相对位置的指针变换（整块承接 081 Tab7，改成左图右式） ═══════════ -->
+    <section class="slide">
+      <!-- 宽度卡在「两个设问都能单行放下」这个下限上，再宽就开始空了 -->
+      <div class="wrap" style="max-width:1240px;gap:14px">
+        <div class="head"><span class="hl">相对位置</span>的指针变换</div>
+
+        <!-- 上半：把 081 那套角度定义摆出来（ω_i、一对 sin/cos = 圆上一个点、pos→pos+k 只是转了 ω_i·k），
+             下半两段推导里的每个符号都能在这儿找到出处 -->
+        <div class="panel" style="width:100%">
+          <div class="pbody" style="padding:8px 24px 10px;display:flex;align-items:center;justify-content:center;gap:26px">
+            <div class="pedef">
+              <div class="whf"><span class="whr">令角频率</span>&nbsp;&nbsp;\(\omega_i=\dfrac{1}{10000^{2i/d}}\)</div>
+              <div class="pedef-f">
+                $$\begin{aligned}
+                  \textcolor{#7dd3fc}{\mathrm{PE}_{(pos,\,2i)}}&\textcolor{#7dd3fc}{{}=\sin\dfrac{pos}{10000^{2i/d}}=\sin(\omega_i\cdot pos)}\\[6pt]
+                  \textcolor{#f6a960}{\mathrm{PE}_{(pos,\,2i+1)}}&\textcolor{#f6a960}{{}=\cos\dfrac{pos}{10000^{2i/d}}=\cos(\omega_i\cdot pos)}
+                \end{aligned}$$
+              </div>
+            </div>
+            <svg id="defcirc" viewBox="0 0 388 180" style="width:470px;height:218px;display:block;flex:0 0 auto"></svg>
+          </div>
+        </div>
+
+        <!-- 两问改成左右两列；中间那段公式用 flex:1 撑开，两个结论框才会齐平在底部。
+             每问的结论下面再补一张坐标图，把刚推完的式子画出来 -->
+        <div class="cols c2" style="align-items:stretch">
+          <!-- pos 写成「?」：观众手上只有编码本身，绝对位置是未知的 ——
+               推出来的矩阵里只有 ω_i·k、一个 pos 都没有，正好回答了「不知道 ? 是几也照样能算」 -->
+          <div class="panel">
+            <div class="pbody rotmat" style="padding:16px 22px 10px;text-align:center;display:flex;flex-direction:column;height:100%">
+              <div class="qhead">只知道位置编码 \(\mathrm{PE}(\mathbf{?})\)，能否得到间距 \(k\) 的编码 \(\mathrm{PE}(\mathbf{?}+k)\)？</div>
+              <!-- 图排在推导前面：先让观众在坐标系上看懂「转一个角度」这件事，再看代数怎么把它凑出来 -->
+              <svg id="qkpre" viewBox="0 0 500 300" style="width:100%;max-width:400px;height:auto;display:block;margin:8px auto 0"></svg>
+              <!-- 推导过程照旧用 pos：这几步是要看清怎么凑出矩阵的，符号换成 ? 会读不下去 -->
+              <div style="flex:1 0 auto;display:flex;align-items:center;justify-content:center">
+                \[\begin{aligned}
+                  &\begin{bmatrix}\cos\omega_i(pos+k)\\[2pt] \sin\omega_i(pos+k)\end{bmatrix}\\[12pt]
+                  &=\begin{bmatrix}\cos\omega_i\,pos\cdot\textcolor{#6aa0ff}{\cos\omega_i k}-\sin\omega_i\,pos\cdot\textcolor{#6aa0ff}{\sin\omega_i k}\\[4pt]
+                                   \sin\omega_i\,pos\cdot\textcolor{#6aa0ff}{\cos\omega_i k}+\cos\omega_i\,pos\cdot\textcolor{#6aa0ff}{\sin\omega_i k}\end{bmatrix}\\[12pt]
+                  &=\textcolor{#6aa0ff}{\begin{bmatrix}\cos\omega_i k & -\sin\omega_i k\\[2pt] \sin\omega_i k & \cos\omega_i k\end{bmatrix}}
+                    \begin{bmatrix}\cos\omega_i\,pos\\[2pt] \sin\omega_i\,pos\end{bmatrix}
+                \end{aligned}\]
+              </div>
+              <!-- 结论行压到最底：先看图、再看推导，最后才收成这一句 —— 蓝框是这一列的落点 -->
+              <div class="qconc">\(\mathrm{PE}(\mathbf{?}+k)=\textcolor{#cfe0ff}{R_i(k)}\cdot\mathrm{PE}(\mathbf{?})\)</div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="pbody rotmat" style="padding:16px 22px 10px;text-align:center;display:flex;flex-direction:column;height:100%">
+              <div class="qhead">只知道位置编码 \(\mathrm{PE}(\mathbf{?}_1)\) 和 \(\mathrm{PE}(\mathbf{?}_2)\)，能否知道位置间隔 \(\mathbf{?}_1-\mathbf{?}_2\)？</div>
+              <!-- 同第一问：先给点积的几何含义，再进代数 -->
+              <svg id="dotdef" viewBox="0 0 500 300" style="width:100%;max-width:400px;height:auto;display:block;margin:8px auto 0"></svg>
+              <div style="flex:1 0 auto;display:flex;align-items:center;justify-content:center">
+                \[\begin{aligned}
+                  &\begin{bmatrix}\cos\omega_i\,pos_1\\[2pt] \sin\omega_i\,pos_1\end{bmatrix}\cdot
+                   \begin{bmatrix}\cos\omega_i\,pos_2\\[2pt] \sin\omega_i\,pos_2\end{bmatrix}\\[12pt]
+                  &=\cos\omega_i\,pos_1\cdot\cos\omega_i\,pos_2+\sin\omega_i\,pos_1\cdot\sin\omega_i\,pos_2\\[12pt]
+                  &=\cos\bigl(\omega_i\,pos_1-\omega_i\,pos_2\bigr)\\[12pt]
+                  &=\textcolor{#6aa0ff}{\cos\bigl(\omega_i(pos_1-pos_2)\bigr)}
+                \end{aligned}\]
+              </div>
+              <!-- 结论压到最底，两列的蓝框才会齐平在同一条底线上 -->
+              <div class="qconc">\(\mathrm{PE}(\mathbf{?}_1)\cdot\mathrm{PE}(\mathbf{?}_2)=\textcolor{#cfe0ff}{\cos\bigl(\omega_i(\mathbf{?}_1-\mathbf{?}_2)\bigr)}\)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════ Tab3 · 可是 Attention 算的不是 PE·PE ═══════════ -->
+    <section class="slide">
+      <!-- 宽度下限现在卡在底下那两条 ✗ 的文字上：最长一条排成一行 780px，
+           加图标和 .flaws 左右各 28 的内边距要 870，取 890 留点余量。
+           推导那块用 \qquad 把注释贴在各自式子后面之后只剩 708px，不再是宽度瓶颈 ——
+           原来用 && 排成独立一列，列的左边界由最长的「四项展开」（573px）决定，
+           325px 那行后面就白空出 254px，怎么改 max-width 都关不掉 -->
+      <div class="wrap" style="max-width:890px;gap:15px">
+        <div class="head">正弦编码在点积计算中产生的<span class="hl">问题</span></div>
+
+        <div style="width:100%">
+          <div class="panel">
+            <div class="pbody" style="padding:22px 20px 20px">
+              <div class="flowgrid">
+                <div class="fnode q">\(q_m=W_Q\bigl(x_m+\mathrm{PE}(m)\bigr)\)</div>
+                <div class="fnode k">\(k_n=W_K\bigl(x_n+\mathrm{PE}(n)\bigr)\)</div>
+              </div>
+
+              <div class="expand">
+                <!-- 代入 → (AB)^T 把 W_Q 甩到左边 → 两个矩阵并成 W → (A+B)^T 拆开左括号 → 逐项相乘。
+                     先用 (AB)^T 能一步把两个矩阵并到中间，比先拆分配律省三行。
+                     「记 W=W_Q^T W_K」单独占一步、挂在 (AB)^T 的下一行：W 是在上一步刚拼出来的，
+                     定义就跟在它出现的地方，比原来吊在整块推导下面当脚注好找。
+
+                     灰色注解用单个 & 而不是 &&：aligned 的列是右左右左交替的，
+                     单个 & 落进第 3 列（右对齐），&& 会跳过它落到第 4 列（左对齐）。
+
+                     最后那行四项展开套了 \mathrlap（渲染出来但宽度算 0）：它 573px，比第二长的行还宽 170，
+                     不套的话注解那列被它顶到 1237 开外，短式子后面就空出 250px 的洞。
+                     套上之后列宽由「代入」那行（403）决定，注解整体左移 176px 贴回式子旁边。
+                     它自己那行没有注解，右边是空的，伸出列边界也不会压到任何东西。
+                     必须用 \mathrlap 不能用 \rlap：\rlap 的参数走文本模式，
+                     里面的公式得裹 $...$，而 KaTeX 不认这个 $，整行会静默消失且不报错 -->
+                <div>
+                  \[\begin{aligned}
+                    q_m\cdot k_n=q_m^{\mathsf{T}}k_n
+                    &=\bigl(W_Q(x_m+\mathrm{PE}(m))\bigr)^{\mathsf{T}}\bigl(W_K(x_n+\mathrm{PE}(n))\bigr)\\[7pt]
+                    &=(x_m+\mathrm{PE}(m))^{\mathsf{T}}\,W_Q^{\mathsf{T}}W_K\,(x_n+\mathrm{PE}(n))
+                      &\textcolor{#8b8b96}{\small(AB)^{\mathsf{T}}=B^{\mathsf{T}}A^{\mathsf{T}}}\\[7pt]
+                    &=(x_m+\mathrm{PE}(m))^{\mathsf{T}}\,W\,(x_n+\mathrm{PE}(n))
+                      &\textcolor{#8b8b96}{\small\text{记 }W=W_Q^{\mathsf{T}}W_K}\\[7pt]
+                    &=\bigl(x_m^{\mathsf{T}}+\mathrm{PE}(m)^{\mathsf{T}}\bigr)\,W\,(x_n+\mathrm{PE}(n))
+                      &\textcolor{#8b8b96}{\small(A+B)^{\mathsf{T}}=A^{\mathsf{T}}+B^{\mathsf{T}}}\\[7pt]
+                    &\mathrlap{=x_m^{\mathsf{T}}Wx_n
+                      +\textcolor{#ff9d9d}{x_m^{\mathsf{T}}W\,\mathrm{PE}(n)}
+                      +\textcolor{#ff9d9d}{\mathrm{PE}(m)^{\mathsf{T}}Wx_n}
+                      +\textcolor{#f3d17a}{\mathrm{PE}(m)^{\mathsf{T}}W\,\mathrm{PE}(n)}}
+                    \end{aligned}\]
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="flaws">
+          <div class="flawrow"><span class="fx">✗</span>
+            <div><b>交叉项污染</b>：因为正弦编码是做加法，点乘结果的中间两项带入了位置的绝对信息</div>
+          </div>
+          <div class="flawrow"><span class="fx">✗</span>
+            <div><b>投影矩阵破坏</b>：因为正弦编码是在投影之前被加进去的，投影矩阵会干扰位置编码的计算</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════ Tab4 · 直接旋转 q 和 k ═══════════ -->
+    <section class="slide">
+      <!-- 宽度下限是上面那排切分图：实测 803px，pbody 左右各 18 的内边距算进去要 839。
+           取 900 留点余量。下面那张坐标图只有 620，比框子窄是有意的，居中就行 ——
+           两个框跟着最宽的内容收窄，不然 1120 的框里装 803 的图，两边各空 158px -->
+      <div class="wrap" style="max-width:900px;gap:14px">
+        <div class="head">旋转位置编码：把<span class="hl">投影后</span>的 \(q\) 和 \(k\) 进行旋转</div>
+
+        <!-- 块对角矩阵直接摆出来，不给等号左边起名字；旋转矩阵照抄 Tab2 左下推出来的那个 -->
+        <div class="panel" style="width:100%">
+          <div class="pbody" style="padding:20px 18px 20px">
+            <div class="ropedef">
+              <!-- 不画整块块对角矩阵了：向量竖着摆（版式沿用 081 Tab4），
+                   切成对之后只写第 i 组这一次变换 -->
+              <div class="pairdiag">
+                <div class="vcell">
+                  <!-- 标题不能比格子宽太多：两列一挨近，超出的部分就跟右边那条标题撞上了 -->
+                  <div class="pdlab">输入向量</div>
+                  <div class="vstack">
+                    <div class="dbox">\(x_0\)</div>
+                    <div class="dbox">\(x_1\)</div>
+                    <div class="dbox">\(x_2\)</div>
+                    <div class="dbox">\(x_3\)</div>
+                    <div class="dbox dots">⋮</div>
+                  </div>
+                </div>
+                <div class="vcell">
+                  <div class="pdlab acc">每两维一组</div>
+                  <div class="vgrp">
+                    <div class="grow">
+                      <div class="pbox"><div class="dbox">\(x_0\)</div><div class="dbox">\(x_1\)</div></div>
+                      <span class="ptag">第 0 组</span>
+                    </div>
+                    <div class="grow">
+                      <div class="pbox"><div class="dbox">\(x_2\)</div><div class="dbox">\(x_3\)</div></div>
+                      <span class="ptag">第 1 组</span>
+                    </div>
+                    <div class="gdots">⋮</div>
+                  </div>
+                </div>
+                <div class="onegrp">
+                  <!-- 给这个 2×2 起名 RoPE(pos, i)：Tab5 再出现 RoPE(m) 时才有出处。
+                       两个参数是刻意的 —— 这里是第 i 组那一块，Tab5 的 RoPE(m) 是整条对角拼起来的。
+                       上标里的 \textstyle 不能省：overbrace 的上标默认走 script 尺寸只有 17.9px，
+                       加上之后回到 25.6px，跟矩阵本体一样大。
+                       注意：\[...\] 里面绝不能插 HTML 注释，注释节点会把 text node 切断，
+                       auto-render 就找不到成对的分隔符了 -->
+                  \[\begin{bmatrix}x'_{2i}\\[2pt] x'_{2i+1}\end{bmatrix}
+                    =\overbrace{\textcolor{#6aa0ff}{
+                        \begin{bmatrix}\cos(\omega_i\,pos) & -\sin(\omega_i\,pos)\\[2pt]
+                                       \sin(\omega_i\,pos) & \cos(\omega_i\,pos)\end{bmatrix}}
+                     }^{\textstyle\textcolor{#cfe0ff}{\mathrm{RoPE}(pos,\,i)}}
+                    \begin{bmatrix}x_{2i}\\[2pt] x_{2i+1}\end{bmatrix}\]
+                  \[\omega_i=\dfrac{1}{10000^{2i/d}}\]
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" style="width:100%">
+          <!-- 左边那张「旋转」已经挪去 Tab2，这屏只留 q/k 各转各的那张 -->
+          <div class="pbody" style="padding:16px 14px 12px;display:flex;justify-content:center">
+            <!-- 点一下走一步：① 只有 q 和 k ② q 转 mω_i ③ k 转 nω_i -->
+            <svg id="qkpost" viewBox="0 0 500 300"
+                 style="width:620px;height:372px;display:block;flex:0 0 auto;cursor:pointer"></svg>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ═══════════ Tab5 · 内积一展开，绝对位置自动相减 ═══════════ -->
+    <section class="slide">
+      <!-- 加了 RoPE(m)ᵀ=RoPE(−m) 那一步之后，最长的标注是 RoPE(−m)RoPE(n)=RoPE(n−m)，
+           整块推导实测 908px 宽。950 的话 908+40 内边距正好顶满、右边一点余量没有，
+           放到 1020 给两边各留 36px -->
+      <div class="wrap" style="max-width:1020px;gap:12px">
+        <div class="head">把<span class="hl">旋转位置编码</span>带入点积计算</div>
+
+        <!-- 版式对齐 Tab3：两个框摆定义，下面一路展开，右边挂用到的规则。
+             演示图只和上面那两个框并排（两者加起来 798px 还没展开式宽），不用加宽整块 -->
+        <div class="panel" style="width:100%">
+          <div class="pbody" style="padding:16px 20px 12px">
+            <div style="display:flex;align-items:center;justify-content:center;gap:28px">
+              <div class="flowgrid">
+                <div class="fnode q">\(q'_m=\mathrm{RoPE}(m)\,(W_Q\,x_m)\)</div>
+                <div class="fnode k">\(k'_n=\mathrm{RoPE}(n)\,(W_K\,x_n)\)</div>
+              </div>
+              <!-- 把 RoPE(m)^T RoPE(n)=RoPE(n−m) 演一遍：点一下走一步 -->
+              <svg id="qkback" viewBox="0 0 500 300"
+                   style="width:424px;height:254px;display:block;flex:0 0 auto;cursor:pointer"></svg>
+            </div>
+
+            <div class="expand">
+              \[\begin{aligned}
+                q'_m\cdot k'_n=(q'_m)^{\mathsf{T}}k'_n
+                &=\bigl(\mathrm{RoPE}(m)\,(W_Qx_m)\bigr)^{\mathsf{T}}
+                  \bigl(\mathrm{RoPE}(n)\,(W_Kx_n)\bigr)\\[7pt]
+                &=(W_Qx_m)^{\mathsf{T}}\,
+                  \textcolor{#7dd3fc}{\mathrm{RoPE}(m)^{\mathsf{T}}}
+                  \textcolor{#f6a960}{\mathrm{RoPE}(n)}\,(W_Kx_n)
+                  &&\textcolor{#8b8b96}{\small(AB)^{\mathsf{T}}=B^{\mathsf{T}}A^{\mathsf{T}}}\\[7pt]
+                &=(W_Qx_m)^{\mathsf{T}}\,
+                  \textcolor{#7dd3fc}{\mathrm{RoPE}(-m)}
+                  \textcolor{#f6a960}{\mathrm{RoPE}(n)}\,(W_Kx_n)
+                  &&\textcolor{#8b8b96}{\small\mathrm{RoPE}(m)^{\mathsf{T}}=\mathrm{RoPE}(-m)}\\[7pt]
+                &=(W_Qx_m)^{\mathsf{T}}\,
+                  \textcolor{#cfe0ff}{\mathrm{RoPE}(n-m)}\,(W_Kx_n)
+                  &&\textcolor{#8b8b96}{\small\mathrm{RoPE}(-m)\,\mathrm{RoPE}(n)=\mathrm{RoPE}(n-m)}\\[7pt]
+                &=\textcolor{#7dd3fc}{q}\cdot
+                  \bigl(\textcolor{#cfe0ff}{\mathrm{RoPE}(n-m)}\,\textcolor{#f6a960}{k}\bigr)
+              \end{aligned}\]
+            </div>
+          </div>
+        </div>
+
+        <!-- 两条和 Tab3 的两条红叉一一对应：交叉项污染 / 投影矩阵破坏 -->
+        <div class="flaws">
+          <div class="flawrow"><span class="fx ok">✓</span>
+            <div><b>交叉项消失</b>：旋转位置编码是做乘法，点乘结果不会产生无意义的交叉项</div>
+          </div>
+          <div class="flawrow"><span class="fx ok">✓</span>
+            <div><b>投影矩阵不再插手</b>：旋转矩阵直接作用在 \(q\)、\(k\) 向量上，不会被投影矩阵影响</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════ Tab6 · 正弦 vs RoPE 对比表 ═══════════ -->
+    <section class="slide">
+      <!-- 宽度下限改由第一行的 RoPE(pos,i)=[2×2] 决定：整条一行摆开实测 418px，
+           单元格左右内边距各 20，所以每列至少要 458。两列 + 170 的标签列 = 1086，取 1120。
+           窄于这个数 KaTeX 会在等号处断行，把 RoPE(pos,i)= 甩到矩阵上面去 -->
+      <div class="wrap" style="max-width:1120px;gap:16px">
+        <div class="head">正弦位置编码和<span class="hl">旋转位置编码</span></div>
+
+        <div class="vs">
+          <div class="vs-hd">关键维度</div>
+          <div class="vs-ha">正弦位置编码</div>
+          <div class="vs-hb">旋转位置编码 RoPE</div>
+
+          <!-- 编码本身长什么样，放在第一行：左边是 Tab2 顶上那两行 sin/cos，右边是 Tab4 挂了名字的那个 2×2。
+               两边都用 (pos, i) 这套下标，看的人才能把这一行跟前面两张 slides 对上号。
+               先亮出两个编码各自的定义，后面几行讲的"加法/乘法""对象是谁"才有指代 -->
+          <div class="vs-dim">编码定义</div>
+          <div class="vs-a">\(\begin{aligned}
+              \mathrm{PE}_{(pos,\,2i)}&=\sin(\omega_i\cdot pos)\\[3pt]
+              \mathrm{PE}_{(pos,\,2i+1)}&=\cos(\omega_i\cdot pos)
+            \end{aligned}\)</div>
+          <div class="vs-b">\(\mathrm{RoPE}(pos,\,i)=
+              \begin{bmatrix}\cos(\omega_i\,pos) & -\sin(\omega_i\,pos)\\[2pt]
+                             \sin(\omega_i\,pos) & \cos(\omega_i\,pos)\end{bmatrix}\)</div>
+
+          <div class="vs-dim">运算</div>
+          <div class="vs-a"><b>向量加法</b></div>
+          <div class="vs-b"><b>矩阵乘法</b></div>
+
+          <div class="vs-dim">运算对象</div>
+          <div class="vs-a">投影<b>之前</b>的 embedding 向量 \(x\)</div>
+          <div class="vs-b">投影<b>之后</b>的 \(q\)、\(k\) 向量</div>
+
+          <div class="vs-dim">\(q\)、\(k\) 的算式</div>
+          <!-- 两行用 aligned 对齐等号，竖着摞不占额外宽度 -->
+          <div class="vs-a">\(\begin{aligned}
+              q_m&=W_Q\bigl(x_m+\mathrm{PE}(m)\bigr)\\[3pt]
+              k_n&=W_K\bigl(x_n+\mathrm{PE}(n)\bigr)
+            \end{aligned}\)</div>
+          <div class="vs-b">\(\begin{aligned}
+              q'_m&=\mathrm{RoPE}(m)\,(W_Q\,x_m)\\[3pt]
+              k'_n&=\mathrm{RoPE}(n)\,(W_K\,x_n)
+            \end{aligned}\)</div>
+
+          <div class="vs-dim">位置编码<br>自身的性质</div>
+          <div class="vs-a">\(\mathrm{PE}(m)^{\mathsf{T}}\mathrm{PE}(n)=\textstyle\sum_i\cos\bigl(\omega_i(n-m)\bigr)\)</div>
+          <div class="vs-b">\(\mathrm{RoPE}(m)^{\mathsf{T}}\mathrm{RoPE}(n)=\mathrm{RoPE}(n-m)\)</div>
+
+          <div class="vs-dim">点积结果</div>
+          <div class="vs-a">和<b>绝对位置</b> \(m\)、\(n\) 有关</div>
+          <div class="vs-b">只和<b>相对位置</b> \(n-m\) 有关</div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script>
+  // SVG 的 <text> 走不了 KaTeX，标签一律用 foreignObject 塞一段 HTML 进去，auto-render 才认
+  const fo=(x,y,w,h,html,css='')=>`<foreignObject x="${(x-w/2).toFixed(1)}" y="${(y-h/2).toFixed(1)}" width="${w}" height="${h}">`
+    +`<div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%;display:flex;align-items:center;`
+    +`justify-content:center;line-height:1;white-space:nowrap;${css}">${html}</div></foreignObject>`;
+
+  const D=8, BASE=10000, th=i=>Math.pow(BASE,-2*i/D);   // 角频率：d=8 时是 1 / 0.1 / 0.01 / 0.001
+
+  // Tab2 上半的定义图（原样承接 081 Tab6）：一个单位圆 + 一支指向 (cosθ, sinθ) 的向量，
+  // 从 x 轴量到向量的那个角就是 ω_i·pos —— 下面所有扇形都沿用这个样式
+  (function drawDefCircle(){
+    const svg=document.getElementById('defcirc'); if(!svg) return;
+    // 只画第一象限：原点在左下，一段 90° 的圆弧，向量落在弧上，坐标标在箭头旁边
+    const cx=32, cy=158, r=120, a=52*Math.PI/180;
+    const ux=Math.cos(a), uy=-Math.sin(a), vx=Math.sin(a), vy=Math.cos(a);
+    const tx=cx+r*ux, ty=cy+r*uy, bx=cx+(r-15)*ux, by=cy+(r-15)*uy;
+    let s='';
+    s+=`<line x1="16" y1="${cy}" x2="188" y2="${cy}" stroke="#f2f3f5" stroke-width="1.4"/>`;
+    s+=`<polygon points="196,${cy} 186,${cy-5} 186,${cy+5}" fill="#f2f3f5"/>`;
+    s+=`<line x1="${cx}" y1="174" x2="${cx}" y2="22" stroke="#f2f3f5" stroke-width="1.4"/>`;
+    s+=`<polygon points="${cx},14 ${cx-5},24 ${cx+5},24" fill="#f2f3f5"/>`;
+    // sweep-flag=0 → 屏幕上逆时针，从 0° 扫到 90° 正好是第一象限那段弧
+    s+=`<path d="M${cx+r} ${cy} A${r} ${r} 0 0 0 ${cx} ${cy-r}" fill="none" stroke="#6aa0ff" stroke-width="1.9"/>`;
+    const AR=38, am=a*0.42;
+    const [aex,aey]=[cx+AR*Math.cos(a), cy-AR*Math.sin(a)];
+    s+=`<path d="M${cx} ${cy} L${cx+AR} ${cy} A${AR} ${AR} 0 0 0 ${aex.toFixed(1)} ${aey.toFixed(1)} Z" fill="rgba(106,160,255,.22)"/>`;
+    s+=`<path d="M${cx+AR} ${cy} A${AR} ${AR} 0 0 0 ${aex.toFixed(1)} ${aey.toFixed(1)}" fill="none" stroke="#6aa0ff" stroke-width="2.2"/>`;
+    s+=fo(cx+82*Math.cos(am), cy-82*Math.sin(am), 96, 26,
+          `<span style="background:#161618;padding:0 5px;border-radius:4px">\\(\\omega_i\\cdot pos\\)</span>`,
+          'font-size:15px;font-weight:700;color:#cfe0ff');
+    s+=`<line x1="${cx}" y1="${cy}" x2="${bx.toFixed(1)}" y2="${by.toFixed(1)}" stroke="#38bdf8" stroke-width="2.8"/>`;
+    s+=`<polygon points="${tx.toFixed(1)},${ty.toFixed(1)} ${(bx+vx*6.2).toFixed(1)},${(by+vy*6.2).toFixed(1)} `
+      +`${(bx-vx*6.2).toFixed(1)},${(by-vy*6.2).toFixed(1)}" fill="#38bdf8"/>`;
+    s+=`<foreignObject x="116" y="32" width="272" height="34"><div xmlns="http://www.w3.org/1999/xhtml"`
+      +` style="width:100%;height:100%;display:flex;align-items:center;line-height:1;white-space:nowrap;font-size:19px;color:#7dd3fc">`
+      +`\\(\\bigl(\\cos(\\omega_i\\cdot pos),\\ \\sin(\\omega_i\\cdot pos)\\bigr)\\)</div></foreignObject>`;
+    svg.innerHTML=s;
+  })();
+
+  // Tab4 下半的两张坐标图（点阵网格 + 带刻度的坐标轴，参照参考图的画法）：
+  // 左图讲「旋转矩阵在做什么」——一支向量转过 θ；右图讲 RoPE 把它用在 q 和 k 上。
+  // 两图共用同一套 grid/axes/vec/turn，只是喂进去的角度和配色不同。
+  (function drawQK(){
+    // CY 压到 228：x 轴以下只留 72px，上半留 228px 给向量和标签。
+    // 画布宽到 500 是为了给左图那块矩阵腾地方 —— 它只能待在纵轴左边那 250px 里
+    const W=500, H=300, CX=250, CY=228, AL=16, AW=7.5;
+    const rad=d=>d*Math.PI/180;
+    // 全图角度一律用「度」，P 自己换算，免得跟 rad() 混用出错
+    const P=(r,deg)=>[CX+r*Math.cos(rad(deg)), CY-r*Math.sin(rad(deg))];
+
+    // 点阵网格：横竖都按 STEP 打虚线，画在最底层
+    const STEP=20;
+    function grid(){
+      let s='';
+      for(let x=CX%STEP; x<W; x+=STEP)
+        s+=`<line x1="${x}" y1="4" x2="${x}" y2="${H-4}" stroke="rgba(255,255,255,.11)" stroke-width="1" stroke-dasharray="1 3"/>`;
+      for(let y=CY%STEP; y<H; y+=STEP)
+        s+=`<line x1="4" y1="${y}" x2="${W-4}" y2="${y}" stroke="rgba(255,255,255,.11)" stroke-width="1" stroke-dasharray="1 3"/>`;
+      return s;
+    }
+    // 坐标轴：两端都带箭头，轴上按 STEP 打短刻度
+    function axes(){
+      const c='rgba(255,255,255,.30)', t=5;
+      let s=`<line x1="8" y1="${CY}" x2="${W-8}" y2="${CY}" stroke="${c}" stroke-width="1.3"/>`
+           +`<line x1="${CX}" y1="6" x2="${CX}" y2="${H-6}" stroke="${c}" stroke-width="1.3"/>`
+           +`<polygon points="${W-4},${CY} ${W-13},${CY-4.5} ${W-13},${CY+4.5}" fill="${c}"/>`
+           +`<polygon points="4,${CY} 13,${CY-4.5} 13,${CY+4.5}" fill="${c}"/>`
+           +`<polygon points="${CX},2 ${CX-4.5},11 ${CX+4.5},11" fill="${c}"/>`
+           +`<polygon points="${CX},${H-2} ${CX-4.5},${H-11} ${CX+4.5},${H-11}" fill="${c}"/>`;
+      for(let x=CX%STEP; x<W; x+=STEP) if(Math.abs(x-CX)>1)
+        s+=`<line x1="${x}" y1="${CY-t}" x2="${x}" y2="${CY+t}" stroke="${c}" stroke-width="1.1"/>`;
+      for(let y=CY%STEP; y<H; y+=STEP) if(Math.abs(y-CY)>1)
+        s+=`<line x1="${CX-t}" y1="${y}" x2="${CX+t}" y2="${y}" stroke="${c}" stroke-width="1.1"/>`;
+      return s;
+    }
+    function vec(deg,len,col,dash){
+      const a=rad(deg), ux=Math.cos(a), uy=-Math.sin(a), vx=Math.sin(a), vy=Math.cos(a);
+      const tx=CX+len*ux, ty=CY+len*uy, bx=CX+(len-AL)*ux, by=CY+(len-AL)*uy;
+      const d=dash?` stroke-dasharray="5 5" stroke-opacity=".5"`:'';
+      return `<line x1="${CX}" y1="${CY}" x2="${bx.toFixed(1)}" y2="${by.toFixed(1)}" stroke="${col}" stroke-width="${dash?2:3}"${d}/>`
+        +`<polygon points="${tx.toFixed(1)},${ty.toFixed(1)} ${(bx+vx*AW).toFixed(1)},${(by+vy*AW).toFixed(1)} `
+        +`${(bx-vx*AW).toFixed(1)},${(by-vy*AW).toFixed(1)}" fill="${col}"${dash?' fill-opacity=".5"':''}/>`;
+    }
+    // d0 到 d1 的弧。head: false 不带箭头 / true 箭头在 d1（逆时针）/ 'cw' 箭头在 d0（顺时针，用于「转回去」）。
+    // 弧线让出箭头自身占的那一小段圆心角，箭尖才正好停在目标向量上，
+    // 直接在端点沿切线加箭头会整个冲过头
+    function turn(d0,d1,r,col,head){
+      const HL=11, HW=6;
+      const ha=head?HL/r*180/Math.PI:0;
+      const cw=head==='cw';
+      const a0=cw?d0+ha:d0, a1=cw?d1:d1-ha;
+      const [sx,sy]=P(r,a0), [ex,ey]=P(r,a1);
+      const large=(a1-a0)>180?1:0;
+      let s=`<path d="M${sx.toFixed(1)} ${sy.toFixed(1)} A${r} ${r} 0 ${large} 0 ${ex.toFixed(1)} ${ey.toFixed(1)}" `
+           +`fill="none" stroke="${col}" stroke-width="2.2"/>`;
+      if(head){
+        const b=cw?a0:a1, [bx,by]=P(r,b);        // 箭头底边所在角度
+        const [tx,ty]=P(r,cw?d0:d1);             // 尖端落在目标向量上
+        const rx=Math.cos(rad(b)), ry=-Math.sin(rad(b));
+        s+=`<polygon points="${tx.toFixed(1)},${ty.toFixed(1)} ${(bx+rx*HW).toFixed(1)},${(by+ry*HW).toFixed(1)} `
+          +`${(bx-rx*HW).toFixed(1)},${(by-ry*HW).toFixed(1)}" fill="${col}"/>`;
+      }
+      return s;
+    }
+    // 角标统一挂一个卡片底，压住底下的网格线才读得清。
+    // 框高给到 40：foreignObject 会静默裁掉溢出，而 KaTeX 的实际行高比字号大不少
+    const lab=(r,deg,html,col,fs=19,w=96)=>{
+      const [x,y]=P(r,deg);
+      return fo(x,y,w,40,`<span style="background:#161618;padding:0 4px;border-radius:4px">${html}</span>`,
+                `font-size:${fs}px;font-weight:700;color:${col}`);
+    };
+
+    // ── 左图：旋转矩阵 = 把向量逆时针转 θ ──
+    const one=document.getElementById('qkpre');
+    if(one){
+      const A0=26, TH=42, L=150;                  // 向量摆右上象限，左半整片留给矩阵
+      let s=grid()+axes();
+      s+=turn(A0,A0+TH,74,'#cfe0ff',true);
+      s+=vec(A0,L,'#8b8b96')+vec(A0+TH,L,'#6aa0ff');
+      s+=`<circle cx="${CX}" cy="${CY}" r="3.5" fill="#8b8b96"/>`;
+      // 字号调大后两个标签会互相蹭上：PE(?+k) 沿自己那根向量再往外推，
+      // ω_ik 往圆心收，一个外一个内才分得开。
+      // PE(?) 那根只有 26°，射线越平、标签的横向让位越少，得比另一根推得更远才不压箭头
+      const [x0,y0]=P(L+58,A0), [x1r,y1]=P(L+38,A0+TH);
+      // PE(?+k) 再往右挪 18：68° 这根太陡，沿射线往外推 x 只涨一点点、y 却掉到框外，
+      // 只能横着让位，否则标签左缘正好压在 x=250 的 y 轴上
+      const x1=x1r+12;
+      // 记号跟正上方那段推导逐项对齐：转的是 PE(?)，转过 ω_i·k 之后得到 PE(?+k)
+      // 框子比字宽出一截：foreignObject 会静默裁掉溢出的部分，而字是居中的，
+      // 框大一点只是多留透明边，不会跟隔壁的矩阵撞上
+      s+=fo(x0,y0,116,44,`\\(\\mathrm{PE}(\\mathbf{?})\\)`,'font-size:21px;font-weight:700;color:#9a9aa6');
+      s+=fo(x1,y1,152,44,`\\(\\mathrm{PE}(\\mathbf{?}+k)\\)`,'font-size:21px;font-weight:700;color:#6aa0ff');
+      // 角标带不透明卡片底，摆在 96 会正好压住 r=74 那条弧和它的箭头；
+      // 推到 112 之后整块落在弧的外侧，弧从底下完整穿过去
+      s+=lab(112,A0+TH/2,`\\(\\omega_i k\\)`,'#cfe0ff',20,90);
+      // 矩阵在左半象限。名字和矩阵拆成上下两行：并排写会超出 250px 的左半宽。
+      // 字号压回 19：20px 时矩阵那行有 237 单位宽，右中括号会顶到 x=250 的 y 轴上；
+      // 19px 收到 225，摆在 7–232 之间，离轴还剩 18 个单位
+      s+=fo(120,96,256,120,
+            `<div>\\(R_i(k)=\\)</div>`
+            +`<div>\\(\\begin{bmatrix}\\cos\\omega_i k & -\\sin\\omega_i k\\\\ \\sin\\omega_i k & \\cos\\omega_i k\\end{bmatrix}\\)</div>`,
+            'font-size:19px;color:#e6ecf7;flex-direction:column;gap:8px');
+      one.innerHTML=s;
+    }
+
+    // ── 右图：同一件事用在 q 和 k 上，各转各的绝对位置 ──
+    // 取 α=56°（q 18° / k 74°），mω_i=34°、nω_i=58°，(n−m)ω_i=24°，新夹角 = 56+24 = 80°。
+    // 关键约束：q 转过的区间 [18°,52°] 要整个落在 k 的起点 74° 之前，两段弧的角度区间才不重叠。
+    // q 从 18° 起步（不是贴着 x 轴），四支箭头落在 18/52/74/132，最近的两支隔 22°
+    // 点一下走一步：① 只有 q 和 k（还没加位置）② q 转过 mω_i ③ k 转过 nω_i。
+    // 跟 Tab5 那张正好相反 —— 那张是把转好的转回去，这张是从零开始往前转
+    const two=document.getElementById('qkpost');
+    if(two){
+      const QA=18, KA=74, MW=34, NW=58, L=150, DUR=760;
+      // which 记当前正在转的是哪一根：正在转的那根不挂名字，停稳了名字才出现
+      let step=0, qp=0, kp=0, moving=false, which='';
+
+      function draw2(){
+        const qNow=QA+MW*qp, kNow=KA+NW*kp;
+        let s=grid()+axes();
+        // 转走之后原位留一根虚线当参照
+        if(qp>0) s+=vec(QA,L,'#38bdf8',true);
+        if(kp>0) s+=vec(KA,L,'#f6a960',true);
+        if(qp>0) s+=turn(QA,qNow,96,'#38bdf8',true);
+        if(kp>0) s+=turn(KA,kNow,118,'#f6a960',true);
+        s+=vec(qNow,L,'#38bdf8')+vec(kNow,L,'#f6a960');
+        s+=`<circle cx="${CX}" cy="${CY}" r="3.5" fill="#8b8b96"/>`;
+        // 静止的标签全程挂着（实测逐帧渲染 6 个公式 KaTeX 只要 0.29ms，占 60fps 预算的 2%），
+        // 只有正在转的那一根把名字摘掉 —— 名字跟着向量甩会看不清，停稳了再出现
+        const [qx,qy]=P(L+26,qNow), [kx,ky]=P(L+24,kNow);
+        if(!(moving&&which==='q'))
+          s+=fo(qx,qy,80,34,qp>0?`\\(q'_m\\)`:`\\(q\\)`,'font-size:23px;font-weight:700;color:#7dd3fc');
+        if(!(moving&&which==='k'))
+          s+=fo(kx,ky,80,34,kp>0?`\\(k'_n\\)`:`\\(k\\)`,'font-size:23px;font-weight:700;color:#f6a960');
+        // 原位那根虚线的名字，压暗，不跟转过去的实线抢
+        if(qp>0){ const [gx,gy]=P(L+22,QA);
+          s+=fo(gx,gy,58,32,`\\(q\\)`,'font-size:21px;font-weight:700;color:#7dd3fc;opacity:.6'); }
+        if(kp>0){ const [gx,gy]=P(L+22,KA);
+          s+=fo(gx,gy,58,32,`\\(k\\)`,'font-size:21px;font-weight:700;color:#f6a960;opacity:.6'); }
+        // 角标跟着正在长的那段弧走，始终停在弧的中点上；弧转完了它也正好落到终点位置
+        if(qp>0) s+=lab(116,(QA+qNow)/2,`\\(m\\omega_i\\)`,'#7dd3fc');
+        if(kp>0) s+=lab(138,(KA+kNow)/2,`\\(n\\omega_i\\)`,'#f6a960');
+        two.innerHTML=s;
+        if(window.renderMathInElement)
+          renderMathInElement(two,{delimiters:[{left:'\\(',right:'\\)',display:false}],throwOnError:false});
+      }
+
+      function run2(set){                                  // 一段缓动，set(t) 把进度写进 qp/kp
+        moving=true; const t0=performance.now();
+        (function tick(now){
+          const p=Math.min(1,(now-t0)/DUR);
+          set(p<.5?2*p*p:1-2*(1-p)*(1-p));                 // easeInOutQuad
+          draw2();
+          if(p<1) requestAnimationFrame(tick);
+          else { moving=false; which=''; draw2(); }   // 停稳，名字回来
+        })(t0);
+      }
+
+      two.addEventListener('click',()=>{
+        if(moving) return;
+        if(step===0)      { step=1; which='q'; run2(e=>{qp=e;}); }
+        else if(step===1) { step=2; which='k'; run2(e=>{kp=e;}); }
+        else              { step=0; qp=kp=0; which=''; draw2(); }
+      });
+      draw2();
+    }
+
+    // ── Tab2 右图：点积的定义。两支不等长的向量 + 夹角 θ，右半摆定义式 ──
+    // 版式跟左边那张「旋转」对齐：向量都在右上象限，公式都在左半
+    const dot=document.getElementById('dotdef');
+    if(dot){
+      const AA=76, BB=28, LA=118, LB=158;
+      let s=grid()+axes();
+      s+=turn(BB,AA,66,'#cfe0ff',false);   // 小角度在前：turn 的 sweep 固定，反过来传会绕远路
+      s+=vec(AA,LA,'#38bdf8')+vec(BB,LB,'#f6a960');
+      s+=`<circle cx="${CX}" cy="${CY}" r="3.5" fill="#8b8b96"/>`;
+      const [ax,ay]=P(LA+26,AA), [bx,by]=P(LB+26,BB);
+      // 框高 48：\vec 的箭头在 b 这种高字母上位置更高，36 的框会把箭头整个裁掉
+      s+=fo(ax,ay,70,48,`\\(\\vec a\\)`,'font-size:26px;font-weight:700;color:#7dd3fc');
+      s+=fo(bx,by,70,48,`\\(\\vec b\\)`,'font-size:26px;font-weight:700;color:#f6a960');
+      s+=lab(88,(AA+BB)/2,`\\(\\theta\\)`,'#cfe0ff',22,50);
+      // 同左图：公式挪到左半，左边缘贴着 viewBox 的 0
+      s+=fo(130,110,260,48,`\\(\\vec a\\cdot\\vec b=|\\vec a|\\,|\\vec b|\\cos\\theta\\)`,
+            'font-size:21px;color:#e6ecf7');
+      dot.innerHTML=s;
+    }
+
+    // ── Tab5：把 RoPE(m)^T·RoPE(n)=RoPE(n−m) 演一遍，点一下走一步 ──
+    // ① q′_m 顺时针转回 mω_i，正好落回 q ② k′_n 跟着转同样的角度
+    // ③ 量它离原来的 k 还差多少 —— 正是 (n−m)ω_i
+    const back=document.getElementById('qkback');
+    if(back){
+      const QA=18, KA=74, MW=34, NW=58, L=150, DUR=760;
+      // 同 Tab4：which 记正在转的是哪一根，转的过程中它不挂名字
+      let step=0, qb=0, kb=0, moving=false, raf=0, which='';
+
+      function draw(){
+        const qNow=QA+MW*(1-qb), kNow=KA+NW-MW*kb;
+        let s=grid()+axes();
+        // 转走之后原位留一根虚线当参照：q'_m 从第一步起、k'_n 从第二步起、原来的 k 到末步才亮
+        if(step>=1) s+=vec(QA+MW,L,'#38bdf8',true);
+        if(step>=2) s+=vec(KA+NW,L,'#f6a960',true);
+        if(step>=3) s+=vec(KA,L,'#f6a960',true);
+        if(step>=3) s+=turn(KA,kNow,96,'#cfe0ff',true);
+        if(qb>0)    s+=turn(QA,QA+MW,120,'#38bdf8','cw');
+        if(kb>0)    s+=turn(kNow,KA+NW,142,'#f6a960','cw');
+        s+=vec(qNow,L,'#38bdf8')+vec(kNow,L,'#f6a960');
+        s+=`<circle cx="${CX}" cy="${CY}" r="3.5" fill="#8b8b96"/>`;
+        // 同 Tab4：静止的标签全程挂着，只有正在转的那一根把名字摘掉
+        const [qx,qy]=P(L+26,qNow), [kx,ky]=P(L+26,kNow);
+        if(!(moving&&which==='q'))
+          s+=fo(qx,qy,86,34,qb>=1?`\\(q\\)`:`\\(q'_m\\)`,'font-size:23px;font-weight:700;color:#7dd3fc');
+        // 转完之后这根就没名字了：末帧靠 (n−m)ω_i 那条弧和两根虚线交代它是什么
+        if(kb<1 && !(moving&&which==='k'))
+          s+=fo(kx,ky,86,34,`\\(k'_n\\)`,'font-size:23px;font-weight:700;color:#f6a960');
+        if(step>=1){ const [g1x,g1y]=P(L+26,QA+MW);
+          s+=fo(g1x,g1y,76,32,`\\(q'_m\\)`,'font-size:21px;font-weight:700;color:#7dd3fc;opacity:.5'); }
+        if(step>=2){ const [g2x,g2y]=P(L+26,KA+NW);
+          s+=fo(g2x,g2y,76,32,`\\(k'_n\\)`,'font-size:21px;font-weight:700;color:#f6a960;opacity:.5'); }
+        if(step>=3){ const [k0x,k0y]=P(L+22,KA);
+          s+=fo(k0x,k0y,58,32,`\\(k\\)`,'font-size:21px;font-weight:700;color:#f6a960;opacity:.55'); }
+        if(qb>0) s+=lab(138,QA+MW/2,`\\(m\\omega_i\\)`,'#7dd3fc');
+        if(kb>0) s+=lab(182,(kNow+KA+NW)/2,`\\(m\\omega_i\\)`,'#f6a960');
+        if(step>=3) s+=lab(80,KA+(NW-MW)/2,`\\((n\\!-\\!m)\\omega_i\\)`,'#cfe0ff',17,124);
+        back.innerHTML=s;
+        if(window.renderMathInElement)
+          renderMathInElement(back,{delimiters:[{left:'\\(',right:'\\)',display:false}],throwOnError:false});
+      }
+
+      function run(set,done){                                // 一段缓动，set(t) 把进度写进 qb/kb
+        moving=true; const t0=performance.now();
+        (function tick(now){
+          const p=Math.min(1,(now-t0)/DUR);
+          const e=p<.5?2*p*p:1-2*(1-p)*(1-p);                // easeInOutQuad
+          set(e); draw();
+          if(p<1) raf=requestAnimationFrame(tick);
+          else { moving=false; which=''; done&&done(); draw(); }   // 停稳，名字回来
+        })(t0);
+      }
+
+      back.addEventListener('click',()=>{
+        if(moving) return;
+        if(step===0)      { step=1; which='q'; run(e=>{qb=e;}); }
+        else if(step===1) { step=2; which='k'; run(e=>{kb=e;}); }
+        else if(step===2) { step=3; draw(); }
+        else              { step=0; qb=kb=0; which=''; draw(); }
+      });
+      draw();
+    }
+  })();
+
+  document.addEventListener('DOMContentLoaded', () => {
+    if (window.renderMathInElement) {
+      renderMathInElement(document.body, {
+        delimiters: [
+          {left:'$$',  right:'$$',  display:true},
+          {left:'\\[', right:'\\]', display:true},
+          {left:'\\(', right:'\\)', display:false},
+          {left:'$',   right:'$',   display:false}
+        ],
+        throwOnError: false
+      });
+    }
+  });
+
+  const tabs=[...document.querySelectorAll('.tab')];
+  const slides=[...document.querySelectorAll('.slide')];
+  let cur=0;
+  function go(i){
+    i=(i+slides.length)%slides.length;
+    tabs.forEach((t,k)=>t.classList.toggle('active',k===i));
+    slides.forEach((s,k)=>s.classList.toggle('active',k===i));
+    cur=i;
+  }
+  tabs.forEach((t,i)=>t.addEventListener('click',()=>go(i)));
+  // ←/→/空格 顺序翻页，数字键 1–9 直接跳
+  document.addEventListener('keydown',e=>{
+    if(e.key==='ArrowRight'||e.key===' ') { e.preventDefault(); go(cur+1); }
+    else if(e.key==='ArrowLeft') go(cur-1);
+    else if(/^[1-9]$/.test(e.key)) go(+e.key-1);
+  });
+</script>
+</body>
+</html>
