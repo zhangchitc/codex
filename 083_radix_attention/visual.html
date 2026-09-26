@@ -1,0 +1,1963 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codex 083 · RadixAttention</title>
+<link rel="icon" href="data:,">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+  *{ box-sizing:border-box; margin:0; padding:0; }
+
+  :root{
+    --bg:#f7f7f8; --card:#ffffff; --card-head:#fbfbfc; --card-2:#f2f2f4;
+    --ink:#0d0d0d; --muted:#6e6e80; --dim:#8e8ea0;
+    --line:#e6e6e8; --line-2:#d8d8dd; --line-3:#c6c6ce;
+    --arrow:#a8a8b4;
+    /* UI 重点色：沿用 078/081 那套 OpenAI 绿，标题、当前 tab、总结框、步骤徽章都用它 */
+    --accent:#10a37f; --accent-soft:rgba(16,163,127,.10); --accent-line:rgba(16,163,127,.32);
+    /* 语义色：一种值一个颜色，源码框 / 图 / 表里完全一致 */
+    --node:#7c5cff; --node-soft:rgba(124,92,255,.10); --node-line:rgba(124,92,255,.45);   /* TreeNode / key / 树结构 */
+    --slot:#b06f16; --slot-soft:rgba(176,111,22,.12); --slot-line:rgba(176,111,22,.45);   /* 槽位下标 / value */
+    --hit:#0a7d61;  --hit-soft:rgba(10,125,97,.11);   --hit-line:rgba(10,125,97,.42);     /* HIT / SKIP / 复用 / protected */
+    --miss:#d64545; --miss-soft:rgba(214,69,69,.10);  --miss-line:rgba(214,69,69,.38);    /* MISS / COMPUTE / EVICT */
+    --k:#0369a1; --v:#c2410c;                          /* K、V 张量（沿用 063/074 的 K蓝 V橙） */
+    --mono:"JetBrains Mono","SF Mono",Menlo,monospace;
+    --sans:"Inter","PingFang SC",-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;
+  }
+
+  html,body{ height:100%; }
+  body{ background:var(--bg); color:var(--ink); font-family:var(--sans);
+        -webkit-font-smoothing:antialiased; overflow:hidden; }
+
+  .deck{ height:100vh; display:flex; flex-direction:column; }
+
+  /* ── 顶栏（每一帧的固定锚点） ── */
+  .topbar{ flex:0 0 auto; display:flex; align-items:center; justify-content:space-between;
+           gap:24px; padding:16px 42px; border-bottom:1px solid var(--line); background:#fff; }
+  .brand .ttl{ font-size:19px; font-weight:700; white-space:nowrap; }
+  .brand .ttl b{ color:var(--accent); font-weight:800; }
+  .tabs{ display:flex; gap:4px; padding:4px; border:1px solid var(--line);
+         border-radius:999px; background:var(--card-2); }
+  .tab{ appearance:none; border:1px solid transparent; border-radius:999px; cursor:pointer;
+        background:transparent; color:var(--muted); font-family:var(--sans);
+        font-size:13.5px; font-weight:700; padding:7px 12px; white-space:nowrap; transition:.18s; }
+  .tab:hover{ color:var(--ink); }
+  .tab.active{ color:var(--accent); background:#fff; border-color:var(--accent-line);
+               box-shadow:0 1px 3px rgba(13,13,13,.06); }
+
+  /* ── 舞台（滚动安全三件套） ── */
+  .stage{ position:relative; flex:1 1 auto; }
+  .slide{ position:absolute; inset:0; display:none; flex-direction:column;
+          padding:22px 42px 420px; overflow-y:auto; overflow-x:hidden; }
+  .slide.active{ display:flex; }
+  .wrap{ width:100%; max-width:1760px; margin:0 auto; flex:1 0 auto;
+         display:flex; flex-direction:column; justify-content:flex-start;
+         align-items:center; text-align:center; gap:20px; }
+
+  .head{ font-size:33px; line-height:1.2; font-weight:800; letter-spacing:-.2px; }
+  .head .hl{ color:var(--accent); }
+  .head .hls{ color:var(--slot); }
+  .head .hlh{ color:var(--hit); }
+  .head .hlm{ color:var(--miss); }
+  .sub{ font-size:17px; color:var(--muted); line-height:1.55; max-width:1060px; }
+  .sub b{ font-family:var(--mono); color:var(--ink); font-weight:700; }
+
+  /* ── 通用：白卡片 ── */
+  .panel{ background:var(--card); border:1px solid var(--line); border-radius:14px;
+          box-shadow:0 1px 2px rgba(13,13,13,.04), 0 8px 24px rgba(13,13,13,.03); overflow:hidden; }
+  .phead{ padding:12px 20px; border-bottom:1px solid var(--line); background:var(--card-head);
+          font-size:14px; font-weight:700; display:flex; align-items:center; gap:9px; text-align:left; }
+  .phead .dot{ width:9px; height:9px; border-radius:50%; flex:0 0 9px; background:var(--accent); }
+  .phead .rt{ margin-left:auto; font-family:var(--mono); font-size:13px; font-weight:500; color:var(--dim); }
+  .pbody{ padding:20px 24px; }
+
+  /* ── 收敛结论框（每屏最后一句，绿底） ── */
+  .sum{ margin:4px auto 0; max-width:1180px; display:flex; flex-direction:column; gap:8px;
+        font-size:17px; color:var(--ink); line-height:1.55; text-align:left;
+        background:var(--accent-soft); border:1px solid var(--accent-line); border-radius:12px; padding:14px 24px; }
+  .sum .n{ color:var(--accent); font-weight:800; margin-right:8px; }
+  .sum b{ color:var(--accent); font-weight:800; }
+  .sum code{ font-family:var(--mono); font-weight:700; }
+  .sum .sl{ color:var(--slot); font-weight:800; }
+  /* ② 里 key / value 用纯色等宽字，不做成 chip——.sl 是槽位 chip，套上去会变成方块 */
+  .sum .nd{ color:var(--node); font-weight:800; }
+  .sum .vl{ color:var(--slot); font-weight:800; }
+  /* 每条前面那半句小标题，点出这条讲的是哪个层面 */
+  .sum .lead{ color:var(--accent); font-weight:800; margin-right:2px; }
+  .sum .hh{ color:var(--hit); font-weight:800; }
+  .sum .mm{ color:var(--miss); font-weight:800; }
+
+  /* ── 源码框：照 078 的深色窗口（浅底页面上压一块暗屏，对比最强） ── */
+  .codebox{ background:#1d1f28; border:1px solid rgba(255,255,255,.13); border-radius:12px;
+            overflow:hidden; text-align:left; box-shadow:0 10px 30px rgba(13,13,13,.28); }
+  .codebox .cbar{ display:flex; align-items:center; gap:8px; padding:9px 16px;
+                  background:#272a36; border-bottom:1px solid rgba(255,255,255,.09); }
+  .cbar .d{ width:12px; height:12px; border-radius:50%; }
+  .cbar .d.r{ background:#ff5f57; } .cbar .d.y{ background:#febc2e; } .cbar .d.g{ background:#28c840; }
+  .cbar .fname{ margin-left:10px; font-family:var(--mono); font-size:14px; color:#9aa3b5; }
+  .codebox pre{ margin:0; padding:15px 24px 17px; font-family:var(--mono); font-size:15px;
+                line-height:1.62; color:#c3cad9; white-space:pre; }
+  /* 语法层：关键字用别处没用过的绯红，别跟 lock_ref 的绿撞；函数名白粗；self 退到背景里 */
+  .codebox .kw{ color:#ff7b72; font-weight:700; }
+  .codebox .fn{ color:#e8ecf5; font-weight:800; }
+  .codebox .sf{ color:#6b7688; }
+  .codebox .op{ color:#7f8a9e; }
+  /* 字段配色仍是图例，只是换成暗底上的亮版：紫=key、琥珀=value、绿=lock、蓝=时间 */
+  .codebox .cls{ color:#e8ecf5; font-weight:800; }
+  .codebox .cmt{ color:#7f8a9e; }
+  .codebox .str{ color:#9ae6b4; }
+  .codebox .num{ color:#f6c486; font-weight:600; }
+  .codebox .f-key { color:#b39dff; font-weight:700; }
+  .codebox .f-val { color:#f6c486; font-weight:700; }
+  .codebox .f-lock{ color:#35d0a3; font-weight:700; }
+  .codebox .f-ptr { color:#9aa3b5; font-weight:700; }
+  .codebox .f-time{ color:#79c0ff; font-weight:700; }
+  .codebox .f-dim { color:#6b7688; font-weight:700; }             /* 次要字段，不参与配色图例 */
+  .cap-l{ font-size:15px; font-weight:700; color:var(--ink); text-align:left; }
+  .cap-l .n{ color:var(--node); font-family:var(--mono); }
+  .cap-l .s{ color:var(--slot); font-family:var(--mono); }
+
+  /* ── token chip ── */
+  .tk{ display:inline-flex; flex-direction:column; align-items:center; justify-content:center;
+       padding:6px 12px; border-radius:8px; border:1.5px solid var(--line-2); background:#fff;
+       font-family:var(--mono); font-size:15px; font-weight:700; color:var(--muted);
+       white-space:nowrap; line-height:1.2; }
+  .tk .zh{ font-family:var(--sans); font-size:11px; font-weight:600; color:var(--dim); margin-top:2px; }
+  .tk.big{ padding:12px 20px; font-size:21px; border-radius:10px; }
+  .tk.big .zh{ font-size:13.5px; margin-top:4px; }
+  .tk.sh{ border-color:var(--node-line); background:var(--node-soft); color:var(--node); }
+  .tk.sh .zh{ color:var(--node); opacity:.8; }
+  .tkrow{ display:flex; align-items:center; gap:7px; }
+  .tklbl{ font-family:var(--mono); font-size:15px; font-weight:700; color:var(--muted);
+          margin-right:6px; white-space:nowrap; }
+
+  /* ── 槽位 chip ── */
+  .sl{ display:inline-flex; align-items:center; justify-content:center; min-width:34px; height:30px;
+       padding:0 9px; border-radius:7px; border:1.5px solid var(--slot-line); background:var(--slot-soft);
+       color:var(--slot); font-family:var(--mono); font-size:15px; font-weight:800; }
+  .sl.pad{ border-style:dashed; border-color:var(--line-3); background:var(--card-2); color:var(--dim); }
+  .sl.newv{ background:var(--slot); color:#fff; border-color:var(--slot); }
+
+  /* ── HIT / MISS / COMPUTE / SKIP 徽章 ── */
+  .pf{ display:inline-flex; align-items:center; justify-content:center; min-width:108px;
+       font-family:var(--mono); font-size:13px; font-weight:800; padding:6px 10px; border-radius:7px; }
+  .pf.c{ color:var(--miss); background:var(--miss-soft); border:1px solid var(--miss-line); }
+  .pf.s{ color:var(--hit);  background:var(--hit-soft);  border:1px solid var(--hit-line); }
+  .pf.ph{ background:transparent; border:1px solid transparent; }
+  .pfrow{ display:flex; gap:9px; }
+
+  /* ═══ Tab1：三个请求的前缀重叠 ═══ */
+  .ov{ display:flex; flex-direction:column; gap:26px; width:max-content; margin:0 auto;
+       align-items:flex-start; }
+  .ovrow{ display:flex; align-items:center; gap:20px; }
+  .ovlbl{ flex:0 0 172px; text-align:right; font-family:var(--mono); font-size:17px; font-weight:800; }
+  .ovlbl .zh{ display:block; font-family:var(--sans); font-size:13.5px; font-weight:600;
+              color:var(--dim); margin-top:4px; }
+  .ovnote{ flex:0 0 268px; text-align:left; font-size:15.5px; color:var(--dim); line-height:1.45; }
+  .ovnote b{ color:var(--ink); font-weight:700; }
+  /* 两条对比：各存一份 vs 公共前缀只存一份 */
+  .cmpbar{ display:flex; flex-direction:column; gap:14px; width:100%; max-width:960px; }
+  .cbrow{ display:flex; align-items:center; gap:16px; }
+  .cbname{ flex:0 0 250px; text-align:right; font-size:15.5px; font-weight:700; color:var(--muted); }
+  .cbtrack{ flex:1 1 auto; display:flex; gap:5px; }
+  .cbcell{ height:40px; flex:0 0 46px; border-radius:7px; display:flex; align-items:center;
+           justify-content:center; font-family:var(--mono); font-size:14px; font-weight:800; }
+  .cbcell.dup{ background:var(--miss-soft); border:1.5px dashed var(--miss-line); color:var(--miss); }
+  .cbcell.uni{ background:var(--node-soft); border:1.5px solid var(--node-line); color:var(--node); }
+  .cbtot{ flex:0 0 150px; text-align:left; font-family:var(--mono); font-size:16px; font-weight:800; }
+  .cbtot.bad{ color:var(--miss); } .cbtot.good{ color:var(--node); }
+
+  /* ═══ 缩进文本树 .treetxt ═══ */
+  .treetxt{ font-family:var(--mono); font-size:14px; line-height:1.75; text-align:left;
+            color:var(--muted); white-space:pre; }
+  .treetxt .k{ color:var(--node); font-weight:800; }
+  .treetxt .v{ color:var(--slot); font-weight:700; }
+  .treetxt .l{ color:var(--hit); font-weight:700; }
+  .treetxt .g{ color:var(--dim); }
+  .treetxt .ev{ color:var(--miss); text-decoration:line-through; }
+  .treetxt .new{ background:var(--node-soft); border-radius:4px; }
+
+  /* ═══ Tab2：KV pool —— 上 CPU / 下 GPU 两个区（骨架照 074 Tab3，配色改浅） ═══ */
+  /* 左列：张量名（在虚线框外面，位置照 074 的 CPU/GPU 区标）
+     中列：号码池 / 大数组两个虚线框
+     右列：一格多大 / 放大一格 两张注解卡 */
+  .pool2{ position:relative; display:grid; grid-template-columns:126px auto auto;
+          column-gap:16px; row-gap:18px; align-items:start; justify-content:center; }
+  /* 位置写死，别靠自动排布——删一个格子就会整排错位 */
+  .pool2 > .rowlbl { grid-area:1 / 1; }
+  .pool2 > .cpubox { grid-area:1 / 2; }
+  .pool2 > .typebox{ grid-area:1 / 3; align-self:center; }
+  .pool2 > .stkcol { grid-area:2 / 1; }
+  .pool2 > .gpubox { grid-area:2 / 2; }
+  .pool2 > .zoombox{ grid-area:2 / 3; align-self:center; }   /* 竖直中心对齐左边那个灰框 */
+  /* 类名别用 .tl / .tt —— .tl 是上面那张状态表的网格，套进来文字会被拆成一个个格子 */
+  .typebox{ max-width:430px; border:1px solid var(--line-2); border-radius:14px;
+            padding:14px 18px 16px; background:var(--card); text-align:left; }
+  .typebox .tbh{ font-family:var(--mono); font-size:15px; font-weight:800;
+                 color:var(--slot); margin-bottom:9px; }
+  .typebox .tbp{ font-size:13.5px; line-height:1.8; color:var(--muted); }
+  .typebox .tbp b{ font-family:var(--mono); font-weight:700; color:var(--ink); }
+  .rowlbl{ align-self:center; text-align:right; font-size:13.5px; font-weight:700;
+           color:var(--muted); line-height:1.7; }
+  .rowlbl .mn{ font-family:var(--mono); font-size:15px; font-weight:800; color:var(--slot); }
+  /* 树里的下标 → 显存那一列：跨两个虚线框的竖向虚线，压在板堆上面才看得见 */
+  .poolsvg{ position:absolute; inset:0; width:100%; height:100%;
+            pointer-events:none; overflow:visible; z-index:8; }
+  .poolsvg line{ stroke:var(--slot-line); stroke-width:1.6; stroke-dasharray:4 5; }
+  .p2box{ border:1.5px dashed var(--line-3); border-radius:14px; background:var(--card-2); }
+  /* 上面留够一截：alloc(4) 那个闸门标签是 ::before 吊在号码上方的 */
+  .p2box.cpubox{ padding:42px 20px 22px; text-align:left; }
+  .p2box.gpubox{ position:relative; padding:132px 126px 16px 22px; }
+  /* 板子左边的张量名（JS 量着板子定位，所以隐藏的 slide 切回来也对得上） */
+  .lylbl{ position:absolute; transform:translate(-100%,-50%); white-space:nowrap;
+          font-family:var(--mono); font-size:14px; font-weight:700; z-index:7; }
+  .lylbl.kk{ color:var(--k); }
+  .lylbl.vv{ color:var(--v); }
+  .lylbl.el{ transform:translate(-50%,-50%); color:var(--line-3); font-size:20px; font-weight:800; }
+  /* 下面留够一截：alloc(4) 那个闸门标签是 ::before 吊在号码上方的 */
+  .qcap{ font-size:14px; color:var(--muted); margin-bottom:30px; }
+  .qcap .mn{ font-family:var(--mono); color:var(--slot); font-weight:800; }
+  .qcap .ws{ font-family:var(--mono); color:var(--ink); font-weight:800; }
+  /* 标签单独占一行：号码池要整条横移去对齐下面的格子，并排放会被压到 */
+  .cpurow{ display:flex; align-items:center; }
+  /* 队尾续行：靠右摆，和上面那行的 ⋯ 一头一尾接住，读成同一条队列折了个行。
+     margin-top 要留够——free 那个闸门标签是 ::before 吊在 top:-20px 上的，
+     给少了会怼到上面那行号码上 */
+  .cpurow.tailrow{ justify-content:flex-end; margin-top:34px; }
+  .cpunote{ margin-left:auto; max-width:180px; text-align:right; font-size:13.5px;
+            line-height:1.6; color:var(--muted); }
+  .cpunote b{ color:var(--slot); font-weight:800; }
+  /* 主机内存里那棵树：左边一列是树形，右边一列 value 对齐 */
+  /* value 那一列不右对齐到框边——它要待在下面槽位格子的正上方，连线才短 */
+  .ptree{ display:grid; grid-template-columns:auto auto; column-gap:34px; row-gap:7px;
+          align-items:center; justify-content:start; }
+  .ptl{ display:flex; align-items:center; gap:8px; font-family:var(--mono);
+        font-size:14.5px; color:var(--dim); white-space:nowrap; }
+  .ptl .br{ color:var(--line-3); font-weight:700; }
+  .ptl .kg{ font-family:var(--sans); font-size:14px; font-weight:800; color:var(--node);
+            padding:2px 9px; border:1px solid var(--node-line); border-radius:6px;
+            background:var(--node-soft); }
+  .pvs{ font-family:var(--mono); font-size:14.5px; font-weight:700;
+        color:var(--slot); white-space:nowrap; }
+  .pvs i{ font-style:normal; padding:0 2px; }
+  .pvs .kwd{ color:var(--dim); font-weight:600; }
+
+  /* L 层斜堆：最前一片是完整的 layer 0（k、v 两行），背后几片只露边 = 其余 31 层 */
+  .gpustack{ position:relative; }
+  .lyback{ position:absolute; inset:0; border-radius:12px; background:#ededf0;
+           border:1px solid var(--line-3); }
+  .lyrow{ position:relative; display:flex; flex-direction:column; gap:6px;
+          background:var(--card); border:1px solid var(--line-3); border-radius:12px;
+          padding:11px 14px; box-shadow:0 10px 22px rgba(13,13,13,.13); }
+  .blksvg{ position:absolute; left:0; top:0; pointer-events:none; overflow:visible; z-index:9; }
+  .lbrace{ position:absolute; left:0; top:0; pointer-events:none; overflow:visible; z-index:7; }
+  .llbl{ position:absolute; font-family:var(--mono); font-size:13.5px; font-weight:700;
+         color:var(--muted); white-space:nowrap; line-height:1.5; z-index:7; }
+  .llbl .lln{ color:var(--ink); font-weight:800; font-size:17px; }
+  .blkcap{ margin-top:22px; text-align:center; font-size:14px; font-weight:700; color:var(--muted); }
+  .blkcap .mn{ font-family:var(--mono); color:var(--slot); font-weight:800; }
+
+  .plrow{ display:flex; align-items:center; gap:0; }
+  .plname{ flex:0 0 132px; text-align:right; padding-right:14px; font-family:var(--mono);
+           font-size:14px; font-weight:700; color:var(--muted); white-space:nowrap; }
+  .plname.kk{ color:var(--k); } .plname.vv{ color:var(--v); }
+  /* 一格一个独立方框、中间留缝（照 074 的 .pgcell + .pvsp），边框 2px 实线 */
+  .plcells{ display:flex; gap:6px; }
+  /* 格子做宽：虚线柱往右退 4×9px，格子窄了那几个框就盖到隔壁数字上 */
+  .plc{ width:92px; height:46px; display:flex; align-items:center; justify-content:center;
+        border:2px solid var(--line-3); background:#fff;
+        font-family:var(--mono); font-size:16px; font-weight:700; color:var(--dim); }
+  .plc.used{ background:var(--slot-soft); color:var(--slot); }
+  /* 省略号那格不占整格宽度，只留够画三个点；点靠右放，躲开虚线柱往后退的那几个框 */
+  .plc.el{ width:52px; justify-content:flex-end; border:none; background:transparent;
+           color:var(--dim); font-size:20px; }
+
+  .zoombox{ border:2px dashed var(--slot-line); border-radius:14px; padding:16px 20px;
+            display:flex; flex-direction:column; gap:12px; align-items:flex-start;
+            background:var(--card); }
+  .zt{ font-size:14.5px; font-weight:800; color:var(--ink); }
+  .zt b{ font-family:var(--mono); color:var(--slot); }
+  .ztensor{ width:330px; height:46px; display:flex; align-items:center; gap:10px; padding:0 14px;
+            font-family:var(--mono); font-size:14px; font-weight:700; white-space:nowrap; }
+  .ztensor .zl{ font-size:17px; font-weight:800; }
+  .ztensor.k{ background:rgba(3,105,161,.10); border:1.5px solid rgba(3,105,161,.45); color:var(--k); }
+  .ztensor.v{ background:rgba(194,65,12,.10); border:1.5px solid rgba(194,65,12,.45); color:var(--v);
+              border-top:none; }
+  .zshape{ font-family:var(--mono); font-size:14px; font-weight:700; color:var(--muted); }
+  .zshape .hi{ color:var(--slot); font-weight:800; }
+
+
+  /* 一屏看完该带走的那一句，Tab1 和 Tab4 底下各一条。绿＝本期结论。
+     不复用 .kvsum —— 那个是「一行公式」的壳子（width:max-content、单行 flex），
+     这里是整句文字，塞进去会被挤成一条长横带。 */
+  /* 字号压过副标题（.sub 17px）半档：它是整屏的落点，不是补充说明，
+     顺带把 max-width 放宽到 1120，免得字一大就折成三行 */
+  .knote{ margin:26px auto 0; max-width:1120px; padding:18px 30px 20px;
+          border:1px solid var(--hit-line); border-radius:14px; background:var(--hit-soft);
+          text-align:center; font-size:19px; line-height:1.8; color:var(--ink); }
+  .knote b{ font-weight:800; color:var(--hit); }
+
+  .kvsum{ margin:28px auto 0; width:max-content; max-width:100%;
+          display:flex; align-items:center; gap:14px; flex-wrap:wrap; justify-content:center;
+          padding:14px 26px; border:1px solid var(--line-2); border-radius:14px; background:var(--card); }
+  .kvsum .lbl{ font-size:15px; font-weight:700; color:var(--muted); }
+  .kvsum .expr{ font-family:var(--mono); font-size:19px; font-weight:800; color:var(--ink);
+                display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:center; }
+  .kvsum .op{ color:var(--dim); font-weight:600; }
+  .kvsum .L{ color:var(--k); } .kvsum .nb{ color:var(--slot); }
+  .kvsum .two{ color:var(--v); background:rgba(194,65,12,.10); border:1px solid rgba(194,65,12,.4);
+               border-radius:6px; padding:0 8px; }
+
+  /* 号码池 */
+  .fq{ display:flex; align-items:center; gap:0; }
+  /* 号码宽度 + 连线宽度 = 下面格子的步距（92+6），几根虚线才能笔直落下去 */
+  .fqn{ min-width:76px; height:34px; padding:0 8px; border-radius:7px; background:var(--slot-soft);
+        border:1.5px solid var(--slot-line); color:var(--slot); display:flex; align-items:center;
+        justify-content:center; font-family:var(--mono); font-size:15px; font-weight:800; }
+  .fqn.pad{ background:var(--card-2); border-color:var(--line-3); border-style:dashed; color:var(--dim); }
+  .fqn.take{ background:var(--slot); color:#fff; }
+  .fqn.back{ background:var(--hit-soft); border-color:var(--hit-line); color:var(--hit); }
+  .fqlk{ width:22px; height:2px; background:var(--arrow); flex:0 0 22px; }
+  .fqell{ width:34px; text-align:center; color:var(--dim); font-size:15px; font-weight:800; }
+  .fqgrp{ position:relative; display:flex; align-items:center; padding:9px 10px; margin:0 5px;
+          border-left:2.5px dashed var(--gate); border-right:2.5px dashed var(--gate);
+          background:var(--gate-soft); border-radius:4px; }
+  .fqgrp::before{ content:attr(data-op); position:absolute; left:50%; top:-20px; transform:translateX(-50%);
+                  white-space:nowrap; color:var(--gate); font-family:var(--mono);
+                  font-size:13px; font-weight:800; }
+  .fqgrp.out{ --gate:var(--slot); --gate-soft:rgba(176,111,22,.08); }
+  .fqgrp.in { --gate:var(--hit);  --gate-soft:rgba(10,125,97,.08); }
+
+  /* ═══ key↔value 逐位对齐（Tab3 的杀手图） ═══ */
+  .align{ display:inline-flex; flex-direction:column; gap:6px; font-family:var(--mono);
+          font-size:17px; font-weight:800; }
+  .align .arow{ display:flex; align-items:center; gap:8px; }
+  .align .alb{ width:76px; text-align:right; font-size:15px; }
+  .align .alb.k{ color:var(--node); } .align .alb.v{ color:var(--slot); }
+  .align .cell{ width:94px; text-align:center; padding:13px 0; border-radius:8px; font-size:20px; }
+  .align .cell.k{ background:var(--node-soft); border:1.5px solid var(--node-line); color:var(--node); }
+  .align .cell.v{ background:var(--slot-soft); border:1.5px solid var(--slot-line); color:var(--slot); }
+  .align .ties{ display:flex; gap:8px; padding-left:84px; }
+  .align .tie{ width:94px; text-align:center; color:var(--arrow); font-size:19px; }
+  .invar{ font-family:var(--mono); font-size:26px; font-weight:800; color:var(--ink);
+          padding:18px 34px; border-radius:12px; background:var(--card);
+          border:1.5px solid var(--line-2); }
+  .invar .k{ color:var(--node); } .invar .v{ color:var(--slot); }
+
+  /* ═══ 状态表 .tl ═══ */
+  /* 两个数据列是 1fr 1fr（强制等宽），所以【最宽的那一格决定整张表】。
+     标签列 190px 当初是按最长的 evictable_leaves（mono 14px 约 134px）留的。那一行后来撤了
+     （last_access 直接标到树上），宽度留着没动——两屏的标签列要对齐，切 tab 才不跳；
+     单元格左右内边距 16px、徽章 min-width 76px 也都是量过之后只留必要余量。 */
+  .tl{ --tl-line:var(--line-2); --tl-line-2:var(--line-3);
+       /* min-width 把推演三屏钉到同一个宽度：三张表各自的 max-content 是 1193/1246/1198，
+          不钉住的话切 tab 时表格边框会左右跳 50px，录屏上很脏。
+          还留着 max-content，所以内容长出来照样能撑宽，不会被截。 */
+       display:grid; grid-template-columns:190px 1fr 1fr;
+       width:max-content; min-width:1250px; max-width:1500px;
+       margin:0 auto; text-align:left; border:2px solid var(--tl-line-2); border-radius:14px;
+       overflow:hidden; background:var(--card); }
+  .tlhd{ padding:12px 24px; border-bottom:2px solid var(--tl-line-2); background:var(--card-head);
+         font-family:var(--mono); font-size:17px; font-weight:800; text-align:center; }
+  .tlc{ padding:13px 16px; border-bottom:1px solid var(--tl-line); display:flex;
+        flex-direction:column; align-items:center; }
+  /* 行标签要在录屏里一眼读到，所以比格子里的正文还大一号。
+     190px 的标签列装得下最长的 GPU KV slot（mono 18px 约 119px），还剩一截余量 */
+  .tlc.lb{ padding:13px 10px; background:var(--card-head); font-family:var(--mono);
+           font-size:18px; font-weight:800;
+           color:var(--ink); align-items:center; justify-content:center;
+           border-right:1px solid var(--tl-line); text-align:center; }
+  .tlc.c1, .tlhd.c1{ border-left:2px solid var(--tl-line-2); }
+  /* 最后一行去掉下边框。原来用 nth-last-child(-n+3) 数格子，遇到 sp2 跨列行会数错，
+     改成显式给最后一行的每个格子挂 .lastrow */
+  .tstack{ display:flex; flex-direction:column; align-items:flex-start; }
+  .tline{ font-family:var(--mono); font-size:14px; font-weight:700; color:var(--muted); line-height:1.65; }
+  .tline + .tline{ margin-top:1px; }
+  .tline b{ color:var(--ink); font-weight:800; }
+  .tline .n{ color:var(--node); font-weight:800; }
+  .tline .s{ color:var(--slot); font-weight:800; }
+  .tline .h{ color:var(--hit);  font-weight:800; }
+  .tline .m{ color:var(--miss); font-weight:800; }
+  .tline .g{ color:var(--dim); }
+  .sp2{ grid-column:2 / span 2; }
+  /* 四时刻版：190 + 4 列。这么宽 1080p 装不下，所以让【表格自己】横向滚，
+     页面照旧 overflow-x:hidden——滚的是内容不是版面，顶栏和标题不会跟着跑。 */
+  /* overflow 必须是 visible：.tl 自己要是 overflow:hidden，就会变成 sticky 的定位祖先，
+     下面那条钉住标签列的规则会直接失效。代价是四个角的圆角裁不到格子背景，
+     所以圆角改挂到四个角的格子上（见下） */
+  .tl.c4{ grid-template-columns:190px repeat(4, 1fr); max-width:none; overflow:visible; }
+  /* 三时刻版：一列 = 一条请求。两棵树一上一下（match 之后 / insert 之后），
+     所以行高吃得多、宽度反而回到装得下的范围 */
+  .tl.c3{ grid-template-columns:190px repeat(3, 1fr); max-width:none; overflow:visible; }
+  .tl.c3 > .tlhd:first-child, .tl.c3 > .tlc.lb{
+    position:sticky; left:0; z-index:3; box-shadow:7px 0 9px -7px rgba(13,13,13,.16);
+    border-left:2px solid var(--tl-line-2); }
+  .tl.c3{ border-left:none; }
+  .tl.c3 > .tlhd:first-child{ border-radius:12px 0 0 0; }
+  .tl.c3 > .tlc.lb.lastrow{ border-radius:0 0 0 12px; }
+  /* 行标签的第二行小字：区分同名的两行「Radix Tree」。
+     比上面那行小两号就够分出主次了，再小录屏里读不出来 */
+  .lb2{ display:block; margin-top:3px; font-size:14px; font-weight:700; color:var(--dim);
+        letter-spacing:0; }
+  /* 匹配到的那串槽位下标。margin-top:auto 把它顶到格子底部——三棵树高矮不一，
+     不压到底的话三行 value 会各停在各自树的下沿，参差不齐 */
+  .tline.mv{ margin-top:auto; padding-top:12px; font-size:13.5px; }
+  /* 1303px = Tab1 那张白卡（.panel width:max-content）量出来的宽度。
+     推演表的 max-content 是 1770，比它宽出一截，两屏切过来边框会往外扩一圈，
+     录屏上像换了个版心。所以把可视宽度钉到跟 Tab1 一样，超出的两列横向滚出来看。
+     写死数字而不是 fit-content 之类：Tab1 那张卡是内容撑的，跨屏对齐只能靠量。 */
+  .tlscroll{ width:100%; max-width:1303px; margin:0 auto;
+             overflow-x:auto; overflow-y:hidden; padding-bottom:6px; }
+  /* 表格比容器窄时居中，宽时 auto 退化成 0 靠左——正好是横滚需要的起点 */
+  .tlscroll .tl{ margin-left:auto; margin-right:auto; }
+  /* macOS 默认是浮层滚动条，不滚就整个看不见，右边界只剩一刀切掉的半个格子——
+     像渲染坏了，而不是「右边还有」。::-webkit-scrollbar 在无头/Safari 下不一定认，
+     所以改用一条渐隐：右边还没滚到头就挂 .fr，最后 64px 淡出去，明示还有内容。
+     只做右边不做左边——左边永远钉着标签列，本来就看得出是起点，
+     再淡一道会把标签列的左边框吃掉，反而像缺了一块。 */
+  .tlscroll.fr{ -webkit-mask-image:linear-gradient(to right, #000 calc(100% - 64px), transparent);
+                        mask-image:linear-gradient(to right, #000 calc(100% - 64px), transparent); }
+  /* 屏够宽就整张摊开，别再滚 —— 滚是窄屏的补偿，不是这张表想要的看法。
+     1860 = 表格 max-content 1770 + .slide 左右各 42 的内边距，再留 6px 防亚像素；
+     低于这个数一律退回 Tab1 的版心 1303，而不是「能露多少露多少」：
+     中间那段（1387~1860）宽度会跟着窗口一格一格变，切 tab 时版心跳来跳去更难看。
+     .fr 的渐隐靠 JS 量 scrollWidth 判断，这里摊开后滚不动了，它自己就不挂了。 */
+  @media (min-width:1860px){ .tlscroll{ max-width:none; } }
+  /* 横滚到第四列时，行标签必须还在——否则不知道自己在看哪一行 */
+  .tl.c4 > .tlhd:first-child, .tl.c4 > .tlc.lb{
+    position:sticky; left:0; z-index:3; box-shadow:7px 0 9px -7px rgba(13,13,13,.16); }
+  .tl.c4 > .tlhd:first-child{ border-radius:12px 0 0 0; }
+  .tl.c4 > .tlc.lb.lastrow{ border-radius:0 0 0 12px; }
+  /* 左边框从 .tl 挪到标签列自己身上：.tl 的边框是跟着滚的，滚到底那条线就跑没了，
+     钉住的标签列左边会变成一条没有边界的悬空色块 */
+  .tl.c4{ border-left:none; }
+  .tl.c4 > .tlhd:first-child, .tl.c4 > .tlc.lb{ border-left:2px solid var(--tl-line-2); }
+  /* 这一屏要用满整个 slide 的宽度，不受 .wrap 的 1760 限制 */
+  .wrap.wide{ max-width:100%; }
+  /* sp2 那一行只有 2 个格子，上面那条"最后三个去掉下边框"的规则会误伤，单独兜底 */
+  .tl > .tlc.lastrow{ border-bottom:none; }
+
+  /* ── 推演表里的紧凑变体 ──
+     号码池和徽章原本是给整屏大图用的，塞进表格要收窄，否则一行 11 个号码撑爆单元格 */
+  .tl .fqn{ min-width:auto; height:30px; padding:0 10px; font-size:14px; }
+  .tl .fqlk{ width:10px; flex:0 0 10px; }
+  .tl .fqgrp{ padding:7px 7px; margin:0 4px; }
+  .tl .fqell{ width:26px; font-size:14px; }
+  /* 闸门标签（↑ alloc(n) / ↓ free(...)）挂在 .fqgrp 的 top:-20px 上，而 .tlc 只有 13px 内边距，
+     不给 .fq 加这段上边距的话，标签会翻出单元格、正好压在行的上边框线上 */
+  .tl .fq{ margin-top:14px; }
+  /* 同一格里上下叠两条号码池（先 free 回来、再 alloc 出去）时，第二条要留出更大的空档，
+     否则标签压到上一条号码头上 */
+  .tl .fq + .fq{ margin-top:28px; }
+  .tl .pf{ min-width:76px; font-size:12px; padding:5px 8px; }
+  .tl .pfrow{ gap:7px; flex-wrap:wrap; }
+  /* 推演表里的树：和 Tab1 同一套画法（renderTree + 胶囊节点 + token 段挂在边上），
+     只是尺寸收一号才塞得进单元格 */
+  .tl .rtchip{ font-size:16px; padding:7px 17px; }
+  .tl .segbox{ padding:4px; gap:5px; }
+  .tl .segbox .tkc{ height:28px; font-size:13.5px; padding:0 8px; }
+  .tl .rtdot{ font-size:12px; padding:1px 5px; }
+  /* 叶子底下的 last_access 标注。只写「时刻 N」不写字段名：三片叶子挤在一个格子里，
+     叶距只有 138~162px，带上 last_access = 的话字号一大两个相邻标注就叠上了。
+     现在只剩三个字，15px 也就 50px 宽，录屏里读得清，也撞不着隔壁。 */
+  .tl .rtnote{ font-size:15px; line-height:1.35; padding:1px 5px; }
+  /* 被请求锁住的节点：绿圈。原来在旁边写 lock_ref:1，会和兄弟节点的胶囊撞上，
+     改成描边 + 树底下一句图例，既不占宽度也不会打架 */
+  /* 绿圈 = 这条路径是这次命中的。.hitp（match_prefix 走过的路）和 .lockd（inc_lock_ref 锁住的路）
+     画法一样，因为源码里它俩就是同一条路径：先 match 出来，紧接着就把这条路径锁上 */
+  .rtchip.lockd, .rtchip.hitp{ border-color:var(--hit-line); box-shadow:0 0 0 3px var(--hit-soft); }
+  /* .pfx = 公共前缀节点（last_node）。节点本身保持原样（琥珀描边款，不换色也不填实），
+     只在外面套一圈【加粗虚线】——深琥珀实色、3px，offset 拉开一点。
+     全 deck 只有这一个记号是「框在外面」的，形状上就和所有节点区分开了，
+     不用靠颜色去抢，也就不会跟 .fs（实心琥珀 = 新建节点）撞在一起。
+     Tab4 那屏用「← 公共前缀节点」把这个记号教给观众，Tab6 就只用记号不再写字 */
+  .rtchip.pfx{ outline:3px dashed var(--slot); outline-offset:4px; }
+  /* Tab6 下半行：这一刻 insert 新挂上去的【一条边 + 一枚节点】整个框起来。
+     .fs 只标得住节点，可 insert 真正添进树里的是「一段 token + 它的槽位」一整条边，
+     不把边圈进去，上下两行一对照只能看出多了个胶囊，看不出多了哪一段 token。
+     和上半行的 .pfx 都是琥珀虚线，但两者读起来不会撞：.pfx 是紧贴胶囊的一圈描边、无填充，
+     这个是跨了边和节点的一大块、带浅琥珀底——尺度和填充都不一样。
+     盒子由 drawInsMarks 量完 DOM 现画：标签多宽、节点落在哪，排版完才知道，算不出来 */
+  .rt .nwbox{ position:absolute; border:2px dashed var(--slot); border-radius:14px;
+              background:rgba(176,111,22,.07); pointer-events:none; }
+  /* evictable_leaves 的成员（Tab5）。同样是虚线外圈，但【换个颜色】和 .pfx 分开：
+     红 = 淘汰，和 GPU KV slot 那行的 .stale、事件行的 MISS 是同一套语义色。
+     一个记号一个含义是全 deck 的硬规矩，所以这里不能图省事复用 .pfx 的琥珀。 */
+  /* 这圈没有屏上图例，含义全靠口播点一句：顶上的副标题里已经有 evictable_leaves
+     这个词，口播说「画了虚线圈的这三枚就是它的成员」就接得上 */
+  .rtchip.evc{ outline:2px dashed var(--miss); outline-offset:3px; }
+  /* 被淘汰掉的那个节点：整条边连节点一起褪灰、划掉 */
+  .segbox.gone{ opacity:.4; }
+  .rtchip.gone{ opacity:.4; text-decoration:line-through; border-style:dashed; }
+  .rtdot.ev{ color:var(--miss); font-weight:800; }
+  .tl .treetxt{ font-size:13.5px; line-height:1.7; }
+  /* 树下面挂的那条 evictable_leaves，和树拉开一点 */
+  .tl .treetxt + .tline{ margin-top:9px; }
+  /* 事件行：request[i] = 后面跟一排 token 药丸 */
+  .evrow{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  .evlbl{ font-family:var(--mono); font-size:14px; font-weight:800; color:var(--muted);
+          margin-right:3px; white-space:nowrap; }
+  /* 请求药丸直接放进副标题那一行，省掉表里一整行「事件」 */
+  .evsub{ display:flex; align-items:center; justify-content:center; gap:6px; flex-wrap:wrap; }
+  .evsub .sx{ margin-left:14px; }
+  /* 树和它的说明并排——单元格横跨两列时右边空得很，竖着堆纯属浪费高度 */
+  .twrap{ display:flex; align-items:center; justify-content:center; gap:34px; }
+  .tnote{ max-width:430px; text-align:left; font-size:13.5px; line-height:1.65; color:var(--muted); }
+  .tnote > div + div{ margin-top:9px; }
+  .tnote b{ color:var(--ink); font-weight:700; }
+  .tnote .hh{ color:var(--hit); font-weight:800; }
+  .tnote .m{ color:var(--miss); font-weight:800; }
+  .evlbl b{ font-weight:800; }
+  .tl .ptk{ height:28px; font-size:14px; padding:0 8px; }
+
+  /* ── 物理槽位条 ──
+     Tab1 右边那列「物理 GPU 槽位」躺平成一行，11 格，位置永远不动——
+     全表唯一一行几何形状恒定的，当锚点用。格子颜色跟着树上那条边走：
+     树一分裂，这一行重新分组，但装的 token 一个都没换位置，一眼看出「切的是下标不是 KV」。 */
+  /* 十一个格子【贴在一起】连成一整块数组，正好对上 Tab2 里 k_buffer 那个大数组的画法：
+     靠 margin-left:-1px 压掉相邻边框，只有两端留圆角。
+     分开画（gap:3px + 47px 宽）时这一行 547px，是整张表最宽的一格，两列等宽被它顶到 1430。
+
+     这一行【不跟着树上的段色走】。显存的行号不归任何节点所有，按节点上色等于把
+     「槽位是 token 的属性」这个错觉画了出来，正好和本期的论点相反。段色留给树和事件行，
+     这一行只管「哪一格装着什么、空没空」。
+
+     底色走中性灰（原来是琥珀）：物理显存是个【容器】，不是一个值，让它退成安静的底板，
+     上面那行 free_pages 的琥珀号码牌和这一行里红色的 .fresh 才跳得出来。
+     代价是「free_pages 的 6、7」和「slot 里的 6、7 号格」不再靠同色连起来——
+     那条线索改由格子里的编号和口播接上。
+     .fresh / .stale / .nil 三个状态各自覆盖了 color/border-color/background，不受这里影响。 */
+  .kvs{ display:flex; }
+  .kvc{ width:40px; height:44px; display:flex; flex-direction:column;
+        align-items:center; justify-content:center; gap:1px; border-radius:0; margin-left:-1px;
+        font-size:12px; font-weight:700; white-space:nowrap;
+        color:var(--muted); border:1px solid var(--line-2);
+        background:var(--card-2); }
+  .kvc:first-child{ margin-left:0; border-radius:5px 0 0 5px; }
+  .kvc:last-child{ border-radius:0 5px 5px 0; }
+  .kvc i{ font-style:normal; font-family:var(--mono); font-size:9.5px; font-weight:700;
+          color:var(--dim); opacity:.62; line-height:1; }
+  .kvc.nil{ border-style:dashed; border-color:var(--line-2); background:var(--card); color:var(--dim); }
+  /* free() 只把号码 torch.cat 回队尾，k_buffer 一个字节都没动——
+     旧 token 还原样躺在格子里，只是树上再没人指向它了 */
+  .kvc.stale{ border-style:dashed; border-color:var(--line-2); background:var(--card);
+              color:var(--dim); text-decoration:line-through; }
+  .kvc.stale i{ text-decoration:none; }
+  /* 刚被转手的那一格：全片最值钱的一格，得能一眼找到 */
+  .kvc.fresh{ color:var(--miss); border-color:var(--miss); background:var(--card);
+              box-shadow:0 0 0 3px var(--miss-soft); }
+  /* 格子贴在一起之后，外扩的 box-shadow 会被右边那格盖住半圈，抬一层 */
+  .kvc.fresh{ position:relative; z-index:1; }
+  .kvc.fresh i{ color:var(--miss); }
+
+  /* 推演两屏原来还有一行 evictable_leaves，把树上的叶子单独列成一个集合。
+     现在改成把 last_access 直接标在树上的叶子底下（见 .tl .rtnote），那一行整个撤了——
+     集合成员和它们的新旧在同一棵树上一次看完，不用上下两行来回对。
+     .lfp 本身还留着：Tab3 那个字段框里 children/parent 的值也用它。 */
+
+  /* 空树那一格 */
+  .treetxt .m{ color:var(--miss); font-weight:800; }
+  .treetxt .h{ color:var(--hit);  font-weight:800; }
+
+  /* evictable / protected 双计数条 */
+
+  /* Tab4「插入节点」：三张 Tab1 风格的树横着排，中间两个箭头 = 插入的三步 */
+  /* 卡片按内容收（.bacol 不是 flex:1），整排居中；width:max-content 让这一排
+     只占三棵树实际需要的宽度，不会被 .wrap 的 1760px 硬拉开、中间空出两道大缝 */
+  .ba{ display:flex; align-items:stretch; justify-content:center; gap:14px;
+       width:max-content; max-width:100%; margin:0 auto; }
+  .bacol{ display:flex; flex-direction:column; align-items:center; gap:10px;
+          border:1px solid var(--line-2); border-radius:14px; background:var(--card);
+          padding:14px 18px 18px; }
+  .ba .baarrow{ align-self:center; }
+  /* flex:1 —— 两个卡片等高，矮的那棵树在自己卡片里竖直居中，不留一块死白 */
+  .bastage{ flex:1; display:flex; align-items:center; justify-content:center; }
+  /* 这屏的横排标注是主角（「新建节点」「公共前缀节点」），比别处的 .rtdot 大一号 */
+  .bastage .rtdot{ font-size:15.5px; }
+  /* 粗箭头，照 078 的画法：一根粗轴 + 一个三角头 */
+  .baarrow{ flex:0 0 auto; display:block; align-self:center; }
+  /* 插入屏：卡片顶上一行小标题 + 树底下三行步骤 */
+  .bacap{ align-self:flex-start; font-size:15px; font-weight:800; color:var(--ink); }
+  .bacap .n{ color:var(--node); font-family:var(--mono); margin-right:5px; }
+
+  /* 推演那三屏内容高，超过 1080 就让 .slide 自己滚（滚动安全三件套本来就在）。
+     不为了塞进一屏去压层高和字号——压完就糊成一团了。 */
+  .simwrap{ gap:18px; }
+
+  .two-col{ display:flex; gap:28px; align-items:flex-start; justify-content:center; }
+  .col-v{ display:flex; flex-direction:column; gap:14px; align-items:center; }
+
+  /* ═══ Tab3 下半屏：树 + 从某一枚节点「放大」出来的字段框 ═══ */
+  .nvcol{ display:flex; flex-direction:column; gap:10px; align-items:stretch;
+          width:max-content; max-width:100%; margin:0 auto; }
+  .nvcard{ border:1px solid var(--line-2); border-radius:14px;
+           background:var(--card); padding:16px 24px; }
+  /* position:relative —— 斜线的 SVG 绝对定位在这张卡里，坐标都相对它算 */
+  .nvfig{ position:relative; display:flex; align-items:center; gap:88px; }
+  /* 斜线画在最底层：从节点胶囊背后穿出来，视觉上就是「从它身上拉出去的」 */
+  .nvsvg{ position:absolute; left:0; top:0; z-index:0; pointer-events:none; }
+  /* 楔形填一层极淡的琥珀（比框底还淡），只负责把两条线之间「连成一片」，不抢眼 */
+  .nvwedge{ fill:rgba(176,111,22,.055); }
+  .nvray{ stroke:var(--slot-line); stroke-width:1.5; stroke-dasharray:6 4; }
+  .nvstage{ position:relative; z-index:1; display:flex; align-items:center; justify-content:center; }
+  /* 放大出来的那个框：琥珀描边 + 极淡琥珀底，和被放大的那枚节点同色系，
+     一眼看得出「这框讲的是那枚琥珀胶囊」 */
+  .nvbox{ position:relative; z-index:1; display:flex; flex-direction:column;
+          border:1.5px solid var(--slot-line); border-radius:14px;
+          background:linear-gradient(rgba(176,111,22,.045),rgba(176,111,22,.045)), var(--card);
+          padding:6px 22px; }
+  .nvr{ display:flex; align-items:center; gap:16px; padding:10px 0;
+        border-top:1px dashed var(--line-2); }
+  .nvr:first-child{ border-top:none; }
+  /* 字段名在自己那一列里居中，四个名字长短不一也不会左右乱跳；值的左边缘照样齐。
+     字号【压在值之下】：这框是给字段值当容器的，字大了就喧宾夺主 */
+  .nvk{ flex:0 0 88px; text-align:center; font-family:var(--mono);
+        font-size:13.5px; font-weight:800; letter-spacing:-.2px; }
+  /* 字段配色跟源码框里那套一一对应，只是换成浅底能看清的深色版 */
+  .nvk.fp{ color:var(--muted); }   /* children / parent —— 撑起树形状的指针 */
+  .nvk.fk{ color:var(--node); }    /* key —— token 段 */
+  .nvk.fv{ color:var(--slot); }    /* value —— 槽位下标 */
+  /* 【不要】用 flex 排这一格：逗号、括号都会变成独立的 flex item，被 gap 顶开，
+     读起来是「[ 我的 , 代码 ]」而不是「[我的, 代码]」。用普通行内流 + vertical-align 对齐。
+     text-align:left 必须写死：.wrap 是 text-align:center，不覆盖的话 children
+     那两行会各自居中，两个箭头就对不齐了 */
+  .nvv{ font-family:var(--mono); font-size:14px; font-weight:700;
+        color:var(--ink); line-height:1.8; text-align:left; }
+  /* 全局的 .sl 是个槽位 chip（30px 高、有边框有底色），套进 tensor([...]) 里
+     会把两个数字撑成一个方块，抢掉整行的注意力。这儿只要「琥珀色的数字」，
+     所以把 chip 那套外观全部还原成纯文字 */
+  .nvv .sl{ display:inline; min-width:0; height:auto; padding:0; border:none;
+            background:none; font-size:inherit; color:var(--slot); font-weight:800; }
+  /* children 的两个 entry 各占一行，字段名只写一次。
+     用 3 列 grid 不用 flex 换行：「会」一个字、「这么」两个字，纯文字流会让两个箭头
+     错开半个字，一眼就看得出没对齐。grid 让 token / 箭头 / 胶囊各自成列，天然对齐 */
+  .nvmap{ display:inline-grid; grid-template-columns:repeat(3, max-content);
+          gap:7px 8px; align-items:center; justify-items:start; }
+  .nvmap .ar{ color:var(--dim); font-weight:600; }
+  /* 框里的槽位胶囊比树上的小两号：它是「值」，不该比树上的节点还抢眼 */
+  .nvbox .lfp{ font-size:13px; padding:4px 11px; vertical-align:middle; }
+  /* 行内的 token：和树上那些方角小框同一个样子，只是压扁塞进一行。
+     段色跟树上【一一对应】（会=sg3 绿、这么=sg4 灰、我的代码=sg2 蓝），
+     两边扫一眼就能对上号——这正是这半屏要做的事 */
+  .tkm{ display:inline-flex; align-items:center; justify-content:center;
+        height:24px; padding:0 8px; font-family:var(--sans); font-size:12.5px;
+        font-weight:700; white-space:nowrap; border-radius:5px; vertical-align:middle;
+        border:1px solid var(--line-3); background:var(--card-2); color:var(--ink); }
+  .tkm.sg1, .tkm.sg2, .tkm.sg3, .tkm.sg4, .tkm.sg5{
+    color:#fff; background:rgb(var(--sg)); border-color:rgb(var(--sg)); }
+
+  /* ═══ Tab1：概念图 —— 三条提示词合并成一棵树 ═══ */
+  /* token 分格的段：一个框 = 树上一个节点，框内竖虚线分隔的是一个个 token */
+  /* 一个 token = 一个独立小框（074 Tab4 的 pill 画法），外面那圈虚线
+     = 这些 token 同属一条边、也就是同一个 TreeNode.key */
+  .segbox{ display:inline-flex; gap:5px; padding:5px; border-radius:10px; border:1.5px dashed; }
+  .segbox .tkc{ padding:0 9px; height:32px; display:flex; align-items:center; justify-content:center;
+                font-size:15px; font-weight:700; white-space:nowrap;
+                border:1px solid; border-radius:6px; background:var(--card-2); }
+  /* 外圈垫白底（不透明），否则树上的斜边会从标签底下透出来；里面的格子用浅灰，才分得清 */
+  .segbox.uq{ border-color:var(--line-3); color:var(--ink); background:var(--card); }
+  .segbox.uq .tkc{ border-color:var(--line-3); }
+  /* 一个 token 段 = 一个颜色：左边提示词里和树上那条边用同一个色，肉眼就能把两边连起来 */
+  /* 五个色直接用 078 Tab2 那套矩阵色（Q紫 K蓝 V橙 score灰 out绿），彼此隔得远，
+     不靠色相的细微差别区分；再按「树上相邻的两条边差别最大」分配到各段 */
+  .sg1{ --sg:124,92,240; }    /* 为什么   紫 */
+  .sg2{ --sg:14,143,212; }    /* 我的代码 蓝 */
+  .sg3{ --sg:16,163,127; }    /* 会报错   绿 */
+  .sg4{ --sg:107,114,128; }   /* 这么慢   灰 */
+  .sg5{ --sg:226,105,27; }    /* 显存段   橙 */
+  /* 实色底 + 白字，照 078 那边矩阵格子的画法 */
+  .ptk.sg1, .ptk.sg2, .ptk.sg3, .ptk.sg4, .ptk.sg5,
+  .segbox.sg1 .tkc, .segbox.sg2 .tkc, .segbox.sg3 .tkc, .segbox.sg4 .tkc, .segbox.sg5 .tkc{
+    color:#fff; background:rgb(var(--sg)); border-color:rgb(var(--sg)); }
+  /* 外圈仍要不透明白底，挡住从标签底下穿过去的斜边 */
+  .segbox.sg1, .segbox.sg2, .segbox.sg3, .segbox.sg4, .segbox.sg5{
+    border-color:rgba(var(--sg),.50); background:var(--card); }
+  .segbox.lockd, .segbox.hitp{ border-color:var(--hit-line); color:var(--hit);
+                 background:linear-gradient(var(--hit-soft),var(--hit-soft)), var(--card); }
+  .segbox.lockd .tkc{ border-color:var(--hit-line); background:var(--card); }
+  /* 命中的那几个 token 涂实绿；.lockd 只描边不涂，因为那屏要保留段色 */
+  .segbox.hitp .tkc{ color:#fff; background:var(--hit); border-color:var(--hit); }
+  /* 动画/lock_ref 用的 mono 标签自带尺寸，不跟着上面中文标签走 */
+  .segbox.mono .tkc{ font-family:var(--mono); font-size:14.5px; padding:0 7px; height:32px; }
+  /* kv 变体：上行 token（key），下行槽位（value）——逐位对齐直接画出来 */
+  .segbox.kv .tkc{ flex-direction:column; gap:0; height:36px; }
+  .segbox.kv .tkc i{ font-style:normal; font-size:11.5px; font-weight:700; color:var(--slot); }
+  .segbox.newn{ box-shadow:0 0 0 4px rgba(124,92,255,.18); }
+  .segbox.chgd{ box-shadow:0 0 0 4px rgba(176,111,22,.20); border-color:var(--slot-line); }
+  /* 一条边上「刀要落在哪儿」：夹在两个 token 之间的一道竖虚线。
+     零宽度，靠 border-left 画线，align-self:stretch 让它跟 token 框一样高。
+     左右 margin 把 .segbox 的 gap:5px 匀过来，线正好落在两格正中间。
+
+     这道线是这一屏的主角（split_len 落点），所以不能只是「一条细虚线」：
+     - 3px：边框越粗虚线段越长，节奏也就越明显，2px 在一堆 1px token 框线里会被读成边框；
+     - 上下 -13px：伸出 .segbox 的外框（padding 5 + border 1.5）约 6px，
+       看起来是【穿过】这个标签切下去，而不是夹在两格中间的一根装饰线；
+     - drop-shadow 的红晕：标签底色是白的，光靠深红还是平的，加一层晕才跳出来。 */
+  .cutm{ width:0; align-self:stretch; margin:-13px 3px;
+         border-left:3px dashed var(--miss);
+         filter:drop-shadow(0 0 3px rgba(214,69,69,.55)); }
+
+  /* 左边只是三串 token，不分组——「哪几个 token 归一条边」是右边那棵树才回答的事。
+     整块用 grid，五个 token 各占一列，三行自动对齐，横着比一眼看出哪里开始不一样。 */
+  .pml{ display:grid; grid-template-columns:auto repeat(5, auto); gap:11px 6px;
+        align-items:center; width:max-content; margin:0 auto; }
+  .pmrow{ display:contents; }
+  .pmlbl{ text-align:right; padding-right:8px; font-size:15px; font-weight:800; color:var(--muted); }
+  /* 左边一律中性色——「哪几个 token 是重复的」留给右边的树去回答，不在这儿先剧透 */
+  .ptk{ padding:0 9px; height:32px; display:flex; align-items:center; justify-content:center;
+        font-size:15px; font-weight:700; white-space:nowrap; border-radius:6px;
+        border:1px solid var(--line-3); background:var(--card-2); color:var(--ink); }
+  /* Tab4 顶上那行「新进来的提示词」：复用 .ptk，一律中性色——
+     哪几个 token 能复用是下面三张图回答的事，这儿先不剧透（跟 Tab1 左栏一个规矩） */
+  .inq{ display:flex; align-items:center; gap:6px; width:max-content; margin:0 auto; }
+  .inqlbl{ font-size:15px; font-weight:800; color:var(--muted); margin-right:8px; }
+  /* 物理 KV slot：格子连成一列（边框靠 -1px 压在一起，像一整块数组），左边一个文字标识。
+     这里只给编号和 token，真正的形状（L 层 × k_buffer/v_buffer）留到下一屏 */
+  /* 树和槽位同在一张卡里，连线 SVG 是卡里第一个子元素——所以线画在标签和圆圈【底下】，
+     穿过树的那一小段自然被挡住，读起来就是「从后面绕过去」 */
+  .treemap{ position:relative; display:flex; align-items:center; gap:4px; }
+  /* 两栏拉成等高，标题顶对齐（否则高的那栏被整体居中，两个标题会错开一截），
+     标题底下的内容再在剩下的空间里居中，矮的那栏就不会贴着标题吊在上面 */
+  .tmcol{ display:flex; flex-direction:column; align-items:center; gap:14px;
+          align-self:stretch; justify-content:flex-start; }
+  .tmcol > :last-child{ margin-block:auto; }
+  .tmcol.slots{ margin-left:134px; }   /* 树到槽位列之间留出走线的地方 */
+  /* 箭头右移到空白的正中间：树的上半部分是窄的，在箭头那个高度上右边其实空出一大块。
+     用 relative 位移，不影响 flex 的排布 */
+  .treemap .merge{ position:relative; left:58px; }
+  .tmttl{ font-size:19px; font-weight:800; color:var(--ink); letter-spacing:.2px; }
+  .mapsvg{ position:absolute; left:0; top:0; overflow:visible; pointer-events:none; }
+  .mapsvg path.mw{ fill:none; stroke:var(--slot-line); stroke-width:1.5; }
+  .mapsvg marker path{ fill:var(--slot-line); stroke:none; }
+
+  .ggrid{ display:flex; flex-direction:column; }
+  .grow{ display:flex; align-items:center; }
+  /* 宽度要装得下最长的「slot 11」，否则短的宽的两种编号离格子的距离不一样 */
+  .grow .glab{ flex:0 0 auto; width:88px; text-align:right; padding-right:22px; white-space:nowrap;
+               font-family:var(--mono); font-size:14.5px; font-weight:700; color:var(--ink); }
+  .gcell2{ width:98px; height:38px; display:flex; align-items:center; justify-content:center;
+           font-size:15.5px; font-weight:700; color:var(--slot); margin-top:-1px;
+           border:1px solid var(--slot-line);
+           background:linear-gradient(var(--slot-soft),var(--slot-soft)), var(--card); }
+  .gcell2.pad{ font-family:var(--mono); font-size:12px; color:var(--dim);
+               border-color:var(--line-2); background:var(--card-2); }
+
+  .merge{ display:flex; flex-direction:column; align-items:center; gap:2px; flex:0 0 auto; }
+  .merge .ar{ font-size:38px; color:var(--accent); line-height:1; }
+  .merge .tx{ font-size:15px; font-weight:700; color:var(--accent); }
+
+  /* ═══ radix tree ═══
+     斜边 + 圆圈节点（维基那张经典画法）。线和圈用 SVG，标签用 HTML 压在线段中点。
+     token 段挂在【边】上，节点只是【圈】——TreeNode.key 存的就是「这条边上的 token 段」。
+     坐标由 JS 的 renderTree() 算好，不依赖布局测量，隐藏的 slide 里也能正确渲染。 */
+  .rt{ position:relative; margin:0 auto; }
+  .rtsvg{ position:absolute; left:0; top:0; overflow:visible; }
+  .rtsvg line{ stroke:var(--arrow); stroke-width:2; }
+  .rtsvg circle{ fill:var(--card); stroke:var(--ink); stroke-width:2.5; }
+  .rtlbl{ position:absolute; }
+  .rtlbl.c{ transform:translate(-50%,-50%); }  /* 竖边：正中压线 */
+  .rtlbl.l{ transform:translate(-75%,-50%); }  /* 往左斜的边：往左让 1/4 身位，线仍被盖住 */
+  .rtlbl.r{ transform:translate(-25%,-50%); }  /* 往右斜的边：往右让 1/4 身位 */
+  /* 文字注解也要垫底，否则斜边会从字中间穿过去 */
+  .rtdot{ position:absolute; transform:translateY(-50%); font-family:var(--mono);
+          font-size:12.5px; font-weight:700; color:var(--dim); white-space:nowrap;
+          background:var(--card); padding:2px 5px; border-radius:5px; }
+  .rtdot.lk{ color:var(--hit); }
+  .rtdot.sc{ color:var(--slot); }
+  /* 挂在节点左边（dotSide:'l'）。分叉的左边那个叶子，标注往右写会撞上右边的兄弟节点 */
+  .rtdot.lft{ transform:translate(-100%,-50%); }
+  /* new_node 用实心琥珀，跟描边版的 child 拉开「新建 / 原有」的差别 */
+  .rtchip.fs{ color:#fff; border-color:var(--slot); background:var(--slot); }
+  /* 节点不画圈，直接画成一个列表框——框里就是 TreeNode.value，它那段 token 占的槽位。
+     .lfp（evictable_leaves 的成员）共用这条声明：集合里装的就是 TreeNode，
+     画法必须和树上的节点【一模一样】，否则观众建立不起「这是节点」的认知。
+     两者只在定位方式上分开，外观永远同一份，不会各自漂移。 */
+  .rtchip, .lfp{ font-family:var(--mono); font-size:18px; font-weight:800; letter-spacing:-.2px;
+           /* 胶囊形：跟 token 的方角小框拉开形状差别，一眼分得清哪个是节点 */
+           white-space:nowrap; padding:9px 22px; border-radius:999px;
+           color:var(--slot); border:1.5px solid var(--slot-line);
+           background:linear-gradient(var(--slot-soft),var(--slot-soft)), var(--card); }
+  .rtchip{ position:absolute; transform:translate(-50%,-50%); }
+  .lfp{ display:inline-flex; align-items:center; }
+  .rtchip.rt0{ color:var(--dim); border-color:var(--line-2); background:var(--card-2); }
+  .rtnote{ position:absolute; transform:translate(-50%,0); font-size:12.5px;
+           white-space:nowrap; color:var(--dim);
+           background:var(--card); padding:2px 6px; border-radius:5px; }
+  .rtnote.ec{ color:var(--hit); font-weight:700; }
+  .rtnote.ev{ color:var(--miss); font-weight:800; }
+  /* 「淘汰节点」那屏的 last_access 是本屏的主角（堆的键），录屏时要一眼读到，
+     所以只把这棵树的标注放大，别的树的标注还是 12.5px。 */
+  #lk-tree .rtnote{ font-size:15.5px; }
+</style>
+</head>
+<body>
+<div class="deck">
+
+  <div class="topbar">
+    <div class="brand"><span class="ttl"><b>RadixAttention</b>：SGLang 的核心注意力机制</span></div>
+    <nav class="tabs">
+      <button class="tab active" data-i="0">RadixTree</button>
+      <button class="tab" data-i="1">物理 KV 池</button>
+      <button class="tab" data-i="2">TreeNode</button>
+      <button class="tab" data-i="3">插入节点</button>
+      <button class="tab" data-i="4">淘汰节点</button>
+      <button class="tab" data-i="5">完整流程</button>
+      <button class="tab" data-i="6">触发删除</button>
+    </nav>
+  </div>
+
+  <div class="stage">
+
+    <!-- ═════════ TAB 1 · RadixTree（074 已铺过共享前缀，本期直接从树开始） ═════════ -->
+    <section class="slide active">
+      <div class="wrap">
+        <div class="head"><span class="hl">Radix Tree</span>：每条边代表<span class="hl">一连串 token</span> 的前缀树</div>
+        <div class="sub">把 KV Cache 缓存在一棵 Radix Tree 里，前缀相同的请求直接复用算好的结果，不用重算</div>
+
+        <!-- 提示词、树、槽位同在一张白卡里——它们是一件事的三个阶段，不该被切成几个块 -->
+        <div class="panel" style="width:max-content; margin:0 auto">
+          <div class="pbody" style="padding:20px 28px">
+            <div class="treemap" id="treemap">
+              <svg class="mapsvg" id="mapsvg"></svg>
+
+              <div class="pml">
+                <div class="pmrow">
+                  <span class="pmlbl">提示词 1</span>
+                  <span class="ptk sg1">为什么</span><span class="ptk sg2">我的</span><span class="ptk sg2">代码</span>
+                  <span class="ptk sg3">会</span><span class="ptk sg3">报错</span>
+                </div>
+                <div class="pmrow">
+                  <span class="pmlbl">提示词 2</span>
+                  <span class="ptk sg1">为什么</span>
+                  <span class="ptk sg5">显存</span><span class="ptk sg5">老是</span><span class="ptk sg5">不够</span><span class="ptk sg5">用</span>
+
+                </div>
+                <div class="pmrow">
+                  <span class="pmlbl">提示词 3</span>
+                  <span class="ptk sg1">为什么</span><span class="ptk sg2">我的</span><span class="ptk sg2">代码</span>
+                  <span class="ptk sg4">这么</span><span class="ptk sg4">慢</span>
+                </div>
+              </div>
+
+              <div class="merge"><span class="ar">⇨</span></div>
+
+              <div class="tmcol">
+                <div class="tmttl">Radix Tree</div>
+                <div id="tree-concept"></div>
+              </div>
+              <!-- 槽位号严格连续。请求的到达顺序挑成这样，好让五根连线互不交叉 -->
+              <div class="tmcol slots">
+                <div class="tmttl">物理 GPU 槽位</div>
+                <div class="ggrid">
+                <div class="grow"><div class="glab">slot 1</div><div class="gcell2" id="s1">为什么</div></div>
+                <div class="grow"><div class="glab">slot 2</div><div class="gcell2" id="s2">我的</div></div>
+                <div class="grow"><div class="glab">slot 3</div><div class="gcell2" id="s3">代码</div></div>
+                <div class="grow"><div class="glab">slot 4</div><div class="gcell2" id="s4">会</div></div>
+                <div class="grow"><div class="glab">slot 5</div><div class="gcell2" id="s5">报错</div></div>
+                <div class="grow"><div class="glab">slot 6</div><div class="gcell2" id="s6">显存</div></div>
+                <div class="grow"><div class="glab">slot 7</div><div class="gcell2" id="s7">老是</div></div>
+                <div class="grow"><div class="glab">slot 8</div><div class="gcell2" id="s8">不够</div></div>
+                <div class="grow"><div class="glab">slot 9</div><div class="gcell2" id="s9">用</div></div>
+                <div class="grow"><div class="glab">slot 10</div><div class="gcell2" id="s10">这么</div></div>
+                <div class="grow"><div class="glab">slot 11</div><div class="gcell2" id="s11">慢</div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 这一屏的落点：上面那张图看完，观众该带走的就是这一句。和 Tab4 底下那条共用 .knote -->
+        <div class="knote">Radix Tree 负责<b>组织和复用提示词的前缀</b>，
+          公共前缀<b>只需要计算和缓存一次</b>，后面的请求<b>直接复用</b></div>
+
+      </div>
+    </section>
+
+    <!-- ═════════ TAB 2 · 物理 KV 池 ═════════ -->
+    <section class="slide">
+      <div class="wrap">
+        <div class="head">SGLang 先把物理显存切成固定小块：<span class="hls">槽位</span></div>
+        <div class="sub">启动时一次性把剩余显存吃掉，建成固定形状的张量；每个槽位装 <b>1</b> 个 token 的 KV Cache</div>
+
+        <div style="width:100%">
+          <div>
+            <div class="pool2" id="pool2">
+              <svg class="poolsvg" id="poolsvg"></svg>
+
+              <div class="rowlbl">空闲号码池<br><span class="mn">free_pages</span></div>
+              <div class="typebox">
+                <div class="tbh">torch.arange(1, num_tokens)</div>
+                <div class="tbp">就建在显存里，<b>alloc()</b> 拿到转手就能拿去索引 <b>k_buffer</b>，不用在 CPU、GPU 之间搬。</div>
+              </div>
+              <div class="p2box cpubox">
+                <div class="cpurow">
+                  <div class="fq">
+                    <!-- 只有闸门里这两格挂 id：drawPoolLinks 是拿 fq1~fq3 去连下面的槽位的，
+                         没有 id 的那格自动跳过，所以「发出去几个就落几根虚线」不用改 JS -->
+                    <span class="fqgrp out" data-op="↑ alloc(2)">
+                      <span class="fqn take" id="fq1">1</span><span class="fqlk"></span>
+                      <span class="fqn take" id="fq2">2</span>
+                    </span>
+                    <span class="fqlk"></span><span class="fqn">3</span>
+                    <span class="fqell">⋯</span>
+                    <!-- 队尾这头：用完的号码 torch.cat 接回来，不是插队头。
+                         4、5 不出现在队头那几格——它俩正在被还回来，
+                         留在前面会变成「既在池子里又正在被还回来」。
+                         下面那摞板子里 4 号画的就是没上色的空格，正好和这儿对上：刚还回来 = 现在是空的。
+                         琥珀实心=发出去，绿=还回来，两头一眼分得开 -->
+                    <span class="fqgrp in" data-op="↓ free([4,5])">
+                      <span class="fqn back">4</span><span class="fqlk"></span>
+                      <span class="fqn back">5</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="stkcol"></div>
+              <div class="p2box gpubox" id="gpubox">
+                <div class="gpustack" id="gpustack"></div>
+                <div class="blkcap">一共 <span class="mn">num_tokens</span> 个物理槽位</div>
+                <svg class="blksvg" id="blksvg"></svg>
+                <svg class="lbrace" id="lbrace"></svg>
+                <div class="llbl" id="llbl"><span class="lln">L</span> 层</div>
+              </div>
+
+              <div class="zoombox">
+                <div class="zt">每个槽位在一层里都是一片 <b>K</b>、一片 <b>V</b> 的 <b>Tensor</b></div>
+                <div style="display:flex; flex-direction:column">
+                  <div class="ztensor k"><span class="zl">K</span>num_heads × head_dim</div>
+                  <div class="ztensor v"><span class="zl">V</span>num_heads × head_dim</div>
+                </div>
+                <div class="zshape">k_buffer.shape = [L, <span class="hi">num_tokens</span>, num_heads, head_dim]</div>
+              </div>
+            </div>
+
+            <div class="kvsum">
+              <span class="lbl">整个 KV Cache 显存占用 =</span>
+              <span class="expr">
+                <span class="two">2</span><span class="op">×</span>
+                <span class="L">L</span><span class="op">×</span>
+                <span class="nb">num_tokens</span><span class="op">×</span>
+                <span>num_heads</span><span class="op">×</span>
+                <span>head_dim</span>
+              </span>
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ═════════ TAB 3 · TreeNode ═════════ -->
+    <section class="slide">
+      <div class="wrap">
+        <div class="head">核心数据结构：<span class="hl">TreeNode</span></div>
+
+        <div class="two-col">
+
+          <div class="col-v">
+            <div class="cap-l"><span class="n">TreeNode</span>：树上的一个节点</div>
+            <div class="codebox">
+              <div class="cbar"><span class="d r"></span><span class="d y"></span><span class="d g"></span>
+                <span class="fname">radix_cache.py</span></div>
+<pre><span class="kw">class</span> <span class="cls">TreeNode</span>:
+    <span class="f-ptr">children</span> : defaultdict[int, <span class="cls">TreeNode</span>]
+    <span class="f-ptr">parent</span>   : <span class="cls">TreeNode</span>
+    <span class="f-key">key</span>      : <span class="cls">RadixKey</span>        <span class="cmt"># 这条边上的 token 段</span>
+    <span class="f-val">value</span>    : Tensor          <span class="cmt"># 对应的槽位下标</span>
+    <span class="f-time">last_access_time</span> : float   <span class="cmt"># 淘汰时按它排序</span></pre>
+            </div>
+          </div>
+
+          <div class="col-v">
+            <div class="cap-l"><span class="n">RadixKey</span>：每条边上的 token 列表</div>
+            <div class="codebox">
+              <div class="cbar"><span class="d r"></span><span class="d y"></span><span class="d g"></span>
+                <span class="fname">radix_cache.py</span></div>
+<pre><span class="kw">class</span> <span class="cls">RadixKey</span>:
+    <span class="f-key">token_ids</span> : list[int]     <span class="cmt"># token 序列</span>
+    <span class="f-dim">extra_key</span> : <span class="f-dim">str</span>           <span class="cmt"># LoRA id / cache salt</span></pre>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- 字段清单讲完，立刻拿一个【真实节点】把每个字段填满。
+             不另开一张值表——字段的值本来就是图上的东西（parent 是头上那枚，
+             children 是底下那两枚，key 是边上那段 token，value 是胶囊里那串数字），
+             拆成图+表两块，观众得来回对；直接把字段名标在它指的那个位置上，一张图就够。
+             ①「key 和 value 等长、逐位对齐」和 ②「children 的键是孩子那段 key 的第一个
+             token」这两条性质原来写成文字，现在从图上直接读出来——证据比结论好用。 -->
+        <div class="nvcol">
+          <!-- 放大镜式的引出：两条斜线从树上那枚 [2,3] 的上下角拉出去，撑开成右边那个框，
+               框里是它每个字段的值。斜线是 JS 量完 DOM 现画的（drawCallout），
+               跟 Tab1 的 drawSlotMap 一个路子——树和框都是 flex 排的，坐标只能量不能算。
+               这样「框里讲的就是树上那一枚」是画出来的，不靠文字说明。
+               框里的槽位胶囊和 token 小框跟树上同一套画法、同一套段色，能直接对上号。 -->
+          <div class="nvcard nvfig" id="nv-fig">
+            <svg class="nvsvg" id="nv-svg" aria-hidden="true"></svg>
+            <div class="nvstage" id="nv-tree"></div>
+            <div class="nvbox" id="nv-box">
+              <!-- children 两个 entry 各占一行、字段名只写一次：四行带大括号太散，
+                   挤成一行又读成一串符号；两行正好看得出「键 → 节点」是成对的两条 -->
+              <div class="nvr"><div class="nvk fp">children</div>
+                <div class="nvv nvmap">
+                  <span class="tkm sg3">会</span><span class="ar">→</span><span class="lfp">[4,5]</span>
+                  <span class="tkm sg4">这么</span><span class="ar">→</span><span class="lfp">[10,11]</span>
+                </div></div>
+              <div class="nvr"><div class="nvk fp">parent</div>
+                <div class="nvv"><span class="lfp">[1]</span></div></div>
+              <div class="nvr"><div class="nvk fk">key</div>
+                <div class="nvv">[<span class="tkm sg2">我的</span>, <span class="tkm sg2">代码</span>]</div></div>
+              <div class="nvr"><div class="nvk fv">value</div>
+                <div class="nvv">tensor([<span class="sl">2, 3</span>])</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═════════ TAB 4 · 插入节点：查字典 → 切一刀 → 挂上去 ═════════
+         一条插入把「分裂」和「挂新节点」两件事一次走完，所以合成一屏：
+         往已有的树里插「为什么 显存 老是 不够 用」，只对上第一个 token，
+         于是必须先把「为什么 我的 代码」从中间切开，再把剩下的挂到切出来的节点底下。
+         走完这一趟，树正好长成第一屏那张总览图——槽位号也沿用 Tab1 的那一套
+         （为什么=1 我的=2 代码=3 会=4 报错=5 显存=6 老是=7 不够=8 用=9 这么=10 慢=11）。
+         6~9 号是这一屏发出去的，Tab7 最后一屏它们被回收、转手装别的 token，
+         「槽位是显存的行号、不是 token 的属性」这个论点就是靠这几个号码串起来的。 -->
+    <section class="slide">
+      <div class="wrap">
+        <div class="head"><span class="hl">插入节点</span>：遍历树 + 分割节点</div>
+
+        <!-- 新进来的提示词摆在最上面，一律中性色：哪几个 token 能复用，是下面三张图回答的事 -->
+        <div class="inq">
+          <span class="inqlbl">新进来的提示词</span>
+          <span class="ptk">为什么</span><span class="ptk">显存</span><span class="ptk">老是</span><span class="ptk">不够</span><span class="ptk">用</span>
+        </div>
+
+        <div class="ba">
+          <div class="bacol">
+            <div class="bacap"><span class="n">①</span>根据边上的提示词遍历树</div>
+            <div class="bastage" id="ins-match"></div>
+          </div>
+          <svg class="baarrow" viewBox="0 0 76 40" width="44" height="23" aria-hidden="true">
+            <path d="M4 20 H50" stroke="#c9c9d2" stroke-width="14"/>
+            <path d="M46 4 L72 20 L46 36 z" fill="#c9c9d2"/>
+          </svg>
+          <div class="bacol">
+            <div class="bacap"><span class="n">②</span>分割公共前缀节点</div>
+            <div class="bastage" id="ins-split"></div>
+          </div>
+          <svg class="baarrow" viewBox="0 0 76 40" width="44" height="23" aria-hidden="true">
+            <path d="M4 20 H50" stroke="#c9c9d2" stroke-width="14"/>
+            <path d="M46 4 L72 20 L46 36 z" fill="#c9c9d2"/>
+          </svg>
+          <div class="bacol">
+            <div class="bacap"><span class="n">③</span>插入剩余提示词</div>
+            <div class="bastage" id="ins-attach"></div>
+          </div>
+        </div>
+
+        <!-- 这一屏的落点：两家找最长公共前缀的路子不一样。和 Tab1 底下那条共用 .knote -->
+        <div class="knote">PagedAttention 找最长公共前缀是<b>计算哈希值再查表</b>，
+          而 Radix Tree 把找出最长前缀转化成<b>在树上做遍历</b></div>
+      </div>
+    </section>
+
+    <!-- ═════════ TAB 5 · 淘汰节点：evictable_leaves + last_access_time ═════════ -->
+    <section class="slide">
+      <div class="wrap">
+        <div class="head"><span class="hl">淘汰节点</span>：<span class="hlm">每次选访问时间最早的叶子节点</span></div>
+
+        <!-- 源码框和下面那张树卡片套在同一个 max-content 的 flex 列里：容器被【更宽的那个】
+             撑开（现在是树），另一个靠默认的 align-items:stretch 跟着长到一样宽。
+             这样两块的左右边缘永远齐，以后树换了形状也不用回来手改一个写死的宽度。
+             gap:20px 是照 .wrap 自己的行距配的，套一层之后间距不能变。 -->
+        <div style="display:flex; flex-direction:column; gap:20px; width:max-content; max-width:100%">
+
+        <div class="codebox">
+          <div class="cbar"><span class="d r"></span><span class="d y"></span><span class="d g"></span>
+            <span class="fname">radix_cache.py</span></div>
+<pre><span class="kw">class</span> <span class="cls">RadixCache</span>:
+    <span class="f-key">evictable_leaves</span> : <span class="cls">set</span>[<span class="cls">TreeNode</span>]   <span class="cmt"># 淘汰只从这个集合里挑</span>
+
+<span class="cmt"># 真要淘汰的时候：把这个集合堆化，弹最小的</span>
+heap = [(n.<span class="f-val">last_access_time</span>, n) <span class="kw">for</span> n <span class="kw">in</span> <span class="f-key">evictable_leaves</span>]
+heapq.<span class="fn">heapify</span>(heap)
+_, x = heapq.<span class="fn">heappop</span>(heap)   <span class="cmt"># 最久没被摸过的那片叶子</span></pre>
+        </div>
+
+        <!-- 只留这一棵树：每片叶子底下的 last_access 就把「谁最老」说完了，
+             「集合 → 堆 → 弹」那套步骤上面的源码框已经写着（heapify / heappop），
+             再在右边摆一遍等于同一件事说两次。 -->
+        <div class="panel">
+          <div class="pbody" style="padding:18px 26px 20px">
+            <div id="lk-tree"></div>
+          </div>
+        </div>
+
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ═════════ TAB 6 · 推演：前三条请求（时刻 0~5 一张表）═════════
+         一行一样东西、一列一个时刻，横着读同一行就能看出它一路怎么变。
+         四列的 max-content 有 1770px，比 Tab1 的版心宽，所以可视宽度钉到跟 Tab1 一样（.tlscroll），
+         多出来的部分表格自己横向滚，页面不动、标签列 sticky 钉在左边。 -->
+    <section class="slide">
+      <div class="wrap simwrap wide">
+        <div class="head">三个请求先后进来：<span class="hl">每一步数据结构怎么变</span></div>
+
+        <div class="tlscroll">
+        <div class="tl c3">
+          <div class="tlhd"></div>
+          <div class="tlhd" style="color:var(--accent)">时刻 0</div>
+          <div class="tlhd c1" style="color:var(--accent)">时刻 1</div>
+          <div class="tlhd c1" style="color:var(--accent)">时刻 2</div>
+
+          <div class="tlc lb">事件</div>
+          <div class="tlc">
+            <!-- 请求本身一律中性色（和 Tab4 顶上那行新进来的提示词同一个样式）：
+                 这一行是「刚收到的 token」，哪几个能复用、归哪一段，是底下的树回答的事，
+                 在这儿先按段上色等于提前剧透，而且和树上的段色重复。 -->
+            <div class="evrow"><span class="evlbl">request[0] =</span><span class="ptk">为什么</span><span class="ptk">我的</span><span class="ptk">代码</span><span class="ptk">会</span><span class="ptk">报错</span></div>
+          </div>
+          <div class="tlc c1">
+            <div class="evrow"><span class="evlbl">request[1] =</span><span class="ptk">为什么</span><span class="ptk">显存</span><span class="ptk">老是</span><span class="ptk">不够</span><span class="ptk">用</span></div>
+          </div>
+          <div class="tlc c1">
+            <div class="evrow"><span class="evlbl">request[2] =</span><span class="ptk">为什么</span><span class="ptk">我的</span><span class="ptk">代码</span><span class="ptk">这么</span><span class="ptk">慢</span></div>
+          </div>
+
+          <div class="tlc lb">Radix Tree<span class="lb2">（最长前缀节点）</span></div>
+          <div class="tlc">
+            <div id="mt-0"></div>
+            <div class="tline mv">命中 value = <span class="s">[ ]</span>　只需额外算 <b class="m">5</b> 个 token</div>
+          </div>
+          <div class="tlc c1">
+            <div id="mt-1"></div>
+            <div class="tline mv">命中 value = <span class="s">[1]</span>　只需额外算 <b class="m">4</b> 个 token</div>
+          </div>
+          <div class="tlc c1">
+            <div id="mt-2"></div>
+            <div class="tline mv">命中 value = <span class="s">[1,2,3]</span>　只需额外算 <b class="m">2</b> 个 token</div>
+          </div>
+
+          <div class="tlc lb">free_pages</div>
+          <div class="tlc">
+            <div class="fq">
+              <span class="fqgrp out" data-op="↑ alloc(5)">
+                <span class="fqn take">1</span><span class="fqlk"></span><span class="fqn take">2</span><span class="fqlk"></span><span class="fqn take">3</span><span class="fqlk"></span><span class="fqn take">4</span><span class="fqlk"></span><span class="fqn take">5</span>
+              </span>
+              <span class="fqn">6</span><span class="fqlk"></span><span class="fqn">7</span><span class="fqlk"></span><span class="fqn">8</span><span class="fqlk"></span><span class="fqn">9</span><span class="fqlk"></span><span class="fqn">10</span><span class="fqlk"></span><span class="fqn">11</span>
+            </div>
+          </div>
+          <div class="tlc c1">
+            <div class="fq">
+              <span class="fqgrp out" data-op="↑ alloc(4)">
+                <span class="fqn take">6</span><span class="fqlk"></span><span class="fqn take">7</span><span class="fqlk"></span><span class="fqn take">8</span><span class="fqlk"></span><span class="fqn take">9</span>
+              </span>
+              <span class="fqn">10</span><span class="fqlk"></span><span class="fqn">11</span>
+            </div>
+          </div>
+          <div class="tlc c1">
+            <div class="fq">
+              <span class="fqgrp out" data-op="↑ alloc(2)">
+                <span class="fqn take">10</span><span class="fqlk"></span><span class="fqn take">11</span>
+              </span>
+              <span class="fqell">（空）</span>
+            </div>
+          </div>
+
+          <div class="tlc lb">GPU KV slot</div>
+          <div class="tlc">
+            <div class="kvs">
+              <span class="kvc"><i>1</i>为什么</span><span class="kvc"><i>2</i>我的</span><span class="kvc"><i>3</i>代码</span><span class="kvc"><i>4</i>会</span><span class="kvc"><i>5</i>报错</span><span class="kvc nil"><i>6</i>—</span><span class="kvc nil"><i>7</i>—</span><span class="kvc nil"><i>8</i>—</span><span class="kvc nil"><i>9</i>—</span><span class="kvc nil"><i>10</i>—</span><span class="kvc nil"><i>11</i>—</span>
+            </div>
+          </div>
+          <div class="tlc c1">
+            <div class="kvs">
+              <span class="kvc"><i>1</i>为什么</span><span class="kvc"><i>2</i>我的</span><span class="kvc"><i>3</i>代码</span><span class="kvc"><i>4</i>会</span><span class="kvc"><i>5</i>报错</span><span class="kvc"><i>6</i>显存</span><span class="kvc"><i>7</i>老是</span><span class="kvc"><i>8</i>不够</span><span class="kvc"><i>9</i>用</span><span class="kvc nil"><i>10</i>—</span><span class="kvc nil"><i>11</i>—</span>
+            </div>
+          </div>
+          <div class="tlc c1">
+            <div class="kvs">
+              <span class="kvc"><i>1</i>为什么</span><span class="kvc"><i>2</i>我的</span><span class="kvc"><i>3</i>代码</span><span class="kvc"><i>4</i>会</span><span class="kvc"><i>5</i>报错</span><span class="kvc"><i>6</i>显存</span><span class="kvc"><i>7</i>老是</span><span class="kvc"><i>8</i>不够</span><span class="kvc"><i>9</i>用</span><span class="kvc"><i>10</i>这么</span><span class="kvc"><i>11</i>慢</span>
+            </div>
+          </div>
+
+          <!-- 原来这下面还有一行 evictable_leaves，把树上的叶子再抄一遍。
+               拆成两行观众得来回对，而且那一行在 1080p 里根本露不出来；
+               现在直接把 last_access 标在树上的叶子底下（和 Tab5 同一种写法），
+               「集合里有谁、各自多老」在同一棵树上一次看完。 -->
+          <div class="tlc lb lastrow">Radix Tree<span class="lb2">（插入最新请求）</span></div>
+          <div class="tlc lastrow"><div id="st-1"></div></div>
+          <div class="tlc c1 lastrow"><div id="st-2"></div></div>
+          <div class="tlc c1 lastrow"><div id="st-3"></div></div>
+        </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ═════════ TAB 7 · 推演：池子空了 ═════════ -->
+    <section class="slide">
+      <div class="wrap simwrap">
+        <div class="head"><span class="hl">触发删除</span>：<span class="hlm">显存不够开始淘汰叶子</span></div>
+
+        <div class="tl">
+          <div class="tlhd"></div>
+          <!-- 两列是【同一个时刻】的前后两半，所以表头跨两列合成一个：
+               接着 Tab6 的 时刻 0/1/2 往下数，第四条请求就是 时刻 3。
+               左右各是什么，由副标题和 free_pages 那行的 free / alloc 闸门交代 -->
+          <div class="tlhd sp2" style="color:var(--accent)">时刻 3</div>
+
+          <div class="tlc lb">事件</div>
+          <div class="tlc sp2">
+            <div class="evrow"><span class="evlbl">request[3] =</span><span class="ptk">为什么</span><span class="ptk">我的</span><span class="ptk">代码</span><span class="ptk">不能</span><span class="ptk">编译</span></div>
+          </div>
+
+          <div class="tlc lb">Radix Tree</div>
+          <div class="tlc">
+            <div id="st-4"></div>
+            <div class="tline mv">命中 value = <span class="s">[1,2,3]</span>　只需额外算 <b class="m">2</b> 个 token</div>
+          </div>
+          <div class="tlc c1">
+            <div id="st-5"></div>
+          </div>
+
+          <div class="tlc lb">free_pages</div>
+          <!-- 一进一出拆到两列：左列是淘汰把号码还回来（free），右列是发给新 token（alloc）。
+               挤在同一格里上下叠两条号码池，闸门标签会打架，也看不出这是两个动作 -->
+          <div class="tlc">
+            <div class="fq">
+              <span class="fqgrp in" data-op="↓ free([6,7,8,9])">
+                <span class="fqn back">6</span><span class="fqlk"></span><span class="fqn back">7</span><span class="fqlk"></span><span class="fqn back">8</span><span class="fqlk"></span><span class="fqn back">9</span>
+              </span>
+            </div>
+          </div>
+          <div class="tlc c1">
+            <div class="fq">
+              <span class="fqgrp out" data-op="↑ alloc(2)">
+                <span class="fqn take">6</span><span class="fqlk"></span><span class="fqn take">7</span>
+              </span>
+              <span class="fqn">8</span><span class="fqlk"></span><span class="fqn">9</span>
+            </div>
+          </div>
+
+          <div class="tlc lb lastrow">GPU KV slot</div>
+          <div class="tlc lastrow">
+            <div class="kvs">
+              <span class="kvc"><i>1</i>为什么</span><span class="kvc"><i>2</i>我的</span><span class="kvc"><i>3</i>代码</span><span class="kvc"><i>4</i>会</span><span class="kvc"><i>5</i>报错</span><span class="kvc stale"><i>6</i>显存</span><span class="kvc stale"><i>7</i>老是</span><span class="kvc stale"><i>8</i>不够</span><span class="kvc stale"><i>9</i>用</span><span class="kvc"><i>10</i>这么</span><span class="kvc"><i>11</i>慢</span>
+            </div>
+          </div>
+          <div class="tlc c1 lastrow">
+            <div class="kvs">
+              <span class="kvc"><i>1</i>为什么</span><span class="kvc"><i>2</i>我的</span><span class="kvc"><i>3</i>代码</span><span class="kvc"><i>4</i>会</span><span class="kvc"><i>5</i>报错</span><span class="kvc fresh"><i>6</i>不能</span><span class="kvc fresh"><i>7</i>编译</span><span class="kvc stale"><i>8</i>不够</span><span class="kvc stale"><i>9</i>用</span><span class="kvc"><i>10</i>这么</span><span class="kvc"><i>11</i>慢</span>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script>
+/* ─────────── tab 切换 ─────────── */
+const tabs   = [...document.querySelectorAll('.tab')];
+const slides = [...document.querySelectorAll('.slide')];
+/* 显存池那一屏的图全靠量 DOM，藏着的时候量不到 —— 切过去时补画一次。
+   这里写死索引，不按 tab 文字找：改个标签名就静默失效，太容易踩。 */
+const POOL_TAB = 1;
+let cur = 0;
+function go(i){
+  i = (i + slides.length) % slides.length;
+  tabs.forEach((t,k)   => t.classList.toggle('active', k===i));
+  slides.forEach((s,k) => s.classList.toggle('active', k===i));
+  cur = i;
+  if(i === POOL_TAB)  drawPool();
+  if(i === 0)         drawSlotMap();
+  if(i === 2)         drawCallout();   /* Tab3 的放大斜线：藏着的 slide 量不到，切过来才画得出 */
+  if(i === 3 || i === 5 || i === 6) drawInsMarks();  /* Tab4 ③、Tab6 下半行、Tab7 右列的「这次新加了什么」框，同理 */
+  if(i === 5)         tlFade();     /* 藏着的时候 clientWidth 是 0，量不出「滚得动」，切过来才判得准 */
+}
+tabs.forEach((t,i) => t.addEventListener('click', () => go(i)));
+/* 全 deck 都是定格图，没有任何逐帧交互：←→/空格 翻页，数字键跳页。
+   数字键的范围跟 tab 数对齐，按 8、9 不会莫名其妙绕回第一屏。 */
+document.addEventListener('keydown', e => {
+  if(e.key === 'ArrowRight' || e.key === ' ') go(cur+1);
+  else if(e.key === 'ArrowLeft') go(cur-1);
+  else if(/^[1-7]$/.test(e.key)) go(+e.key - 1);
+});
+
+/* ─────────── radix tree 渲染器（斜边 + 圆圈节点） ───────────
+   spec = { lbl, cls, dot, note, kids:[…] }
+     lbl  该节点【入边】上的标签 HTML（root 没有）
+     cls  圆圈的附加 class（root / leaf / lockd）
+     dot  圆圈旁边的注解（lock_ref 之类，节点属性）
+     note 边标签旁边的小注解
+   坐标全部自己算，不依赖 getBoundingClientRect——所以隐藏的 slide 里也能正确渲染。   */
+function renderTree(spec, opt){
+  opt = opt || {};
+  const LH = opt.levelH || 92, LS = opt.leafGap || 200, R = opt.r || 12,
+        PX = opt.padX || 130,  PY = opt.padY || Math.max(24, R + 8),
+        PL = opt.padL || PX,   PR = opt.padR || PX,
+        /* note 距节点中心的垂直距离。默认 R+13 是按圆圈半径算的；chips 模式下胶囊比
+           2R 矮一截，缝就显得空，需要更贴节点时用 noteDy 单独调。 */
+        NDY = opt.noteDy != null ? opt.noteDy : R + 13;
+
+  let nx = 0;
+  (function place(n, d){
+    n._y = d * LH;
+    if(!n.kids || !n.kids.length){ n._x = nx; nx += LS; }
+    else { n.kids.forEach(k => place(k, d+1));
+           n._x = (n.kids[0]._x + n.kids[n.kids.length-1]._x) / 2; }
+  })(spec, 0);
+
+  const nodes = [], edges = [];
+  (function walk(n){ nodes.push(n); (n.kids||[]).forEach(k => { edges.push([n,k]); walk(k); }); })(spec);
+
+  const xs = nodes.map(n => n._x), minX = Math.min(...xs);
+  const W = (Math.max(...xs) - minX) + PL + PR;
+  const H = Math.max(...nodes.map(n => n._y)) + PY + (opt.padB || PY);
+  const X = n => n._x - minX + PL, Y = n => n._y + PY;
+
+  const svg = `<svg class="rtsvg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">` +
+    edges.map(([a,b]) => `<line x1="${X(a)}" y1="${Y(a)}" x2="${X(b)}" y2="${Y(b)}"/>`).join('') +
+    (opt.chips ? '' : nodes.map(n =>
+      `<circle${n.nid?` id="${n.nid}"`:''} cx="${X(n)}" cy="${Y(n)}" r="${R}" class="${n.cls||''}"/>`).join('')) +
+    `</svg>`;
+
+  /* chips 模式：节点渲染成一个不透明的列表框，盖住边的末端，看起来就是边连到框上。
+     mk:true 的节点，它自己和它头上那条边的标签都打上 .nwmk —— drawInsMarks 稍后
+     量这两样的并集，现画一个虚线框把「边 + 节点」整个圈起来 */
+  const chips = opt.chips ? nodes.map(n =>
+    `<div class="rtchip ${n.cls||''}${n.mk?' nwmk':''}"${n.nid?` id="${n.nid}"`:''} style="left:${X(n)}px;top:${Y(n)}px">${n.val||''}</div>`
+  ).join('') : '';
+
+  /* 标签仍然压在边上，但不居中：边往左斜就往左偏 1/4 个身位，往右斜就往右偏。
+     线从标签的 3/4 处穿过去（被盖住），而两个兄弟标签各自往外让，
+     叶子间距就不必迁就标签宽度——边因此能收得又短又立。 */
+  const lbls = edges.map(([a,b]) => {
+    const mx = (X(a)+X(b))/2, my = (Y(a)+Y(b))/2;
+    const dx = X(b)-X(a);
+    const side = Math.abs(dx) < 2 ? 'c' : (dx < 0 ? 'l' : 'r');
+    /* 注解挂在【子节点下方】而不是标签和圆圈之间——边收短以后那条缝已经塞不下了 */
+    /* dx：把这条边的标签沿水平方向挪一点。兄弟挤得太近时用——
+       标签默认压在边的中点上，挤的时候会贴到隔壁节点身上（连带外面的 .nwbox 也压过去） */
+    return (b.lbl ? `<div class="rtlbl ${side}${b.mk?' nwmk':''}" style="left:${mx+(b.dx||0)}px;top:${my}px">${b.lbl}</div>` : '') +
+           (b.note ? `<div class="rtnote ${b.noteCls||''}" style="left:${X(b)}px;top:${Y(b)+NDY}px">${b.note}</div>` : '');
+  }).join('');
+
+  /* 默认挂在节点右边；dotSide:'l' 改挂左边（左侧叶子的标注否则会撞上右边的兄弟节点）。
+     挂左边时记得把 padL 留够，不然会被 .rt 的盒子切掉 */
+  const dots = nodes.map(n => n.dot
+    ? `<div class="rtdot ${n.dotCls||''}${n.dotSide==='l'?' lft':''}" style="left:${
+        n.dotSide==='l' ? X(n)-R-9 : X(n)+R+9}px;top:${Y(n)}px">${n.dot}</div>` : '').join('');
+
+  return `<div class="rt" style="width:${W}px;height:${H}px">${svg}${lbls}${dots}${chips}</div>`;
+}
+
+/* 边标签：中文分词版 / token+槽位版 */
+const SEGC = (toks, cls) => `<span class="segbox ${cls||'uq'}">` +
+             toks.map(t => `<span class="tkc">${t}</span>`).join('') + `</span>`;
+/* pairs = [[token, 槽位, 可选颜色], ...]　上行 key、下行 value，一格一个 token */
+const SEG  = (pairs, cls) => `<span class="segbox mono kv ${cls||'uq'}">` +
+             pairs.map(([t,s,c]) =>
+               `<span class="tkc"${c?` style="color:${c}"`:''}>${t}<i>${s}</i></span>`
+             ).join('') + `</span>`;
+
+/* ── Tab1：概念树（中文提示词） ── */
+document.getElementById('tree-concept').innerHTML = renderTree({
+  cls:'rt0', val:'root',
+  kids:[{ lbl:SEGC(['为什么'],'sg1'), val:'[1]', nid:'n1',
+    kids:[
+      { lbl:SEGC(['我的','代码'],'sg2'), val:'[2,3]', nid:'n2',
+        kids:[ { lbl:SEGC(['会','报错'],'sg3'), val:'[4,5]',   nid:'n4' },
+               { lbl:SEGC(['这么','慢'],'sg4'),  val:'[10,11]', nid:'n5' } ] },
+      { lbl:SEGC(['显存','老是','不够','用'],'sg5'), val:'[6,7,8,9]', nid:'n3' }
+    ]}]
+}, { chips:true, levelH:128, leafGap:176, padL:50, padR:112, padY:36 });
+
+/* ── Tab3 下半屏：从上面那棵树里抠出「我的 代码」这一节，把四个字段标在图上 ──
+   画的就是 Tab1 那张图的左半支，配色、槽位号原样搬过来：
+   root ─为什么→ [1] ─我的 代码→ [2,3] ─┬会 报错→ [4,5]
+                                        └这么 慢→ [10,11]
+   右边那个字段框里，parent 的值就是图上的 [1]，children 的两个值就是底下那两枚，
+   所以【所有节点一律保持琥珀】，不像别的屏那样把配角涂灰——涂灰了两边就对不上号。
+   主角不加任何记号：两条斜线已经把它和右边那个框连起来了，再加记号是重复
+   （.pfx 是公共前缀节点、.fs 是新建节点，借用任何一个还会串味）。
+   nid 是给 drawCallout 找这枚胶囊用的锚点。padR 收窄到只留胶囊的半宽——
+   横排标注没了，右边不用再留那么大一块空白，树能离那个框近一点。 */
+document.getElementById('nv-tree').innerHTML = renderTree({
+  cls:'rt0', val:'root', kids:[
+    { lbl:SEGC(['为什么'],'sg1'), val:'[1]', kids:[
+      { lbl:SEGC(['我的','代码'],'sg2'), val:'[2,3]', nid:'nv-focus', kids:[
+        { lbl:SEGC(['会','报错'],'sg3'), val:'[4,5]' },
+        { lbl:SEGC(['这么','慢'],'sg4'), val:'[10,11]' } ]} ]} ]
+}, { chips:true, levelH:112, leafGap:196, padL:64, padR:64, padY:26, padB:22, r:48 });
+
+/* 放大镜式引出：两条斜线从 [2,3] 那枚胶囊的上下角拉到右边字段框的上下角，
+   中间那块楔形涂一层极淡的琥珀，读起来就是「把这一枚放大了给你看」。
+   坐标只能量不能算——树和框都是 flex 排的，所以照 drawSlotMap 的路子：
+   量 DOM、换算成卡片内坐标、现画 SVG。slide 藏着的时候量不到（宽高全 0），
+   所以 go() 切到这屏时要重画一次，字体加载完和窗口缩放时也各重画一次。 */
+function drawCallout(){
+  const svg  = document.getElementById('nv-svg'),
+        host = document.getElementById('nv-fig'),
+        src  = document.getElementById('nv-focus'),
+        dst  = document.getElementById('nv-box');
+  if(!svg || !host || !src || !dst) return;
+  const hb = host.getBoundingClientRect();
+  if(!hb.width) return;                        /* 藏着的 slide 量不到，跳过 */
+  svg.setAttribute('width',  hb.width);
+  svg.setAttribute('height', hb.height);
+  svg.setAttribute('viewBox', `0 0 ${hb.width} ${hb.height}`);
+  const s = src.getBoundingClientRect(), d = dst.getBoundingClientRect();
+  const x1 = s.right - hb.left,  yT1 = s.top    - hb.top, yB1 = s.bottom - hb.top,
+        x2 = d.left  - hb.left,  yT2 = d.top    - hb.top, yB2 = d.bottom - hb.top;
+  svg.innerHTML =
+    `<path class="nvwedge" d="M${x1} ${yT1} L${x2} ${yT2} L${x2} ${yB2} L${x1} ${yB1} Z"/>` +
+    `<line class="nvray" x1="${x1}" y1="${yT1}" x2="${x2}" y2="${yT2}"/>` +
+    `<line class="nvray" x1="${x1}" y1="${yB1}" x2="${x2}" y2="${yB2}"/>`;
+}
+(document.fonts ? document.fonts.ready : Promise.resolve()).then(drawCallout);
+window.addEventListener('resize', drawCallout);
+
+/* 节点 → 它那段 token 占的物理槽位。
+   左边那两个节点（我的代码 / 会报错）不连——它们的线要横穿整张图，画出来只会糊成一团，
+   圈里的数字已经把对应关系写清楚了。 */
+const SLOTMAP = [
+  { node:'n1', slots:['s1'] },
+  { node:'n3', slots:['s6','s7','s8','s9'] },
+  { node:'n5', slots:['s10','s11'] }
+];
+function drawSlotMap(){
+  const svg = document.getElementById('mapsvg'), host = document.getElementById('treemap');
+  if(!svg || !host) return;
+  const hb = host.getBoundingClientRect();
+  if(!hb.width) return;                       /* slide 藏着的时候量不到，跳过 */
+  svg.setAttribute('width', hb.width);
+  svg.setAttribute('height', hb.height);
+  svg.setAttribute('viewBox', `0 0 ${hb.width} ${hb.height}`);
+  /* 直角走线：出节点先平着走到竖干，竖干覆盖这个节点占的那几行，再一格一根横着扎进去。
+     占几个槽位就分出几根箭头。三根竖干在同一个 x 上，彼此纵向不重叠。 */
+  const lines = SLOTMAP.map(m => {
+    const c = document.getElementById(m.node);
+    const cells = m.slots.map(s => document.getElementById(s)).filter(Boolean);
+    if(!c || !cells.length) return '';
+    const cb = c.getBoundingClientRect();
+    /* 箭头停在「slot N」那列文字左边，别从字上压过去 */
+    const lab = cells[0].parentNode.querySelector('.glab').getBoundingClientRect();
+    const x1 = cb.right - hb.left, y1 = cb.top + cb.height/2 - hb.top;
+    const x2 = lab.left - hb.left - 10, sx = x2 - 46;
+    const ys = cells.map(el => { const b = el.getBoundingClientRect(); return b.top + b.height/2 - hb.top; });
+    /* 节点高度本来就几乎对着某一行时，主干直接走那一行——否则会为了几个像素在竖干上折一个
+       小得难看的直角。节点是个 40 多像素高的胶囊，主干偏出中心几像素看不出来 */
+    const rowH = cells[0].getBoundingClientRect().height;
+    const near = ys.reduce((a, b) => Math.abs(b - y1) < Math.abs(a - y1) ? b : a, ys[0]);
+    const ty = Math.abs(near - y1) <= rowH / 4 ? near : y1;
+    const yMin = Math.min(ty, ...ys), yMax = Math.max(ty, ...ys);
+    let d = `M ${x1} ${ty} H ${sx}`;
+    if(yMax - yMin > 0.5) d += ` M ${sx} ${yMin} V ${yMax}`;
+    return `<path class="mw" d="${d}"/>` +
+           ys.map(y => `<path class="mw" d="M ${sx} ${y} H ${x2}" marker-end="url(#mh)"/>`).join('');
+  }).join('');
+  svg.innerHTML = '<defs><marker id="mh" markerWidth="9" markerHeight="8" refX="7.5" refY="3.2" ' +
+    'orient="auto"><path d="M0,0 L7.5,3.2 L0,6.4 Z"/></marker></defs>' + lines;
+}
+(document.fonts ? document.fonts.ready : Promise.resolve()).then(drawSlotMap);
+window.addEventListener('resize', drawSlotMap);
+
+/* ─────────── Tab2：显存池（一摞 L 层 + 虚线柱 + 大括号 + 下标连线） ───────────
+   这一屏所有图都要量 DOM，而隐藏的 slide 量出来全是 0 —— 所以切到这一屏时重画一次。 */
+/* 从 1 开始：0 号那一行虽然在张量里，但永远不发出去，
+   「0 不发」这件事由上面号码池那个打叉的 0 交代，格子这边不再重复 */
+const SLOTN = ['1','2','3','4','⋯'];
+const NBACK = 4, DX = 9, DY = 25;                 /* 背后 4 片板，每片右移 9、上移 25 */
+
+(function buildPool(){
+  const stack = document.getElementById('gpustack');
+  if(!stack) return;
+  /* 先铺背后的板（越远越先画、越靠下层），最后才是完整的前层 */
+  for(let k = NBACK; k >= 1; k--){
+    const b = document.createElement('div');
+    b.className = 'lyback';
+    b.style.transform = `translate(${k*DX}px, ${-k*DY}px)`;
+    b.style.zIndex = String(NBACK + 1 - k);
+    stack.appendChild(b);
+  }
+  /* 最前一片画满格子；张量名不塞在板子里，由 drawStackLabels 吊在板子左边 */
+  const front = document.createElement('div');
+  front.className = 'lyrow';
+  front.style.zIndex = String(NBACK + 2);
+  ['k','v'].forEach(tag => {
+    const row = document.createElement('div'); row.className = 'plrow';
+    const box = document.createElement('div'); box.className = 'plcells';
+    SLOTN.forEach(s => {
+      const c = document.createElement('span');
+      /* 1~2 是 alloc(2) 发出去的，上色 = 占着；3 还在池子里、4 刚被 free 还回来，两格都空着不上色。
+         4 号另外还被虚线柱框住 —— 跟 074 一样：被柱子框住的那一格本身不特殊填充 */
+      c.className = 'plc' + (s === '⋯' ? ' el' : +s <= 2 ? ' used' : '');
+      c.textContent = s;
+      if(s !== '⋯') c.id = 'p' + tag + s;
+      box.appendChild(c);
+    });
+    row.appendChild(box); front.appendChild(row);
+  });
+  stack.appendChild(front);
+})();
+
+/* 虚线框外面那一列张量名：下面对着最前一片（第 0 层），上面对着最后一片（第 L-1 层）。
+   挂在 .pool2 上而不是 gpubox 里，才能站到虚线框外边去（位置照 074 的 CPU/GPU 区标）。 */
+function drawStackLabels(){
+  const host = document.getElementById('pool2'), box = document.getElementById('gpubox');
+  const stack = document.getElementById('gpustack');
+  if(!host || !box || !stack) return;
+  const br = host.getBoundingClientRect();
+  if(!br.width) return;
+  const front = stack.querySelector('.lyrow'), back = stack.querySelector('.lyback');
+  const rows = [...front.querySelectorAll('.plcells')];
+  if(!back || rows.length < 2) return;
+  const rb = back.getBoundingClientRect();
+  const X = box.getBoundingClientRect().left - br.left - 12;
+  const put = (id, html, cls, x, y) => {
+    let el = document.getElementById(id);
+    if(!el){ el = document.createElement('div'); el.id = id; host.appendChild(el); }
+    el.className = 'lylbl ' + cls; el.innerHTML = html;
+    el.style.left = x + 'px'; el.style.top = y + 'px';
+  };
+  const cy = el => { const r = el.getBoundingClientRect(); return r.top + r.height/2 - br.top; };
+  const yBk = rb.top - br.top + 15;
+  put('lbk1', 'k_buffer[L-1]', 'kk', X, yBk);
+  put('lbv1', 'v_buffer[L-1]', 'vv', X, yBk + 21);
+  put('lbk0', 'k_buffer[0]',   'kk', X, cy(rows[0]));
+  put('lbv0', 'v_buffer[0]',   'vv', X, cy(rows[1]));
+  put('lbel', '⋮', 'el', X - 46, (yBk + 21 + cy(rows[0])) / 2);
+}
+
+/* 把号码池整条横移到大数组那几列的正上方，连线就能笔直落下来。
+   用 transform 不用 margin —— 它不参与布局，不会把上面那个框撑宽、反过来推歪下面。 */
+function alignFreeQueue(){
+  const fq = document.querySelector('.cpubox .fq');
+  const a = document.getElementById('fq1'), b = document.getElementById('pk1');
+  if(!fq || !a || !b) return;
+  fq.style.transform = 'none';
+  const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+  if(!ra.width || !rb.width) return;
+  fq.style.transform = `translateX(${((rb.left + rb.width/2) - (ra.left + ra.width/2)).toFixed(1)}px)`;
+}
+
+/* alloc 取走的号码 → 大数组里对应的那一列（跨两个虚线框的竖向虚线） */
+function drawPoolLinks(){
+  const host = document.getElementById('pool2'), svg = document.getElementById('poolsvg');
+  if(!host || !svg) return;
+  const hb = host.getBoundingClientRect();
+  if(!hb.width) return;
+  svg.setAttribute('viewBox', `0 0 ${hb.width} ${hb.height}`);
+  let d = '';
+  for(let i = 1; i <= 3; i++){
+    const a = document.getElementById('fq' + i), b = document.getElementById('pk' + i);
+    if(!a || !b) continue;
+    const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+    d += `<line x1="${ra.left - hb.left + ra.width/2}" y1="${ra.bottom - hb.top + 3}"` +
+         ` x2="${rb.left - hb.left + rb.width/2}" y2="${rb.top - hb.top - 3}"/>`;
+  }
+  svg.innerHTML = d;
+}
+
+/* 虚线柱：槽位 4 这一列在每一层都有一份 K、V —— 前层实框 + 四条棱透到最后一层 */
+function drawSlotPrism(){
+  const box = document.getElementById('gpubox'), svg = document.getElementById('blksvg');
+  const stack = document.getElementById('gpustack');
+  const ck = document.getElementById('pk4'), cv = document.getElementById('pv4');
+  if(!box || !svg || !stack || !ck || !cv) return;
+  const br = box.getBoundingClientRect();
+  if(!br.width) return;
+  const front = stack.querySelector('.lyrow'), back = stack.querySelector('.lyback');
+  if(!front || !back) return;
+  const rk = ck.getBoundingClientRect(), rv = cv.getBoundingClientRect();
+  const rf = front.getBoundingClientRect(), rb = back.getBoundingClientRect();
+  const dx = rb.left - rf.left, dy = rb.top - rf.top;      /* 前层 → 最后一层 的总偏移 */
+  const ux = dx / NBACK, uy = dy / NBACK, p = 4;
+  const x = rk.left - br.left - p, y = rk.top - br.top - p;
+  const w = rk.width + 2*p, h = (rv.bottom - rk.top) + 2*p;
+  const F = [[x,y], [x+w,y], [x+w,y+h], [x,y+h]];
+  const NS = 'http://www.w3.org/2000/svg', CO = '#b06f16';
+  svg.setAttribute('width', br.width); svg.setAttribute('height', br.height);
+  svg.setAttribute('viewBox', `0 0 ${br.width} ${br.height}`);
+  while(svg.firstChild) svg.removeChild(svg.firstChild);
+  /* 四条棱先画，压在框下面 */
+  F.forEach(([px,py]) => {
+    const l = document.createElementNS(NS,'line');
+    l.setAttribute('x1',px); l.setAttribute('y1',py);
+    l.setAttribute('x2',px+dx); l.setAttribute('y2',py+dy);
+    l.setAttribute('stroke',CO); l.setAttribute('stroke-width','1.6');
+    l.setAttribute('opacity','.45'); l.setAttribute('stroke-dasharray','5 4');
+    svg.appendChild(l);
+  });
+  /* 逐层一个框：后 → 前，前层最粗最实，越往后越淡——一摞框叠起来才看得出「每层都有一份」 */
+  for(let k = NBACK; k >= 0; k--){
+    const pts = F.map(([px,py]) => (px + k*ux).toFixed(1) + ',' + (py + k*uy).toFixed(1)).join(' ');
+    const pg = document.createElementNS(NS,'polygon');
+    pg.setAttribute('points',pts); pg.setAttribute('fill','none'); pg.setAttribute('stroke',CO);
+    pg.setAttribute('stroke-dasharray','5 4'); pg.setAttribute('stroke-linejoin','round');
+    pg.setAttribute('stroke-width', k === 0 ? '2.6' : '1.8');
+    pg.setAttribute('opacity', k === 0 ? '1' : (0.78 - (k-1)*0.13).toFixed(2));
+    svg.appendChild(pg);
+  }
+}
+
+/* 右侧大括号：纵向括住整摞板 = 共 L 层 */
+function drawLayerBrace(){
+  const box = document.getElementById('gpubox'), stack = document.getElementById('gpustack');
+  const svg = document.getElementById('lbrace'), lbl = document.getElementById('llbl');
+  if(!box || !stack || !svg || !lbl) return;
+  const br = box.getBoundingClientRect();
+  if(!br.width) return;
+  let top = Infinity, bot = -Infinity, right = -Infinity;
+  [...stack.querySelectorAll('.lyback'), stack.querySelector('.lyrow')].forEach(b => {
+    if(!b) return;
+    const r = b.getBoundingClientRect();
+    top = Math.min(top, r.top); bot = Math.max(bot, r.bottom); right = Math.max(right, r.right);
+  });
+  if(!isFinite(top)) return;
+  const yTop = top - br.top, yBot = bot - br.top, mid = (yTop + yBot) / 2;
+  const xL = (right - br.left) + 13, xR = xL + 15;
+  svg.setAttribute('width', br.width); svg.setAttribute('height', br.height);
+  svg.setAttribute('viewBox', `0 0 ${br.width} ${br.height}`);
+  svg.innerHTML =
+    `<path d="M ${xL} ${yTop} C ${xR} ${yTop} ${xL} ${mid} ${xR} ${mid}` +
+    ` C ${xL} ${mid} ${xR} ${yBot} ${xL} ${yBot}" fill="none" stroke="var(--arrow)"` +
+    ` stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
+  lbl.style.left = (xR + 10) + 'px';
+  lbl.style.top  = mid + 'px';
+  lbl.style.transform = 'translateY(-50%)';
+}
+
+function drawPool(){ drawStackLabels(); alignFreeQueue(); drawSlotPrism(); drawLayerBrace(); drawPoolLinks(); }
+(document.fonts ? document.fonts.ready : Promise.resolve()).then(drawPool);
+window.addEventListener('resize', drawPool);
+
+/* 一条边上的 token 标签。
+   toks 里每一项要么是 '代码'，要么是 ['代码','颜色']——对上的染绿、对不上的染红。 */
+const TK = (toks, cls) => `<span class="segbox ${cls||'uq'}">` +
+  toks.map(t => Array.isArray(t)
+    ? `<span class="tkc" style="color:${t[1]}">${t[0]}</span>`
+    : `<span class="tkc">${t}</span>`).join('') + `</span>`;
+
+const HITC = 'var(--hit)', MISSC = 'var(--miss)';
+
+/* ─────────── 插入节点：三棵树 = 插入的三步（Tab4，静态） ───────────
+   一次插入把「分裂」和「挂新节点」两件事一起走完，所以三棵树是同一条时间线上的三帧。
+   画法跟 Tab1 一样：token 段挂在边上，节点画成装 value 的胶囊。
+   槽位号一律沿用 Tab1 那张总览图的映射：
+     为什么=1 我的=2 代码=3 会=4 报错=5 显存=6 老是=7 不够=8 用=9 这么=10 慢=11
+   树上先有两条提示词：「为什么 我的 代码 会 报错」和「为什么 我的 代码 这么 慢」，
+   前三个 token 重合，所以 root 底下就一条边「为什么 我的 代码」占 1~3。
+   现在「为什么 显存 老是 不够 用」进来，只对上第一个 token → split_len = 1，
+   从第一个 token 后面下刀，再把剩下四个挂成新节点占 6~9。
+   走完这三步，树正好长成第一屏那张总览图。 */
+/* leafGap 只要比叶子标签宽一点就不会撞（两个标签各往外让 1/4 身位），
+   收窄之后两条斜边更立，整张图也不会横着摊太开。
+   chips 模式下 r 不是圆圈半径（圆圈根本不画），只管「标注往右推多远」，
+   要大过最宽那个胶囊的半宽（[1,2,3] 约 60px）才不会压在胶囊上。 */
+/* padL / padR 是量出来的，不是拍的：量「最左那个元素离 .rt 左边缘多远、最右那个离右边缘
+   多远」，两边都留 10px 收口。这两棵树里最外侧的其实是两枚叶子胶囊（[4,5] / [10,11]），
+   不是右边那条横排标注——标注反而落在胶囊里面。①②两棵树同一套 pad，卡片就一样宽，
+   看起来是一对；③ 多一条支路，本来就该更宽。 */
+const BA_OPT = { chips:true, levelH:128, leafGap:200, padL:59, padR:70, padY:26, padB:22, r:66 };
+
+/* 三棵树共用的那两个叶子：这一刀碰不到它们，一律中性灰，跟 root 一个样 */
+const insKids = () => [
+  { lbl:TK(['会','报错']),  val:'[4,5]',   cls:'rt0' },
+  { lbl:TK(['这么','慢']), val:'[10,11]', cls:'rt0' }
+];
+
+/* ①「为什么 我的 代码」这条边：只有第一个 token 对上了，所以在它后面画一道竖虚线，
+   那就是 split_len 这一刀要落的位置。token 本身【不改色】——段色是 Tab1 建立的语义，
+   动了它观众会以为换了个东西；「对到哪儿」交给这道线和旁边那行红字。
+   TK 的第二参是【整套】class，所以这里手写标签，不能复用 TK。 */
+const CUTSEG = '<span class="segbox sg1">' +
+               '<span class="tkc">为什么</span><span class="cutm"></span>' +
+               '<span class="tkc">我的</span><span class="tkc">代码</span></span>';
+
+/* ① 查字典往下走：root 拿「为什么」查 children，走到这条边上比对，只对上 1 个就停了。
+   三棵树统一的上色规矩：这一步【碰到】的节点用琥珀，没碰到的两个叶子一律 .rt0 中性灰。
+   标注一律短到能塞进 padR 里（约 326−175 = 150px），长句留给卡片顶上的 .bacap。 */
+document.getElementById('ins-match').innerHTML = renderTree({ cls:'rt0', val:'root', kids:[
+  { lbl:CUTSEG, val:'[1,2,3]', dot:'匹配1个', dotCls:'ev', kids:insKids() }
+]}, BA_OPT);
+
+/* ② 切一刀：前半段「为什么」是新建出来的节点，后半段「我的 代码」还是原来那个对象，
+   只是 key 和 value 被削掉了前半段。切之前整条边是 Tab1 里「为什么」的紫，切开之后
+   正好还原 Tab1 的分段配色：「为什么」紫、「我的 代码」蓝。
+   被这一刀碰到的节点用实心/加粗外圈，没动的两个叶子维持描边。
+   「原地改」那条标注删掉了：后半段外面那圈琥珀光晕（.chgd）已经在说「它被动过」，
+   而「原地改」真正的意思（外部引用不失效）是图上演不出来的，交给口播。
+   标注从「新建节点」换成「公共前缀节点」：切出来的前半段【就是】这次匹配的落点，
+   在它诞生的这一格把这个身份教给观众，比拖到 ③ 再说更顺。
+   记号也跟着搬过来：黄色虚线外框 .pfx = 公共前缀节点，绿字 .lk = 它的名字，
+   和 Tab6 那张大表用的是同一套，那边就只留记号、不再写字。
+   .fs 保留——它确实是这一刀新建出来的，实心琥珀这个「新建」的含义全 deck 通用。 */
+document.getElementById('ins-split').innerHTML = renderTree({ cls:'rt0', val:'root', kids:[
+  { lbl:TK(['为什么'], 'sg1 newn'), val:'[1]', cls:'fs pfx', dot:'公共前缀节点', dotCls:'lk',
+    kids:[{ lbl:TK(['我的','代码'], 'sg2 chgd'), val:'[2,3]', kids:insKids() }] }
+/* padR 88：这一格最右的东西是「公共前缀节点」那条标注（挂在节点右边 r+9 处、宽约 103），
+   它的右沿离树左边 337px，给 88 正好剩 10px——和左边那枚 [4,5] 胶囊的余量一样宽。
+   原来给 118 是照标注最长的情况估的，实测偏多 30px，右边会空出一条。 */
+]}, Object.assign({}, BA_OPT, { padR:88 }));
+
+/* ③ 挂新节点：剩下的「显存 老是 不够 用」新建成节点，挂到切出来的「为什么」底下。
+   公共前缀节点的记号挪到 ② 去了（它在那一格才刚被切出来），这一格不再重复标：
+   这一步的主角是「挂上去了什么」，而不是「停在了哪」。
+   所以改成跟 Tab6 下半行一样的画法——mk:true，把新加的【那条边和那枚节点】
+   一起用虚线框圈起来，一眼看出这次 insert 到底往树里添了哪一段。
+   走完这一步，这棵树就是第一屏那张总览图。 */
+/* leafGap 按【兄弟标签会不会打架】算出来，不是拍脑袋给宽。三个叶子分两层，两处约束：
+     「会 报错」/「这么 慢」同父   → 净空 = leafGap/2 − (102+102)/4，要 leafGap > 126
+     「我的 代码」/「显存…用」同父 → 净空 = 0.75·leafGap − (117+212)/4，要 leafGap > 126
+   （标签以边的中点为心摆放，往外斜的那条按 .rtlbl.r 再让出 1/4 身位，所以是这两条式子。）
+   两边都卡在 126，取 140 留一点余量。原来给到 214 是配旧版右边那条横排标注的，
+   现在那条标注挪去 ② 了，再撑这么开只会让这张卡比另外两张宽出一大截、左边空一片。 */
+/* padR 给到 118 不是留白，是「显存 老是 不够 用」这个标签自己探出来的：
+   它宽 212，以边的中点为心、再往右让 3/4 身位，右沿比最右那枚节点还远约 60px，
+   外面那个 .nwbox 再加 6px。padL 只要接住最左那枚胶囊的半个身位（约 50px）就够，
+   所以两边数值差这么多是正常的，不是配歪了。给少了标签会探到 .rt 盒子外面。 */
+document.getElementById('ins-attach').innerHTML = renderTree({ cls:'rt0', val:'root', kids:[
+  { lbl:TK(['为什么'], 'sg1'), val:'[1]', kids:[
+    { lbl:TK(['我的','代码'], 'sg2'), val:'[2,3]', kids:insKids() },
+    { lbl:TK(['显存','老是','不够','用'], 'sg5'), val:'[6,7,8,9]', cls:'fs', mk:true }
+  ]}
+]}, Object.assign({}, BA_OPT, { leafGap:140, padL:59, padR:118, r:46 }));
+
+/* ─────────── 推演三屏里的树（Tab5 / 6 / 7） ───────────
+   画法和配色都跟 Tab1 完全一致，用同一个 SEGC：**一条边一个颜色**。
+   千万别按 token 上色——那等于把还没发生的分裂提前画出来了。
+   规则跟 Tab4 演示的一样：裂开时前半段留住原来的颜色，后半段换一个新色。
+     时刻 1   整条提示词就是一个节点          → 全 sg1
+     时刻 2-3 切出「为什么」(sg1) + 剩下的(sg2) + 新挂的「显存…」(sg5)
+     时刻 4-5 sg2 那段再裂成「我的 代码」(sg2) + 「会 报错」(sg3)，加「这么 慢」(sg4)
+              —— 到这儿五个节点五个色，和 Tab1 那张总览图一模一样
+   「会」和「报错」分裂后都留 sg3：它们本来就是同一段切开的两半，
+   这一屏的重点是淘汰不是那一刀，再造个第六色反而干扰。 */
+/* 斜边的角度 = leafGap / levelH。Tab1 是 176/128 ≈ 1.37，那个角度最好看；
+   原来 210/96 ≈ 2.2，边撇得太开、整张图也横着摊太宽。收窄 leafGap、抬高 levelH 对齐到 1.37。 */
+const ST_OPT = { chips:true, levelH:118, leafGap:162, padL:64, padR:104, padY:28, padB:26, r:58 };
+const LK = { cls:'lockd' };   /* 被请求锁住的节点：绿圈，图例写在树底下 */
+
+const ST = [
+  /* 时刻 0：树是空的，root 光杆一个 */
+  { cls:'rt0', val:'root' },
+
+  /* 时刻 1：第一条请求结束，整段 5 个 token 作为【一个】节点挂上去——所以只有一个颜色。
+     实心琥珀 = 这次 insert 新挂上去的那个节点，和 Tab4 里 new_node 同一个记号，
+     上下两行树一对照就知道 insert 到底添了什么 */
+  { cls:'rt0', val:'root', kids:[
+    { lbl:SEGC(['为什么','我的','代码','会','报错'],'sg1'), val:'[1,2,3,4,5]', cls:'fs', mk:true,
+      note:'时刻 0' } ]},
+
+  /* 时刻 2-3：request[1] 走完之后。切第一刀把「为什么」单独切出来，
+     再 insert 挂上「显存 老是 不够 用」。请求已经走了，所以全都解锁了，没有绿圈。 */
+  { cls:'rt0', val:'root', kids:[
+    { lbl:SEGC(['为什么'],'sg1'), val:'[1]', kids:[
+      /* 两片都停在时刻 1：[2,3,4,5] 是这一刻被 _split_node 从原来那枚切下来的
+         （match_prefix 沿途先刷新了它再切），[6,7,8,9] 是这一刻新挂上去的 */
+      { lbl:SEGC(['我的','代码','会','报错'],'sg2'), val:'[2,3,4,5]', note:'时刻 1' },
+      { lbl:SEGC(['显存','老是','不够','用'],'sg5'), val:'[6,7,8,9]', cls:'fs', mk:true,
+        note:'时刻 1' } ]} ]},
+
+  /* 时刻 4-5：request[2] 走完之后。切第二刀 + 挂上「这么 慢」——
+     到这儿树就和第一屏那张总览图一模一样了。 */
+  { cls:'rt0', val:'root', kids:[
+    { lbl:SEGC(['为什么'],'sg1'), val:'[1]', kids:[
+      { lbl:SEGC(['我的','代码'],'sg2'), val:'[2,3]', kids:[
+        { lbl:SEGC(['会','报错'],'sg3'), val:'[4,5]', note:'时刻 2' },
+        { lbl:SEGC(['这么','慢'],'sg4'), val:'[10,11]', cls:'fs', mk:true, note:'时刻 2' } ]},
+      /* 这一刻只有「我的 代码」那一支被摸到，「显存」这一支原地不动、还停在时刻 1
+         ——下一屏被剥掉的就是它，淘汰的理由在这儿就写在树上了 */
+      { lbl:SEGC(['显存','老是','不够','用'],'sg5'), val:'[6,7,8,9]',
+        note:'时刻 1', noteCls:'ev' } ]} ]},
+
+  /* 时刻 6 · 淘汰这一下：request[3] =「为什么 我的 代码 不能 编译」，
+     「不能」和「会」「这么」都对不上，所以命中【整整停在节点边界上】——这一屏没有分裂，
+     树的形状就是上一屏那张（= 第一屏那张总览图），只多了锁和淘汰标记。
+     绿圈是锁住的路径（只到「我的 代码」为止）；LRU 挑中的「显存 老是 不够 用」
+     整条边连节点一起褪灰划掉，右边那棵树里它就真的没了。
+     标注挂在节点【下方】（note）而不是右边（dot）：这棵树从跨两列缩成一列，
+     右边已经没有 196px 给一行横排的标注了，而它底下正好空着。 */
+  { cls:'rt0', val:'root', kids:[
+    { lbl:SEGC(['为什么'],'sg1'), val:'[1]', ...LK, kids:[
+      /* 「我的 代码」同时是【公共前缀节点】和【锁的起点】——源码里本来就是同一个节点：
+         match_prefix 停在哪，inc_lock_ref 就从哪往上锁。所以两个记号叠在它身上：
+         虚线外框 = 命中落点，绿圈 = 被锁住 */
+      { lbl:SEGC(['我的','代码'],'sg2'), val:'[2,3]', cls:'lockd pfx', kids:[
+        { lbl:SEGC(['会','报错'],'sg3'), val:'[4,5]', note:'时刻 2' },
+        { lbl:SEGC(['这么','慢'],'sg4'), val:'[10,11]', note:'时刻 2' } ]},
+      /* 这一枚的标注是两行：先说结果（整个节点摘掉），再说理由（它的 last_access 最小）。
+         ↑ 必须留在第一行，紧挨着节点，不然就不知道箭头指的是谁 */
+      { lbl:SEGC(['显存','老是','不够','用'],'sg5 gone'), val:'[6,7,8,9]', cls:'gone',
+        note:'↑ 整个节点摘掉<br>时刻 1', noteCls:'ev' } ]} ]},
+
+  /* 时刻 6-7 · 分配完、请求也走完：「显存」那一支整个不见了（不是划掉，是没了），
+     腾出来的 6、7 号转手给了新挂上去的「不能 编译」——它是「我的 代码」的第三个孩子。
+     走完就解锁，所以绿圈也没了。
+     .fs = 新建出来的节点，和 Tab4 里 new_node 用的是同一个实心琥珀。 */
+  { cls:'rt0', val:'root', kids:[
+    { lbl:SEGC(['为什么'],'sg1'), val:'[1]', kids:[
+      { lbl:SEGC(['我的','代码'],'sg2'), val:'[2,3]', kids:[
+        { lbl:SEGC(['会','报错'],'sg3'), val:'[4,5]', note:'时刻 2' },
+        { lbl:SEGC(['这么','慢'],'sg4'), val:'[10,11]', note:'时刻 2' },
+        /* 同 Tab4：'newn' 会顶掉默认的 uq，而白底是 uq 给的，少了斜边会透出来 */
+        /* dx：这枚是「我的 代码」的第三个孩子，标签默认落点正好贴上左边的 [10,11]，
+           外面那个 .nwbox 的左边框会被那枚胶囊盖掉一截。往右让 14px 就分开了 */
+        { lbl:SEGC(['不能','编译'],'uq newn'), val:'[6,7]', cls:'fs', mk:true, dx:14,
+          note:'时刻 3' } ]} ]} ]}
+];
+
+/* 个别树要在公用尺寸上微调，别去改 ST_OPT——那会把其余几棵一起带歪。
+   两个兄弟标签之间的净空 ≈ leafGap/2 − (两个标签宽度之和)/4，照这个估。 */
+const ST_FIX = {
+  /* 这棵只有一个分叉，两个孩子的标签又都是 4 个 token（各约 190px），
+     162 的间距会让它俩贴在一起，单独放宽到 220 */
+  2: { leafGap:220 },
+  /* 最后两棵从跨两列改成各占一列，宽度只剩一半，3 片叶子挤不下——收窄间距。
+     淘汰前那棵还挂着 4 个 token 的「显存 老是 不够 用」，比淘汰后那棵更需要收 */
+  4: { leafGap:138 },
+  5: { leafGap:150 }
+};
+
+/* 这几棵树每片叶子底下都挂着 last_access（原来单列一行 evictable_leaves，已经并进来了）：
+   noteDy 26——默认的 r+13 是按圆圈半径算的，chips 模式下胶囊比 2r 矮一截，缝会空一大截；
+   padB 56——要装得下标注（时刻 3 那棵是两行），给小了会掉出 .rt 被格子裁掉。
+   只给 ST 这几棵加，MT 那一行没有标注，跟着加会白长 30px 高。 */
+const ST_NOTE = { noteDy:26, padB:56 };
+ST.forEach((spec, i) => {
+  const el = document.getElementById('st-' + i);
+  if(!el) return;   /* st-0（空树）现在由 mt-0 那一行承担，表里不再单列 */
+  const opt = Object.assign({}, ST_OPT, ST_NOTE, ST_FIX[i] || {});
+  el.innerHTML = renderTree(spec, opt);
+});
+
+/* 把这一刻 insert 新加进树里的那条边和那枚节点一起框起来。
+   量 .nwmk 的并集现画，跟 drawCallout 一个路子——标签多宽、节点落在哪，
+   都得等排版完才量得到，算不出来。⚠️ 藏着的 slide 量出来宽高全是 0，
+   所以 go() 切到 Tab6 时要重画一次，字体加载完和窗口缩放时各再重画一次。 */
+function drawInsMarks(){
+  document.querySelectorAll('.rt').forEach(rt => {
+    const mk = rt.querySelectorAll('.nwmk');
+    if(!mk.length) return;
+    const hb = rt.getBoundingClientRect();
+    if(!hb.width) return;                     /* 藏着的 slide 量不到，跳过 */
+    let box = rt.querySelector('.nwbox');
+    /* 插在最前面：.rt 里全是绝对定位的兄弟，谁在后面谁盖住谁。
+       追加到末尾的话，这个框会压在胶囊和标签上面 */
+    if(!box){ box = document.createElement('div'); box.className = 'nwbox';
+              rt.insertBefore(box, rt.firstChild); }
+    let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+    mk.forEach(e => { const k = e.getBoundingClientRect();
+      l = Math.min(l, k.left); t = Math.min(t, k.top);
+      r = Math.max(r, k.right); b = Math.max(b, k.bottom); });
+    const P = 6;                              /* 四周留一点，别贴着 token 和胶囊的边 */
+    box.style.left   = (l - hb.left - P) + 'px';
+    box.style.top    = (t - hb.top  - P) + 'px';
+    box.style.width  = (r - l + P*2) + 'px';
+    box.style.height = (b - t + P*2) + 'px';
+  });
+}
+(document.fonts ? document.fonts.ready : Promise.resolve()).then(drawInsMarks);
+window.addEventListener('resize', drawInsMarks);
+
+/* ─────────── 横滚表格的「右边还有」渐隐 ───────────
+   .tlscroll 的可视宽度钉死在 Tab1 的版心上，装不下的列滚出去看。
+   滚到底就把渐隐撤掉，否则最后一列永远蒙着一层灰，像没加载完。
+   2px 容差是给亚像素留的：scrollLeft 常停在 466.5 这种数上，差一点就永远撤不掉。 */
+function tlFade(){
+  document.querySelectorAll('.tlscroll').forEach(sc => {
+    sc.classList.toggle('fr', sc.scrollLeft < sc.scrollWidth - sc.clientWidth - 2);
+  });
+}
+document.querySelectorAll('.tlscroll').forEach(sc => sc.addEventListener('scroll', tlFade));
+(document.fonts ? document.fonts.ready : Promise.resolve()).then(tlFade);
+window.addEventListener('resize', tlFade);
+
+/* ─────────── Tab6 上半行：match_prefix 跑完那一刻的树 ───────────
+   这一行画的是「请求刚查完树」的状态，还没 insert。三件事要能看出来：
+   1. 绿圈 = 这次匹配走过的路径，最深的那个绿圈就是【公共前缀节点】；
+   2. 分裂是在 match 里就发生的——时刻 1、2 这两棵的形状已经被切过了，
+      insert 只负责往下挂新节点，不再动上面；
+   3. 段色不换成绿色（只给节点描边），否则和 GPU KV slot 那行的颜色对不上了。 */
+const MT = [
+  /* 时刻 0：树是空的，children 里什么都没有，last_node 就是 root 本身 → root 打 .pfx。
+     .pfx 现在只加外框不改配色，所以 rt0 可以留着，root 还是它本来的灰 */
+  { cls:'rt0 pfx', val:'root', dot:'公共前缀', dotCls:'lk' },
+
+  /* 时刻 1：children[为什么] 命中那个大节点，但只对上 1 个 token，
+     prefix_len(1) < len(node.key)(5) → 当场 _split_node，切成 [1] + [2,3,4,5]。
+     公共前缀节点就是新切出来的「为什么」[1] */
+  { cls:'rt0', val:'root', kids:[
+    { lbl:SEGC(['为什么'],'sg1'), val:'[1]', cls:'pfx', dot:'公共前缀', dotCls:'lk', kids:[
+      { lbl:SEGC(['我的','代码','会','报错'],'sg2'), val:'[2,3,4,5]' } ]} ]},
+
+  /* 时刻 2：「为什么」整段命中往下钻（它只是【路过】，用浅一档的 .hitp），
+     再比「我的 代码 会 报错」只对上 2 个，又切一刀 → [2,3] + [4,5]。
+     停下来的是「我的 代码」[2,3]，它才是公共前缀节点 → .pfx */
+  { cls:'rt0', val:'root', kids:[
+    { lbl:SEGC(['为什么'],'sg1'), val:'[1]', cls:'hitp', kids:[
+      /* 这一棵的标注挂【左边】：右边紧挨着「显存 老是 不够 用」那条边的标签（从 x≈107 起），
+         往右写会正面撞上；而 [2,3] 本身就是最左那枚节点，左边是空的 */
+      { lbl:SEGC(['我的','代码'],'sg2'), val:'[2,3]', cls:'pfx', dot:'公共前缀', dotCls:'lk', dotSide:'l', kids:[
+        { lbl:SEGC(['会','报错'],'sg3'), val:'[4,5]' } ]},
+      { lbl:SEGC(['显存','老是','不够','用'],'sg5'), val:'[6,7,8,9]' } ]} ]}
+];
+/* 第三棵的两片叶子一个 2 token、一个 4 token（约 102 / 190px），162 会贴在一起，单独放宽。
+   另外三棵都要给「公共前缀」那条标注留地方：它挂在节点外侧 r+9（=67px）处、自身约 60px 宽。
+   前两棵挂右边所以加 padR，第三棵挂左边所以加 padL。格子有 526px 而树才 168/168/374，
+   加完也远没撑满，表格总宽 1770 不受影响，1080p 下照样不用横滑。 */
+/* 第二棵的 padL 也要抬：它是一条单链，「我的 代码 会 报错」这个 4-token 标签压在竖边上
+   居中摆放，往左探出自己半个身位（约 95px），64 接不住，会探到 .rt 盒子外面。 */
+const MT_FIX = { 0:{ padR:150 }, 1:{ padR:150, padL:100 }, 2:{ leafGap:206, padL:150 } };
+MT.forEach((spec, i) => {
+  const el = document.getElementById('mt-' + i);
+  if(!el) return;
+  el.innerHTML = renderTree(spec, MT_FIX[i] ? Object.assign({}, ST_OPT, MT_FIX[i]) : ST_OPT);
+});
+
+/* ─────────── Tab5「淘汰节点」那棵树 ───────────
+   这一屏讲的是「淘汰先挑谁」，所以树上标的是【堆的键】last_access_time，不是 lock_ref。
+
+   为什么必须把「显存 老是 不够 用」那一支画出来：另外两片叶子的 last_access_time 是【相等】的
+   ——「会 报错」是 request[2] 匹配时被 _split_node 切开的（沿途刷新），「这么 慢」是它当时新挂上的，
+   两个都停在时刻 2。只画这两片，堆顶是平局，演示不出「挑最老的」。
+   补上「显存」那一支（停在时刻 1）才有唯一的堆顶，而且和 Tab7 真正被淘汰的那一支正好对上。
+
+   标注用 note（挂节点下方）不用 dot（挂右边）：三片叶子横排时，右挂的标注会压到隔壁叶子的标签上。 */
+document.getElementById('lk-tree').innerHTML = renderTree({
+  cls:'rt0', val:'root',
+  kids:[{ lbl:SEGC(['为什么'],'sg1'), val:'[1]',
+    kids:[
+      /* .evc = evictable_leaves 的成员，红色虚线圈。只有这三枚有圈，
+         「为什么」和「我的 代码」都有孩子、进不了这个集合——
+         「只有叶子进得来」这条就是靠圈和没圈的对比画出来的，不用再写字。 */
+      { lbl:SEGC(['我的','代码'],'sg2'), val:'[2,3]', kids:[
+        { lbl:SEGC(['会','报错'],'sg3'), val:'[4,5]',   cls:'evc', note:'last_access = 时刻 2' },
+        { lbl:SEGC(['这么','慢'],'sg4'), val:'[10,11]', cls:'evc', note:'last_access = 时刻 2' } ]},
+      { lbl:SEGC(['显存','老是','不够','用'],'sg5'), val:'[6,7,8,9]', cls:'evc',
+        note:'last_access = 时刻 1', noteCls:'ev' }
+    ]}]
+   /* leafGap 215：三片叶子，「我的 代码」和「显存 老是 不够 用」那两个标签只隔半个身位，
+      按 leafGap/2 −(wA+wB)/4 估，再窄就贴一起了。
+      noteDy 30：r 是 50，但胶囊只有 40 出头高，按默认的 r+13 挂下去缝会空一大截，
+      看着不像是这个节点的标注。30 刚好落在胶囊下沿再往下一点点。
+      padB 要装得下 note（往下推 noteDy 再加它自己一行），给小了会掉出 .rt、被 .panel 裁掉。 */
+}, { chips:true, levelH:118, leafGap:215, padL:110, padR:110, padY:30, padB:62, r:50, noteDy:30 });
+
+</script>
+</body>
+</html>
