@@ -1,0 +1,924 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex 084 · Continuous Batching</title>
+<link rel="icon" href="data:,">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap');
+  :root{--bg:#0c0d10;--panel:#15171d;--panel2:#1b1e26;--ink:#f4f5f7;--muted:#9da3b0;--line:rgba(255,255,255,.12);--blue:#78a8ff;--blue2:#cdddff;--green:#5ee3ae;--yellow:#f6c66a;--red:#fc8e8e;--purple:#c2a5ff;--mono:ui-monospace,SFMono-Regular,Menlo,monospace;--sans:Inter,"PingFang SC",-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif}
+  *{box-sizing:border-box;margin:0;padding:0} html,body{min-height:100%} body{background:radial-gradient(900px 400px at 50% -10%,rgba(120,168,255,.11),transparent 70%),var(--bg);color:var(--ink);font-family:var(--sans);overflow-x:hidden;overflow-y:auto;-webkit-font-smoothing:antialiased}
+  /* deck 按 1920×1080 画，所以这里兜一个 1080 的底：窗口比它矮时（笔记本屏、不接外显）
+     页面可以往下滚看到每屏下半截，接 1080p 外屏录屏时不出滚动条 */
+  .deck{min-height:max(100vh,1080px);display:flex;flex-direction:column}.topbar{height:78px;display:flex;align-items:center;justify-content:space-between;padding:0 46px;border-bottom:1px solid var(--line);gap:28px}.brand{font-size:20px;font-weight:800;white-space:nowrap}.brand b{color:var(--blue)}.tabs{display:flex;gap:5px;padding:5px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.025)}.tab{border:1px solid transparent;background:transparent;color:var(--muted);border-radius:999px;padding:8px 14px;font:700 14px var(--sans);cursor:pointer;white-space:nowrap}.tab.active{background:rgba(120,168,255,.16);border-color:rgba(120,168,255,.48);color:var(--blue2)}
+  .stage{position:relative;flex:1;min-height:0}/* 页面可滚动之后，地址栏里的 #id 会让浏览器把那一屏滚到最顶、把 topbar 顶出画面；
+   留出 topbar 的 78px，跳转就正好落回 0 */
+  .slide{display:none;position:absolute;inset:0;padding:34px 46px 42px;scroll-margin-top:78px}.slide.active{display:flex;flex-direction:column;align-items:center}.head{font-size:34px;line-height:1.22;font-weight:850;letter-spacing:-.5px;text-align:center}.head b{color:var(--blue)}.sub{margin-top:10px;color:var(--muted);font-size:18px;font-weight:600;text-align:center}.canvas{width:min(1260px,100%);flex:1;min-height:0;margin-top:28px;display:flex;align-items:center;justify-content:center}
+  .card{border:1px solid var(--line);border-radius:16px;background:linear-gradient(145deg,rgba(255,255,255,.055),rgba(255,255,255,.025));box-shadow:0 18px 48px rgba(0,0,0,.2)}.mono{font-family:var(--mono)}.note{font-size:15px;color:var(--muted);font-weight:650}.badge{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:999px;padding:5px 11px;font:700 13px var(--mono);color:var(--muted);background:rgba(255,255,255,.035)}.badge.good{color:var(--green);border-color:rgba(94,227,174,.5);background:rgba(94,227,174,.1)}.badge.warn{color:var(--yellow);border-color:rgba(246,198,106,.5);background:rgba(246,198,106,.1)}.badge.bad{color:var(--red);border-color:rgba(252,142,142,.5);background:rgba(252,142,142,.1)}
+  /* 1: matrices —— 照抄 063 Tab3 */
+  #basics{padding-top:22px}
+  #basics .canvas{margin-top:18px;align-items:flex-start}
+  .m3{--q:#a78bfa;--k:#38bdf8;--v:#ff8a3d;--green:#10b981;--card:#1a1a1a;--border:#2a2a2a;--dim:#9a9a9a;width:1200px;color:#e0e0e0;font-family:-apple-system,"PingFang SC","Helvetica Neue",sans-serif}
+  .m3 .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:28px 30px;box-shadow:none}
+  .m3 .sec-name{font-size:16px;color:#fff;font-weight:600;margin-bottom:20px}
+  .m3 .flow1{position:relative;width:1120px;height:300px;margin:8px auto 0}
+  .m3 .flines{position:absolute;left:0;top:0;width:1120px;height:300px;overflow:visible;z-index:1}
+  .m3 .fbox{position:absolute;z-index:2;background:#202020;border-radius:10px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:15px;font-weight:600;font-family:"JetBrains Mono",Menlo,monospace;white-space:nowrap}
+  .m3 .fbox.pre{border:1.5px solid var(--k)}
+  .m3 .fbox.dec{border:1.5px solid var(--v)}
+  .m3 .fchip{position:absolute;z-index:2;width:76px;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700}
+  .m3 .fchip.pp{background:#2c5d8c;color:#fff}
+  .m3 .fchip.gg{background:var(--v);color:#1a1a1a}
+  .m3 .fcanopy{position:absolute;z-index:3;background:var(--card);text-align:center;padding:3px 8px}
+  .m3 .fcanopy .ctitle{font-size:17px;font-weight:700;font-family:"JetBrains Mono",Menlo,monospace}
+  .m3 .fcanopy .csub{font-size:14px;color:#cfcfcf;margin-top:3px;white-space:nowrap}
+  .m3 .fcanopy.pre .ctitle{color:var(--k)}
+  .m3 .fcanopy.dec .ctitle{color:var(--v)}
+  .m3 .frail-label{position:absolute;z-index:3;background:var(--card);font-size:14px;color:var(--v);text-align:center}
+  .m3 .fblabel{position:absolute;z-index:2;font-size:15px;font-weight:600;text-align:center;white-space:nowrap}
+  .m3 .fblabel.pp{color:#7fb5e6}
+  .m3 .fblabel.gg{color:var(--v)}
+  .m3 .fellip{position:absolute;z-index:2;font-size:24px;color:#7d7d7d;font-weight:700}
+  .m3 .banner{background:rgba(16,185,129,.1);border:1px solid var(--green);border-radius:10px;padding:18px 24px;font-size:17px;color:#fff;text-align:center}
+  .m3 .banner b{color:var(--green)}
+  /* 2: batch */
+  .arrow{display:grid;place-items:center;gap:12px;text-align:center;color:var(--muted);font-size:14px;font-weight:800}.arrow strong{font-size:44px;color:var(--blue)}
+  .rbatch{width:1200px;display:grid;gap:22px}
+  .rb-stage{display:grid;grid-template-columns:auto 88px auto 88px auto;align-items:center;justify-content:center;gap:0}
+  .rb-col{display:grid;justify-items:center;align-self:start}
+  .mrows{display:grid;gap:6px}
+  .mrow{display:flex;align-items:center}
+  .mrow.heads{height:26px}
+  .tkrow{display:flex;gap:5px}
+  #basics .arrow strong{color:#38bdf8}
+  .rlab{width:78px;flex:none;font:800 16px var(--mono);color:#7fb5e6}
+  .tick{width:64px;flex:none;text-align:center;font:700 13px var(--mono);color:var(--muted)}
+  .tk{width:64px;height:46px;flex:none;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;font-style:normal}
+  .tk.p{background:#2c5d8c;color:#fff}
+  .tk.g{background:#ff8a3d;color:#1a1a1a}
+  .tk.eos{background:transparent;border:2px dashed #6b7280;color:#9da3b0;font-size:13px;font-weight:800}
+  .ogrid{display:grid;grid-template-columns:repeat(6,64px);column-gap:10px;row-gap:6px;align-items:center}
+  .ogrid .tick{width:auto;height:26px}
+  .ogrid .tk{width:auto}
+  .rb-llm{display:grid;justify-items:center;gap:10px}
+  .rb-llm .fbox{position:static;width:170px;height:112px;flex-direction:column;gap:11px}
+  .llm-bars{display:flex;align-items:flex-end;gap:6px;height:46px}
+  .llm-bars i{width:13px;border-radius:4px;background:#a78bfa}
+  .llm-bars i:nth-child(1){height:30px}.llm-bars i:nth-child(2){height:46px;background:#38bdf8}.llm-bars i:nth-child(3){height:37px}.llm-bars i:nth-child(4){height:46px;background:#ff8a3d}.llm-bars i:nth-child(5){height:32px}
+  .rb-foot{padding:18px 24px;border-radius:10px;border:1px solid #f87171;background:rgba(248,113,113,.1);color:#fff;font-size:18px;font-weight:700;text-align:center}
+  .rb-foot b{color:#f87171}
+  /* 3: 连续批处理 —— 照搬 Tab1 上面那张时间线的结构，输入/输出竖着摞 */
+  #cont2 .canvas{margin-top:18px;align-items:flex-start}
+  .cb{width:1240px;display:grid;gap:20px;justify-items:center}
+  .cb-card{width:1236px;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:12px;padding:24px 28px}
+  .cb2{position:relative;width:1180px;height:476px;margin:0 auto;font-family:-apple-system,"PingFang SC","Helvetica Neue",sans-serif}
+  .cb2 .wires{position:absolute;left:0;top:0;width:1180px;height:476px;overflow:visible;z-index:1}
+  .cb2 .bx{position:absolute;z-index:3;background:#202020;border-radius:10px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:15px;font-weight:600;font-family:"JetBrains Mono",Menlo,monospace;white-space:nowrap}
+  .cb2 .bx.pre{border:1.5px solid #38bdf8}
+  .cb2 .bx.dec{border:1.5px solid #ff8a3d}
+  .cb2 .grp{position:absolute;z-index:1;border:1px dashed rgba(255,255,255,.16);border-radius:11px;background:rgba(255,255,255,.025)}
+  .cb2 .ck{position:absolute;z-index:3;width:56px;height:48px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;font-style:normal}
+  .cb2 .ck.p{background:#2c5d8c;color:#fff}
+  .cb2 .ck.g{background:#ff8a3d;color:#1a1a1a}
+  .cb2 .ck.eos{border:2px dashed #6b7280;color:#9da3b0;font-size:13px;font-weight:800}
+  .cb2 .ring{position:absolute;z-index:2;border:2px dashed #5ee3ae;border-radius:11px}
+  .cb2 .cnp{position:absolute;z-index:3;text-align:center}
+  .cb2 .cnp .ct{font-size:17px;font-weight:700;font-family:"JetBrains Mono",Menlo,monospace}
+  .cb2 .cnp .cs{font-size:14px;color:#cfcfcf;margin-top:3px;white-space:nowrap}
+  .cb2 .cnp.pre .ct{color:#38bdf8}
+  .cb2 .cnp.dec .ct{color:#ff8a3d}
+  .cb2 .cnp.new .ct{color:#5ee3ae}
+  .cb2 .blab{position:absolute;z-index:2;font-size:15px;font-weight:600;text-align:center;white-space:nowrap}
+  .cb2 .blab.p{color:#7fb5e6}
+  .cb2 .blab.g{color:#ff8a3d}
+  .cb2 .ellip{position:absolute;z-index:2;font-size:24px;color:#7d7d7d;font-weight:700}
+  .cb-foot{padding:18px 24px;border-radius:10px;border:1px solid #10b981;background:rgba(16,185,129,.1);color:#fff;font-size:18px;font-weight:700;text-align:center;width:100%}
+  .cb-foot b{color:#10b981}
+  /* 4: 两种拼法 —— 等轴测画法：n 横轴、d 往右上展开成 z 轴 */
+  #pack .canvas{margin-top:14px;align-items:flex-start}
+  .tn3{position:relative;width:1140px;height:510px;margin:0 auto;font-family:-apple-system,"PingFang SC","Helvetica Neue",sans-serif;color:#e0e0e0}
+  .tn3 .wires{position:absolute;left:0;top:0;width:1180px;height:580px;overflow:visible;z-index:1}
+  /* 行 = token 数（竖），列 = d（横） */
+  .tn3 .sh{position:absolute;z-index:2;display:grid;gap:3px}
+  /* 错开叠放的三片平面（batch 的 3 层） */
+  .tn3 .ly{position:absolute;padding:6px;border-radius:9px;background:#15171d;border:1px solid rgba(255,255,255,.14);box-shadow:0 10px 22px rgba(0,0,0,.55)}
+  .tn3 .ly .sh{position:static}
+  .tn3 .sc{width:20px;height:20px;border-radius:3px}
+  .tn3 .sc.c-pre{background:#2c5d8c}
+  .tn3 .sc.c-dec{background:#ff8a3d}
+  .tn3 .sc.c-pad{background:#4b5160;border:1.5px dashed #9da3b0}
+  .tn3 .lbl{position:absolute;z-index:3;font:800 16px/1.5 "JetBrains Mono",Menlo,monospace;white-space:nowrap}
+  .tn3 .lbl .dim{font-family:"JetBrains Mono",Menlo,monospace;color:#9a9a9a;font-weight:600;margin-left:10px}
+  .tn3 .lbl.pre{color:#7fb5e6}
+  .tn3 .lbl.dec{color:#ff8a3d}
+  .tn3 .blk{position:absolute;z-index:3;font-size:17px;font-weight:700;color:#fff;white-space:nowrap}
+  .tn3 .blk b{font-family:"JetBrains Mono",Menlo,monospace;color:#38bdf8;font-size:20px;margin-left:4px}
+  .tn3 .blk.skip{color:#8f949e}
+  .tn3 .blk.pick{color:#5ee3ae}
+  .tn3 .mk{font-weight:800;margin-right:8px}
+  .tn3 .mk.no{color:#f87171}
+  .tn3 .mk.ok{color:#5ee3ae}
+  .tn3 .cap{position:absolute;z-index:3;font-size:15px;font-weight:700;color:var(--muted);white-space:nowrap}
+  .tn3 .ax{position:absolute;z-index:3;font:700 13px "JetBrains Mono",Menlo,monospace;color:#9a9a9a;white-space:nowrap}
+  .tn3 .ax.key{font-size:19px;color:#38bdf8}
+  /* 5: chunked prefill */
+  /* ---- Tab4：Decoder 结构图（几何照搬 079 Tab1 的 .blockfig 左半），右边展开成矩阵运算 ---- */
+  #ops .canvas{width:min(1560px,100%);margin-top:18px;align-items:flex-start}
+  /* Tab4 是内容最满的一屏，矮屏（不接外显）上单独多给一截滚动余量，
+     让下半张对比图能滚到画面中间而不是贴着窗口底边；1080p 下这条不生效 */
+  @media (max-height:1079px){.deck[data-slide="ops"]{min-height:1320px}}
+  /* ---- Tab5：ragged batching 的分块 attention mask ---- */
+  .maskpanel{width:1039px;background:#161618;border:1px solid rgba(255,255,255,.09);border-radius:14px;padding:12px 17px 10px}
+  .maskfig{width:100%;max-width:1003px;height:auto;display:block;margin:0 auto}
+  .maskfig .mc.on-p{fill:#2c5d8c}
+  .maskfig .mc.on-d{fill:#ff8a3d}
+  .maskfig .mc.off{fill:none;stroke:#3a3f4a;stroke-width:2}
+  .maskfig .mc.cache{fill:#8a5a30}
+  .maskfig .mgrp{font-family:var(--sans);font-size:26px;font-weight:800}
+  .maskfig .mgrp.p{fill:#7fb5e6}
+  .maskfig .mgrp.d{fill:#ff8a3d}
+  .maskfig .mgrp.w{fill:#f2f3f5}
+  .maskfig .mdash{fill:none;stroke:#6b7280;stroke-width:2.4;stroke-dasharray:9 7}
+  /* B、C 的 K 整块都从 KV Cache 里取（最后一列是这一轮新算的那个 token） */
+  .maskfig .mkv{fill:none;stroke:#d79a5e;stroke-width:2.6;stroke-dasharray:11 8}
+  .maskfig .dbic{fill:rgba(138,90,48,.22);stroke:#d79a5e;stroke-width:2.6;stroke-linejoin:round}
+  .maskfig .dbic .band{fill:none}
+  .maskfig .dblbl{font:800 24px "JetBrains Mono",Menlo,monospace;fill:#d79a5e;text-anchor:middle}
+  /* 输出标注用 Tab2 那个亮绿，避开 prefill 的蓝、decode 的橙、cache 的棕 */
+  .maskfig .mout{fill:#1b1e26;stroke:#5ee3ae;stroke-width:2}
+  .maskfig .mouttxt{font-family:var(--sans);font-size:24px;font-weight:700;fill:#f2f3f5;text-anchor:middle}
+  .maskfig .marr{fill:none;stroke:#5ee3ae;stroke-width:3}
+  .maskfig .marr.kv{stroke:#d79a5e;stroke-width:3.2}
+  #mask .canvas{margin-top:18px;align-items:flex-start}
+  /* ---- Tab6：这一层里数据怎么流 + kernel 的循环长什么样 ---- */
+  #kernel .canvas{width:min(1260px,100%);margin-top:18px;align-items:flex-start}
+  .kernrow{display:flex;gap:32px;align-items:stretch}
+  .flowpanel{width:478px;background:#161618;border:1px solid rgba(255,255,255,.09);border-radius:14px;padding:12px 17px 10px}
+  .flowfig{width:100%;max-width:442px;height:auto;display:block;margin:0 auto}
+  .codepanel{display:flex;align-items:center;justify-content:center}
+  /* 代码框沿用 074 的那种"窗口"样式 */
+  .codebox{width:max-content;background:#1d1f28;border:1px solid rgba(255,255,255,.13);border-radius:12px;
+           overflow:hidden;text-align:left;box-shadow:0 10px 30px rgba(0,0,0,.45)}
+  .codebox .cbar{display:flex;align-items:center;gap:8px;padding:9px 16px;
+                 background:#272a36;border-bottom:1px solid rgba(255,255,255,.09)}
+  .cbar .d{width:12px;height:12px;border-radius:50%}
+  .cbar .d.r{background:#ff5f57} .cbar .d.y{background:#febc2e} .cbar .d.g{background:#28c840}
+  .cbar .fname{margin-left:10px;font-family:"JetBrains Mono",Menlo,monospace;font-size:14px;color:#9aa3b5}
+  .codebox pre{margin:0;padding:15px 24px 17px;font-family:"JetBrains Mono",Menlo,monospace;
+               font-size:15px;line-height:1.6;color:#8b93a6}
+  .codebox .kw{color:#6aa0ff;font-weight:700}
+  .codebox .cmt{color:#98a2b3}
+  .codebox .fn{color:#f6c486;font-weight:700}
+  .codebox .var{color:#f2f3f5;font-weight:700}
+  .flowfig .fbox{fill:#1b1e26;stroke:#6aa0ff;stroke-width:2}
+  .flowfig .fbox.cache{fill:rgba(138,90,48,.16);stroke:#d79a5e}
+  .flowfig .fbox.kern{fill:rgba(94,227,174,.1);stroke:#5ee3ae}
+  .flowfig .ft{font-family:var(--sans);font-size:18px;font-weight:800;fill:#f2f3f5;text-anchor:middle}
+  .flowfig .ft.sm{font-size:16px;font-weight:700;fill:#cfcfcf}
+  .flowfig .ft.p{fill:#7fb5e6}
+  .flowfig .ft.d{fill:#ff8a3d}
+  .flowfig .ft.c{fill:#d79a5e}
+  .flowfig .fm{font:700 16px "JetBrains Mono",Menlo,monospace;fill:#9da3b0;text-anchor:middle}
+  .flowfig .fl{fill:none;stroke:#6b7280;stroke-width:2}
+  .opswrap{display:flex;flex-direction:column;align-items:center;gap:10px}
+  .ops-foot{width:962px;padding:18px 24px;border-radius:10px;border:1px solid #10b981;background:rgba(16,185,129,.1);color:#fff;font-size:18px;font-weight:700;text-align:center}
+  .ops-foot b{color:#10b981}
+  .ops-foot i{font-style:normal;color:#ff8a3d}
+  .maskwrap{display:flex;flex-direction:column;align-items:center;gap:10px}
+  .mask-foot{width:1039px}
+  .decpanel{width:962px;background:#161618;border:1px solid rgba(255,255,255,.09);border-radius:14px;padding:14px 20px 12px}
+  /* Tab4 下半：逐 token 的算子 vs attention。矩阵格子沿用 Tab3 的尺寸配色，
+     viewBox 以 1480 画、渲染到 920px，缩放 1.6087，所以 32 单位的格子正好落回 20px */
+  .cmpfig{width:100%;max-width:920px;height:auto;display:block;margin:0 auto}
+  .cmpfig .cell.p{fill:#2c5d8c}
+  .cmpfig .cell.d{fill:#ff8a3d}
+  /* 变换之后：同色系提亮一档，看得出是「同一批 token 变了一次」而不是换了别的请求 */
+  .cmpfig .cell.p2{fill:#4885bd}
+  .cmpfig .cell.d2{fill:#ffb078}
+  /* 标题做成和上面结构图同色的方框：黄=LayerNorm、浅蓝=Linear、紫=FFN、绿=Attention */
+  .cmpfig .cpill{stroke:rgba(0,0,0,.55);stroke-width:1.6}
+  .cmpfig .cpill.norm{fill:#fff0a8}
+  .cmpfig .cpill.lin{fill:#bcd9ff}
+  .cmpfig .cpill.ffn{fill:#9f8cfa}
+  .cmpfig .cpill.attn{fill:#c6ecca}
+  .cmpfig .cptxt{font-family:var(--sans);font-size:24px;font-weight:800;fill:#12121a;text-anchor:middle;dominant-baseline:central}
+  .cmpfig .csub{font-family:var(--sans);font-size:26px;font-weight:700;fill:#cfcfcf;text-anchor:middle}
+  .cmpfig .ccap{font-family:var(--sans);font-size:26px;font-weight:800;text-anchor:middle}
+  .cmpfig .ccap.ok{fill:#5ee3ae}
+  .cmpfig .ccap.warn{fill:#f87171}
+  .cmpfig .csum{font-family:var(--sans);font-size:22px;font-weight:800;fill:#e0e0e0;text-anchor:middle}
+  .cmpfig .creq{font:800 26px "JetBrains Mono",Menlo,monospace}
+  .cmpfig .creq.p{fill:#7fb5e6}
+  .cmpfig .creq.d{fill:#ff8a3d}
+  .cmpfig .cbrk{fill:none;stroke-width:2.6}
+  .cmpfig .cbrk.p{stroke:#7fb5e6}
+  .cmpfig .cbrk.d{stroke:#ff8a3d}
+  .cmpfig .cwire{fill:none;stroke-width:3.4}
+  .cmpfig .cwire.p{stroke:#7fb5e6}
+  .cmpfig .cwire.d{stroke:#ff8a3d}
+  .cmpfig .carc{fill:none;stroke:#5ee3ae;stroke-width:3.4}
+  .cmpfig .cbad{fill:none;stroke:#f87171;stroke-width:3.4;stroke-dasharray:9 8}
+  .cmpfig .cdiv{fill:none;stroke:#3a3f4a;stroke-width:2.5;stroke-dasharray:10 10}
+  .cmpfig .cnote{font-family:var(--sans);font-size:24px;font-weight:700;fill:#f2f3f5}
+  .cmpfig .cnote.bad{fill:#f87171}
+  .cmpfig .cring{fill:none;stroke:#f2f3f5;stroke-width:3.4;stroke-dasharray:9 7}
+  .cmpfig .ccall{fill:none;stroke:#38bdf8;stroke-width:2.6;stroke-dasharray:9 7}
+  .cmpfig .cx{font-family:var(--sans);font-size:32px;font-weight:800;fill:#f87171;text-anchor:middle}
+  .decfig{width:100%;max-width:920px;height:auto;display:block;margin:0 auto}
+  .decfig .stream{fill:none;stroke:#f2f3f5;stroke-width:3}
+  .decfig .stream.dash{stroke:#5b5b66;stroke-dasharray:7 9}
+  .decfig .qkvbus{fill:none;stroke:#f2f3f5;stroke-width:3;stroke-linecap:butt}
+  .decfig .qkvhead{fill:#f2f3f5}
+  .decfig .blockbox{fill:rgba(106,160,255,.045);stroke:#6aa0ff;stroke-width:2.4}
+  .decfig .opsbox{fill:rgba(106,160,255,.05);stroke:#6aa0ff;stroke-width:2.4}
+  .decfig .resid{fill:none;stroke:#f2f3f5;stroke-width:2.6}
+  .decfig .zoomline{fill:none;stroke:#6aa0ff;stroke-width:2.4;stroke-dasharray:10 8}
+  .decfig .pill{stroke:rgba(0,0,0,.55);stroke-width:1.6}
+  .decfig .pill.norm{fill:#fff0a8}
+  .decfig .pill.attn{fill:#c6ecca}
+  .decfig .pill.ffn{fill:#9f8cfa}
+  .decfig .pill.lin{fill:#bcd9ff}
+  .decfig .pill.add{fill:#d8dbe3}
+  .decfig .pill.act{fill:#c9bcfb}
+  .decfig .mlpbox{fill:rgba(159,140,250,.08);stroke:#9f8cfa;stroke-width:2}
+  .decfig .mhabox{fill:rgba(143,214,164,.07);stroke:#8fd6a4;stroke-width:2}
+  .decfig .op{fill:none;stroke:#f2f3f5;stroke-width:2.6}
+  .decfig .lbl{font-family:var(--sans);font-weight:800;text-anchor:middle;dominant-baseline:central}
+  .decfig .lbl.dark{fill:#12121a;font-size:21px}
+  .decfig .lbl.sm{font-size:20px}
+  .decfig .lbl.big{font-size:22px}
+  .decfig .lbl.huge{font-size:29px}
+  .decfig .mlplbl{font-family:var(--sans);font-size:19px;font-weight:800;fill:#c2a5ff;text-anchor:end}
+  .decfig .mhalbl{font-family:var(--sans);font-size:19px;font-weight:800;fill:#8fd6a4;text-anchor:end}
+  .decfig .iolbl{font-family:var(--sans);font-size:22px;font-weight:800;fill:#f2f3f5;text-anchor:middle}
+  .decfig .qkvlbl{font-family:var(--sans);font-size:18px;font-weight:700;fill:#f2f3f5}
+  .decfig .plus{fill:var(--bg);stroke:#f2f3f5;stroke-width:2.6}
+  .decfig .plussign{font-family:var(--sans);font-size:26px;font-weight:800;text-anchor:middle;dominant-baseline:central;fill:#f2f3f5}
+  .decfig .figlbl{font-family:var(--sans);font-size:28px;font-weight:800;fill:#f2f3f5}
+  .decfig .figlbl .hl{fill:#6aa0ff}
+  .prefill-layout{width:1150px;display:grid;grid-template-columns:1fr 130px 1fr;align-items:center;gap:24px}.long-prompt{padding:23px}.long-prompt h3,.budget h3{font-size:18px;margin-bottom:15px}.prompt-line{display:flex;flex-wrap:wrap;gap:7px}.ptok{padding:9px 11px;border-radius:7px;background:rgba(194,165,255,.16);border:1px solid rgba(194,165,255,.4);font:800 14px var(--mono);color:#dfd1ff}.chunks{display:grid;gap:10px;margin-top:18px}.chunk{padding:12px 14px;border-radius:9px;border:1px solid rgba(194,165,255,.35);background:rgba(194,165,255,.08);font:800 15px var(--mono);color:var(--purple)}.budget{padding:23px}.budget-stack{display:grid;gap:10px}.budget-row{height:58px;display:flex;align-items:center;border-radius:9px;padding:0 14px;font:800 15px var(--mono)}.budget-row.decode{background:rgba(120,168,255,.15);border:1px solid rgba(120,168,255,.4);color:var(--blue2)}.budget-row.chunk{background:rgba(194,165,255,.13);border:1px solid rgba(194,165,255,.4);color:var(--purple)}.budget-row.free{border:1px dashed rgba(255,255,255,.24);color:var(--muted)}.budget-foot{margin-top:17px;color:var(--green);font-size:18px;font-weight:850}
+  /* 6: compare */
+</style>
+</head>
+<body>
+<main class="deck">
+  <header class="topbar"><div class="brand">连续批处理 <b>Continuous Batching</b></div><nav class="tabs" aria-label="画面导航"><button class="tab" data-slide="basics">朴素批处理</button><button class="tab" data-slide="cont2">连续批处理</button><button class="tab" data-slide="pack">合并输入</button><button class="tab" data-slide="ops">一层计算</button><button class="tab" data-slide="mask">分块 Attention</button><button class="tab" data-slide="kernel">内核实现</button></nav></header>
+  <div class="stage">
+    <section class="slide" id="basics">
+      <h1 class="head">朴素批处理 <b>Naive Batching</b></h1>
+      <div class="canvas"><div class="m3">
+        <div class="card">
+          <div class="flow1">
+            <svg class="flines" viewBox="0 0 1120 300">
+              <defs>
+                <marker id="mk-b" markerWidth="11" markerHeight="11" refX="5.5" refY="5.5"
+                  orient="auto"><path d="M1,1 L10,5.5 L1,10 Z" fill="#38bdf8"/></marker>
+                <marker id="mk-o" markerWidth="11" markerHeight="11" refX="5.5" refY="5.5"
+                  orient="auto"><path d="M1,1 L10,5.5 L1,10 Z" fill="#ff8a3d"/></marker>
+              </defs>
+              <!-- 连续时间线 rail -->
+              <path d="M60,46 L1085,46" stroke="#3a3a3a" stroke-width="2"
+                stroke-dasharray="7 6" fill="none"/>
+              <!-- prompt token → prefill box（蓝） -->
+              <line x1="108" y1="200" x2="108" y2="178" stroke="#38bdf8" stroke-width="2" marker-end="url(#mk-b)"/>
+              <line x1="190" y1="200" x2="190" y2="178" stroke="#38bdf8" stroke-width="2" marker-end="url(#mk-b)"/>
+              <line x1="272" y1="200" x2="272" y2="178" stroke="#38bdf8" stroke-width="2" marker-end="url(#mk-b)"/>
+              <line x1="354" y1="200" x2="354" y2="178" stroke="#38bdf8" stroke-width="2" marker-end="url(#mk-b)"/>
+              <line x1="436" y1="200" x2="436" y2="178" stroke="#38bdf8" stroke-width="2" marker-end="url(#mk-b)"/>
+              <!-- 已生成的字 → 它自己的 decode box（橙） -->
+              <line x1="638" y1="200" x2="638" y2="178" stroke="#ff8a3d" stroke-width="2" marker-end="url(#mk-o)"/>
+              <line x1="813" y1="200" x2="813" y2="178" stroke="#ff8a3d" stroke-width="2" marker-end="url(#mk-o)"/>
+              <line x1="988" y1="200" x2="988" y2="178" stroke="#ff8a3d" stroke-width="2" marker-end="url(#mk-o)"/>
+              <!-- A：Prefill 算完，写出第一个字「写」（蓝） -->
+              <path d="M460,110 L460,52 Q460,46 466,46 L549,46 Q555,46 555,52 L555,217 Q555,223 561,223 L597,223"
+                fill="none" stroke="#38bdf8" stroke-width="2.5" marker-end="url(#mk-b)"/>
+              <!-- B/C/D：每个 decode 前向写出下一个字（橙） -->
+              <path d="M680,110 L680,52 Q680,46 686,46 L719,46 Q725,46 725,52 L725,217 Q725,223 731,223 L772,223"
+                fill="none" stroke="#ff8a3d" stroke-width="2.5" marker-end="url(#mk-o)"/>
+              <path d="M855,110 L855,52 Q855,46 861,46 L894,46 Q900,46 900,52 L900,217 Q900,223 906,223 L947,223"
+                fill="none" stroke="#ff8a3d" stroke-width="2.5" marker-end="url(#mk-o)"/>
+              <path d="M1030,110 L1030,52 Q1030,46 1036,46 L1069,46 Q1075,46 1075,52 L1075,194"
+                fill="none" stroke="#ff8a3d" stroke-width="2.5" marker-end="url(#mk-o)"/>
+              <!-- 底部分段括号 -->
+              <path d="M70,254 L70,261 L474,261 L474,254" fill="none" stroke="#3f6d99" stroke-width="2"/>
+              <path d="M600,254 L600,261 L1026,261 L1026,254" fill="none" stroke="#c75a1f" stroke-width="2"/>
+            </svg>
+
+            <div class="frail-label" style="left:560px;width:520px;top:14px;">Autoregressive · 自回归 · 每生成一个字，都接回输入再生成下一个</div>
+
+            <div class="fcanopy pre" style="left:188px;width:170px;top:56px;">
+              <div class="ctitle">Prefill 预填充</div>
+              <div class="csub">整段跑一次前向</div>
+            </div>
+            <div class="fcanopy dec" style="left:738px;width:150px;top:56px;">
+              <div class="ctitle">Decode 解码</div>
+              <div class="csub">一次写一个字</div>
+            </div>
+
+            <div class="fbox pre" style="left:58px;top:110px;width:430px;height:64px;">Transformer</div>
+            <div class="fbox dec" style="left:578px;top:110px;width:120px;height:64px;">Transformer</div>
+            <div class="fbox dec" style="left:753px;top:110px;width:120px;height:64px;">Transformer</div>
+            <div class="fbox dec" style="left:928px;top:110px;width:120px;height:64px;">Transformer</div>
+
+            <div class="fchip pp" style="left:70px;top:200px;">喜欢</div>
+            <div class="fchip pp" style="left:152px;top:200px;">唱</div>
+            <div class="fchip pp" style="left:234px;top:200px;">跳</div>
+            <div class="fchip pp" style="left:316px;top:200px;">Rap</div>
+            <div class="fchip pp" style="left:398px;top:200px;">还有</div>
+            <div class="fchip gg" style="left:600px;top:200px;">篮球</div>
+            <div class="fchip gg" style="left:775px;top:200px;">music</div>
+            <div class="fchip gg" style="left:950px;top:200px;">起</div>
+            <div class="fellip" style="left:1063px;top:200px;">…</div>
+
+            <div class="fblabel pp" style="left:70px;width:404px;top:266px;">你发来的提示词</div>
+            <div class="fblabel gg" style="left:600px;width:426px;top:266px;">模型逐字生成的回答</div>
+          </div>
+        </div>
+
+        <div class="rbatch" style="margin-top:56px;">
+        <div class="rb-stage">
+          <div class="rb-col">
+            <div class="mrows">
+              <div class="mrow heads"></div>
+              <div class="mrow"><span class="rlab">请求 A</span><div class="tkrow"><i class="tk p">A</i><i class="tk p">A</i><i class="tk p">A</i><i class="tk p">A</i></div></div>
+              <div class="mrow"><span class="rlab">请求 B</span><div class="tkrow"><i class="tk p">B</i><i class="tk p">B</i><i class="tk p">B</i></div></div>
+              <div class="mrow"><span class="rlab">请求 C</span><div class="tkrow"><i class="tk p">C</i><i class="tk p">C</i><i class="tk p">C</i><i class="tk p">C</i><i class="tk p">C</i></div></div>
+            </div>
+          </div>
+          <div class="arrow"><strong>→</strong></div>
+          <div class="rb-llm">
+            <div class="fbox pre"><div class="llm-bars"><i></i><i></i><i></i><i></i><i></i></div><span>Transformer</span></div>
+          </div>
+          <div class="arrow"><strong>→</strong></div>
+          <div class="rb-col">
+            <div class="ogrid">
+              <span class="tick">t1</span><span class="tick">t2</span><span class="tick">t3</span><span class="tick">t4</span><span class="tick">t5</span><span class="tick">t6</span>
+              <i class="tk g">A</i><i class="tk g">A</i><i class="tk eos">EOS</i><i class="tk"></i><i class="tk"></i><i class="tk"></i>
+              <i class="tk g">B</i><i class="tk g">B</i><i class="tk g">B</i><i class="tk g">B</i><i class="tk g">B</i><i class="tk eos">EOS</i>
+              <i class="tk g">C</i><i class="tk g">C</i><i class="tk g">C</i><i class="tk eos">EOS</i><i class="tk"></i><i class="tk"></i>
+            </div>
+          </div>
+        </div>
+        <div class="rb-foot"><b>整批同进同出</b> —— 要等最长的那条跑完才释放；先结束的位置<b>空耗算力</b>，新请求<b>只能排队</b></div>
+        </div>
+      </div></div>
+    </section>
+    <section class="slide" id="cont2">
+      <h1 class="head">连续批处理：<b>一个请求 Decode 输出 EOS，立刻开始新请求 Prefill</b></h1>
+      <div class="canvas"><div class="cb">
+        <div class="cb-card"><div class="cb2">
+          <svg class="wires" viewBox="0 0 1180 476" fill="none" aria-hidden="true">
+            <defs>
+              <marker id="c2b" markerWidth="11" markerHeight="11" refX="5.5" refY="5.5" orient="auto"><path d="M1,1 L10,5.5 L1,10 Z" fill="#38bdf8"/></marker>
+              <marker id="c2o" markerWidth="11" markerHeight="11" refX="5.5" refY="5.5" orient="auto"><path d="M1,1 L10,5.5 L1,10 Z" fill="#ff8a3d"/></marker>
+              <marker id="c2g" markerWidth="11" markerHeight="11" refX="5.5" refY="5.5" orient="auto"><path d="M1,1 L10,5.5 L1,10 Z" fill="#5ee3ae"/></marker>
+            </defs>
+            <!-- 自回归 rail -->
+            <path d="M20,90 H1166" stroke="#3a3a3a" stroke-width="2" stroke-dasharray="7 6"/>
+            <!-- 每一摞输入 → 本轮 Transformer -->
+            <line x1="192" y1="252" x2="192" y2="200" stroke="#38bdf8" stroke-width="2" marker-end="url(#c2b)"/>
+            <line x1="448" y1="252" x2="448" y2="200" stroke="#ff8a3d" stroke-width="2" marker-end="url(#c2o)"/>
+            <line x1="598" y1="252" x2="598" y2="200" stroke="#ff8a3d" stroke-width="2" marker-end="url(#c2o)"/>
+            <line x1="867" y1="252" x2="867" y2="200" stroke="#ff8a3d" stroke-width="2" marker-end="url(#c2o)"/>
+            <!-- Prefill 的产出 → 第一摞 decode 输入 -->
+            <path d="M330,124 V98 Q330,90 338,90 H368 Q376,90 376,98 V332 Q376,340 384,340 H385"
+              stroke="#38bdf8" stroke-width="2.5" marker-end="url(#c2b)"/>
+            <!-- 第一轮 decode 的产出 → 第二摞输入 -->
+            <path d="M480,124 V98 Q480,90 488,90 H518 Q526,90 526,98 V332 Q526,340 534,340 H535"
+              stroke="#ff8a3d" stroke-width="2.5" marker-end="url(#c2o)"/>
+            <!-- 第二轮 decode 的产出 → 下一摞（A 这一路是 EOS） -->
+            <path d="M630,124 V98 Q630,90 638,90 H668 Q676,90 676,98 V332 Q676,340 684,340 H685"
+              stroke="#ff8a3d" stroke-width="2.5" marker-end="url(#c2o)"/>
+            <!-- A 吐出 EOS，这个位置当场接上新请求 D 的 prefill -->
+            <path d="M766,284 H782" stroke="#5ee3ae" stroke-width="2.5" marker-end="url(#c2g)"/>
+            <!-- 混合那一轮的产出 → D 的第一个 token、B 继续、C 这一路 EOS -->
+            <path d="M1018,124 V98 Q1018,90 1026,90 H1056 Q1064,90 1064,98 V332 Q1064,340 1072,340 H1073"
+              stroke="#ff8a3d" stroke-width="2.5" marker-end="url(#c2o)"/>
+            <!-- 底部分段括号 -->
+            <path d="M34,436 L34,443 L350,443 L350,436" fill="none" stroke="#3f6d99" stroke-width="2"/>
+            <path d="M396,436 L396,443 L1156,443 L1156,436" fill="none" stroke="#c75a1f" stroke-width="2"/>
+          </svg>
+
+          <div class="cnp pre" style="left:102px;width:180px;top:28px;"><div class="ct">Prefill 预填充</div><div class="cs">三个 prompt 一起跑一次</div></div>
+          <div class="cnp dec" style="left:433px;width:180px;top:28px;"><div class="ct">Decode 解码</div><div class="cs">每轮每个位置各吐一个</div></div>
+          <div class="cnp new" style="left:727px;width:280px;top:28px;"><div class="ct">请求A结束立刻换上请求D</div><div class="cs">D 的 prefill 和 B、C 的 decode 同一轮</div></div>
+
+          <div class="bx pre" style="left:30px;top:124px;width:324px;height:68px;">Transformer</div>
+          <div class="bx dec" style="left:392px;top:124px;width:112px;height:68px;">Transformer</div>
+          <div class="bx dec" style="left:542px;top:124px;width:112px;height:68px;">Transformer</div>
+          <div class="bx dec" style="left:692px;top:124px;width:350px;height:68px;">Transformer</div>
+          <div class="ellip" style="left:1112px;top:144px;">…</div>
+
+          <div class="grp" style="left:30px;top:252px;width:324px;height:176px;"></div>
+          <div class="grp" style="left:392px;top:252px;width:112px;height:176px;"></div>
+          <div class="grp" style="left:542px;top:252px;width:112px;height:176px;"></div>
+          <div class="grp" style="left:692px;top:252px;width:350px;height:176px;"></div>
+          <div class="grp" style="left:1080px;top:252px;width:80px;height:176px;"></div>
+          <div class="ring" style="left:786px;top:256px;width:254px;height:56px;"></div>
+
+          <i class="ck p" style="left:40px;top:260px;">A</i><i class="ck p" style="left:102px;top:260px;">A</i><i class="ck p" style="left:164px;top:260px;">A</i><i class="ck p" style="left:226px;top:260px;">A</i>
+          <i class="ck p" style="left:40px;top:316px;">B</i><i class="ck p" style="left:102px;top:316px;">B</i><i class="ck p" style="left:164px;top:316px;">B</i>
+          <i class="ck p" style="left:40px;top:372px;">C</i><i class="ck p" style="left:102px;top:372px;">C</i><i class="ck p" style="left:164px;top:372px;">C</i><i class="ck p" style="left:226px;top:372px;">C</i><i class="ck p" style="left:288px;top:372px;">C</i>
+
+          <i class="ck g" style="left:420px;top:260px;">A</i><i class="ck g" style="left:420px;top:316px;">B</i><i class="ck g" style="left:420px;top:372px;">C</i>
+          <i class="ck g" style="left:570px;top:260px;">A</i><i class="ck g" style="left:570px;top:316px;">B</i><i class="ck g" style="left:570px;top:372px;">C</i>
+
+          <i class="ck eos" style="left:702px;top:260px;">EOS</i>
+          <i class="ck p" style="left:790px;top:260px;">D</i><i class="ck p" style="left:852px;top:260px;">D</i><i class="ck p" style="left:914px;top:260px;">D</i><i class="ck p" style="left:976px;top:260px;">D</i>
+          <i class="ck g" style="left:839px;top:316px;">B</i>
+          <i class="ck g" style="left:839px;top:372px;">C</i>
+
+          <i class="ck g" style="left:1092px;top:260px;">D</i>
+          <i class="ck g" style="left:1092px;top:316px;">B</i>
+          <i class="ck eos" style="left:1092px;top:372px;">EOS</i>
+
+          <div class="blab p" style="left:34px;width:316px;top:448px;">三个请求的提示词</div>
+          <div class="blab g" style="left:396px;width:760px;top:448px;">Transformer每轮同时给出多个请求的下一个token</div>
+        </div></div>
+
+        <div class="cb-foot">调度的时机从<b>一整批全部结束</b>变成<b>每一轮前向计算</b> —— 结束一个就补一个，GPU 不空转，新请求也不用等整批跑完</div>
+      </div></div>
+    </section>
+    <section class="slide" id="pack">
+      <h1 class="head">如何把混合着<b>Prefill和Decode</b>请求的输入合并</h1>
+      <div class="canvas"><div class="tn3">
+        <svg class="wires" id="iso" viewBox="0 0 1180 580" fill="none" aria-hidden="true">
+          <defs>
+            <marker id="ax-a" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M1,1 L8,4.5 L1,8 Z" fill="#9a9a9a"/></marker>
+            <marker id="big-a" markerWidth="11" markerHeight="11" refX="5.5" refY="5.5" orient="auto"><path d="M1,1 L10,5.5 L1,10 Z" fill="#38bdf8"/></marker>
+          </defs>
+          <!-- 输入 → 两种拼法 -->
+          <path d="M362,259 L478,175" stroke="#38bdf8" stroke-width="2.5" marker-end="url(#big-a)"/>
+          <path d="M362,259 L478,345" stroke="#38bdf8" stroke-width="2.5" marker-end="url(#big-a)"/>
+          <!-- [6,d] 左边的三段边界：D 占 4 行、B 和 C 各 1 行 -->
+          <path d="M552,328 H544 V417 H552" stroke="#7fb5e6" stroke-width="1.6"/>
+          <path d="M552,420 H544 V440 H552" stroke="#ff8a3d" stroke-width="1.6"/>
+          <path d="M552,443 H544 V463 H552" stroke="#ff8a3d" stroke-width="1.6"/>
+        </svg>
+
+        <div class="cap" style="left:145px;top:106px;width:181px;text-align:center;">多个请求输入</div>
+
+        <div class="sh" id="in-d" style="left:145px;top:138px;"></div>
+        <div class="lbl pre" style="left:20px;top:172px;width:110px;text-align:right;">请求 D</div>
+        <div class="ax key" style="left:145px;top:234px;width:181px;text-align:center;">[4, d]</div>
+
+        <div class="sh" id="in-b" style="left:145px;top:284px;"></div>
+        <div class="lbl dec" style="left:20px;top:284px;width:110px;text-align:right;">请求 B</div>
+        <div class="ax key" style="left:145px;top:311px;width:181px;text-align:center;">[1, d]</div>
+
+        <div class="sh" id="in-c" style="left:145px;top:361px;"></div>
+        <div class="lbl dec" style="left:20px;top:361px;width:110px;text-align:right;">请求 C</div>
+        <div class="ax key" style="left:145px;top:388px;width:181px;text-align:center;">[1, d]</div>
+
+        <div class="ly" style="left:600px;top:50px;z-index:2;"><div class="sh" id="p-d"></div></div>
+        <div class="lbl pre" style="left:576px;top:56px;">D</div>
+        <div class="ly" style="left:560px;top:80px;z-index:3;"><div class="sh" id="p-b"></div></div>
+        <div class="lbl dec" style="left:536px;top:86px;">B</div>
+        <div class="ly" style="left:520px;top:110px;z-index:4;"><div class="sh" id="p-c"></div></div>
+        <div class="lbl dec" style="left:496px;top:116px;">C</div>
+        <div class="ax key" style="left:520px;top:224px;width:273px;text-align:center;">[3, 4, d]</div>
+        <div class="blk skip" style="left:820px;top:104px;width:315px;white-space:normal;line-height:1.6;"><span class="mk no">✗</span>方案一 · 把所有的输入填充空白token<br>成一样大小并排组合</div>
+
+        <div class="sh" id="p-flat" style="left:560px;top:328px;"></div>
+        <div class="lbl pre" style="left:518px;top:360px;">D</div>
+        <div class="lbl dec" style="left:518px;top:418px;">B</div>
+        <div class="lbl dec" style="left:518px;top:441px;">C</div>
+        <div class="blk pick" style="left:820px;top:382px;width:315px;white-space:normal;line-height:1.6;"><span class="mk ok">✓</span>方案二 · 所有输入矩阵连接到一起</div>
+        <div class="ax key" style="left:560px;top:476px;width:181px;text-align:center;">[6, d]</div>
+      </div></div>
+    </section>
+    <section class="slide" id="ops">
+      <h1 class="head">Batch输入在<b>Transformer</b>里要做哪些计算</h1>
+      <div class="canvas"><div class="opswrap"><div class="decpanel">
+        <svg class="decfig" viewBox="0 0 1480 716" role="img" aria-label="一层 Decoder 的结构，以及它展开成的矩阵运算">
+          <defs>
+            <marker id="dah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f2f3f5"/></marker>
+          </defs>
+
+          <!-- ============ 左：一层 Decoder（坐标照搬 079 Tab1 的 .blockfig） ============ -->
+          <text class="figlbl" x="40" y="34">Decoder</text>
+          <path class="stream dash" d="M360,690 L360,660"/>
+          <path class="stream" d="M360,660 L360,536"/>
+          <path class="stream" d="M360,413 L360,115"/>
+          <path class="stream" d="M360,81 L360,46"/>
+          <path class="qkvhead" d="M352,47 L368,47 L360,32 Z"/>
+          <path class="stream dash" d="M360,24 L360,0"/>
+          <text class="iolbl" x="378" y="22" text-anchor="start">Output</text>
+          <text class="iolbl" x="378" y="684" text-anchor="start">Input</text>
+          <rect class="blockbox" x="85" y="57" width="512" height="598" rx="14"/>
+
+          <path class="resid" d="M360,631 H122 V377 H336" marker-end="url(#dah)"/>
+          <rect class="pill norm" x="235" y="562" width="250" height="50" rx="9"/>
+          <text class="lbl dark" x="360" y="587">Layer Norm</text>
+          <path class="qkvbus" d="M251,536 H469"/>
+          <path class="qkvbus" d="M251,536 V518"/>
+          <path class="qkvbus" d="M360,536 V518"/>
+          <path class="qkvbus" d="M469,536 V518"/>
+          <path class="qkvhead" d="M244,519 L258,519 L251,505 Z"/>
+          <path class="qkvhead" d="M353,519 L367,519 L360,505 Z"/>
+          <path class="qkvhead" d="M462,519 L476,519 L469,505 Z"/>
+          <rect class="pill attn" x="195" y="413" width="330" height="92" rx="11"/>
+          <text class="lbl dark big" x="360" y="444">Masked Multi-Head</text>
+          <text class="lbl dark big" x="360" y="474">Attention</text>
+          <circle class="plus" cx="360" cy="377" r="17"/>
+          <text class="plussign" x="360" y="377">+</text>
+
+          <path class="resid" d="M360,320 H122 V98 H336" marker-end="url(#dah)"/>
+          <rect class="pill norm" x="235" y="243" width="250" height="50" rx="9"/>
+          <text class="lbl dark" x="360" y="268">Layer Norm</text>
+          <rect class="pill ffn" x="235" y="145" width="250" height="70" rx="11"/>
+          <text class="lbl dark huge" x="360" y="180">FFN</text>
+          <circle class="plus" cx="360" cy="98" r="17"/>
+          <text class="plussign" x="360" y="98">+</text>
+
+          <!-- 整块放大到右边 -->
+          <path class="zoomline" d="M597,57 L700,90"/>
+          <path class="zoomline" d="M597,655 L700,600"/>
+
+          <!-- ============ 右：展开成具体算子（自下而上，和左边同向） ============ -->
+          <text class="figlbl" x="700" y="34">展开成<tspan class="hl">每一步算子</tspan></text>
+          <rect class="opsbox" x="700" y="90" width="740" height="510" rx="14"/>
+
+          <!-- Input / Output 都落在框外：输入从下面进，输出从上面出 -->
+          <path class="op" d="M730,648 H914"/>
+          <path class="op" d="M914,678 V578" marker-end="url(#dah)"/>
+          <text class="iolbl" x="914" y="702">Input</text>
+          <path class="op" d="M730,648 V151 H800" marker-end="url(#dah)"/>
+
+          <!-- 左列：attention 支路 -->
+          <rect class="pill norm" x="804" y="520" width="220" height="54" rx="10"/>
+          <text class="lbl dark sm" x="914" y="547">LayerNorm</text>
+          <path class="op" d="M914,520 V482" marker-end="url(#dah)"/>
+
+          <!-- QKV Linear → Attention → Attn Out Linear 合起来就是一个多头注意力 -->
+          <rect class="mhabox" x="766" y="196" width="296" height="306" rx="12"/>
+          <text class="mhalbl" x="1052" y="216">MHA</text>
+          <rect class="pill lin" x="804" y="424" width="220" height="54" rx="10"/>
+          <text class="lbl dark sm" x="914" y="451">QKV Linear</text>
+          <path class="op" d="M869,424 L834,378" marker-end="url(#dah)"/>
+          <path class="op" d="M914,424 V378" marker-end="url(#dah)"/>
+          <path class="op" d="M959,424 L994,378" marker-end="url(#dah)"/>
+          <text class="qkvlbl" x="828" y="404" text-anchor="end">Query</text>
+          <text class="qkvlbl" x="902" y="404" text-anchor="end">Key</text>
+          <text class="qkvlbl" x="1000" y="404" text-anchor="start">Value</text>
+
+          <rect class="pill attn" x="782" y="316" width="264" height="54" rx="10"/>
+          <text class="lbl dark sm" x="914" y="343">Attention</text>
+          <path class="op" d="M914,316 V290" marker-end="url(#dah)"/>
+
+          <rect class="pill lin" x="804" y="232" width="220" height="54" rx="10"/>
+          <text class="lbl dark sm" x="914" y="259">Attn Out Linear</text>
+          <path class="op" d="M914,232 V182" marker-end="url(#dah)"/>
+
+          <rect class="pill add" x="804" y="124" width="220" height="54" rx="10"/>
+          <text class="lbl dark sm" x="914" y="151">Add</text>
+
+          <!-- 左 Add 出来：一路横着进右 Add（残差），一路绕到底部进右列 LayerNorm -->
+          <path class="op" d="M1024,151 H1152" marker-end="url(#dah)"/>
+          <path class="op" d="M1090,151 V648 H1266 V578" marker-end="url(#dah)"/>
+
+          <!-- 右列：FFN 支路 -->
+          <rect class="pill norm" x="1156" y="520" width="220" height="54" rx="10"/>
+          <text class="lbl dark sm" x="1266" y="547">LayerNorm</text>
+          <path class="op" d="M1266,520 V464" marker-end="url(#dah)"/>
+
+          <!-- 框上下各留 36：上到 Add 底 178，下到 LayerNorm 顶 520 -->
+          <rect class="mlpbox" x="1136" y="214" width="260" height="270" rx="12"/>
+          <text class="mlplbl" x="1386" y="236">FFN</text>
+          <rect class="pill lin" x="1181" y="406" width="170" height="54" rx="10"/>
+          <text class="lbl dark sm" x="1266" y="433">Linear</text>
+          <path class="op" d="M1266,406 V380" marker-end="url(#dah)"/>
+          <rect class="pill act" x="1181" y="322" width="170" height="54" rx="10"/>
+          <text class="lbl dark sm" x="1266" y="349">ReLU</text>
+          <path class="op" d="M1266,322 V296" marker-end="url(#dah)"/>
+          <rect class="pill lin" x="1181" y="238" width="170" height="54" rx="10"/>
+          <text class="lbl dark sm" x="1266" y="265">Linear</text>
+          <path class="op" d="M1266,238 V182" marker-end="url(#dah)"/>
+
+          <rect class="pill add" x="1156" y="124" width="220" height="54" rx="10"/>
+          <text class="lbl dark sm" x="1266" y="151">Add</text>
+          <path class="op" d="M1266,124 V84" marker-end="url(#dah)"/>
+          <text class="iolbl" x="1266" y="68">Output</text>
+        </svg>
+      </div>
+
+      <div class="decpanel">
+        <svg class="cmpfig" viewBox="0 0 1480 448" role="img" aria-label="逐 token 的算子可以整条一起算，attention 必须按请求分开">
+          <defs>
+            <marker id="ma" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7fb5e6"/></marker>
+            <marker id="mb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff8a3d"/></marker>
+            <marker id="mg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5ee3ae"/></marker>
+            <marker id="mr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f87171"/></marker>
+          </defs>
+
+          <!-- ======== 左：逐 token 的算子，整条 [6,d] 一起算 ======== -->
+          <rect class="cpill norm" x="93" y="16" width="180" height="44" rx="9"/>
+          <text class="cptxt" x="183" y="38">LayerNorm</text>
+          <rect class="cpill lin" x="287" y="16" width="184" height="44" rx="9"/>
+          <text class="cptxt" x="379" y="38">QKV Linear</text>
+          <rect class="cpill ffn" x="485" y="16" width="96" height="44" rx="9"/>
+          <text class="cptxt" x="533" y="38">FFN</text>
+          <text class="csub" x="337" y="92">每个token各算各的</text>
+
+          <path class="cbrk p" d="M52,165 H44 V308 H52"/>
+          <path class="cbrk d" d="M52,313 H44 V345 H52"/>
+          <path class="cbrk d" d="M52,350 H44 V382 H52"/>
+          <text class="creq p" x="36" y="245" text-anchor="end">D</text>
+          <text class="creq d" x="36" y="338" text-anchor="end">B</text>
+          <text class="creq d" x="36" y="375" text-anchor="end">C</text>
+          <g id="cm-in"></g>
+          <!-- 虚线框圈住第 1 行：这一行的变换和别的行无关 -->
+          <rect class="ccall" x="54" y="159" width="303" height="44" rx="8"/>
+
+          <path class="cwire p" d="M377,181 H437" marker-end="url(#ma)"/>
+          <path class="cwire p" d="M377,218 H437" marker-end="url(#ma)"/>
+          <path class="cwire p" d="M377,255 H437" marker-end="url(#ma)"/>
+          <path class="cwire p" d="M377,292 H437" marker-end="url(#ma)"/>
+          <path class="cwire d" d="M377,329 H437" marker-end="url(#mb)"/>
+          <path class="cwire d" d="M377,366 H437" marker-end="url(#mb)"/>
+
+          <g id="cm-out"></g>
+          <rect class="ccall" x="461" y="159" width="192" height="44" rx="8"/>
+          <text class="ccap ok" x="337" y="428">整个拼接的输入可以整体一次算完</text>
+
+          <!-- ======== 中：分界 ======== -->
+          <path class="cdiv" d="M770,14 V492"/>
+
+          <!-- ======== 右：attention 只能在自己请求内部读 ======== -->
+          <rect class="cpill attn" x="1110" y="16" width="160" height="44" rx="9"/>
+          <text class="cptxt" x="1190" y="38">Attention</text>
+          <text class="csub" x="1190" y="92">每个token的QK向量要互相做点积</text>
+
+          <!-- D/B/C 和「当前token」在左边，注意力箭头在右边 -->
+          <text class="cnote" x="985" y="298" text-anchor="end">当前token</text>
+          <path class="cbrk p" d="M1036,165 H1028 V308 H1036"/>
+          <path class="cbrk d" d="M1036,313 H1028 V345 H1036"/>
+          <path class="cbrk d" d="M1036,350 H1028 V382 H1036"/>
+          <text class="creq p" x="1020" y="245" text-anchor="end">D</text>
+          <text class="creq d" x="1020" y="338" text-anchor="end">B</text>
+          <text class="creq d" x="1020" y="375" text-anchor="end">C</text>
+
+          <path class="carc" d="M1341,288 Q1440,253 1341,224" marker-end="url(#mg)"/>
+          <path class="carc" d="M1341,288 Q1500,235 1341,187" marker-end="url(#mg)"/>
+          <path class="cbad" d="M1341,296 Q1430,329 1341,362" marker-end="url(#mr)"/>
+          <text class="cx" x="1412" y="336">✗</text>
+          <text class="cnote bad" x="1412" y="374" text-anchor="middle">不允许</text>
+
+          <g id="cm-at"></g>
+          <rect class="cring" x="1038" y="270" width="303" height="44" rx="9"/>
+          <text class="ccap warn" x="1190" y="428">每个子请求只能和自己请求里的token运算</text>
+        </svg>
+      </div>
+
+      <div class="ops-foot">Transformer里所有的算子对于合并输入都是无感的，只有<i>Attention</i>运算不能直接套用</div>
+      </div></div>
+    </section>
+    <section class="slide" id="mask">
+      <h1 class="head">Ragged Batching：Attention<b>按请求分块算</b></h1>
+      <div class="canvas"><div class="maskwrap"><div class="maskpanel">
+        <svg class="maskfig" viewBox="0 -176 1480 828" role="img" aria-label="拼在一起的 query 各自只能看自己请求的 KV，mask 是块对角的">
+          <defs>
+            <marker id="mkA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5ee3ae"/></marker>
+            <marker id="mkC" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d79a5e"/></marker>
+          </defs>
+
+          <!-- 上面：三块 K，一个请求一块（转置着摆，所以每一列是一个 token） -->
+          <text class="mgrp w" x="1030" y="202">Key/Value矩阵</text>
+          <text class="mgrp p" x="553" y="56" text-anchor="middle">请求D</text>
+          <text class="mgrp d" x="826" y="56" text-anchor="middle">请求B</text>
+          <text class="mgrp d" x="981" y="56" text-anchor="middle">请求C</text>
+          <g id="mk-k"></g>
+
+          <!-- 每块 Key＝KV Cache 里已有的 KV ＋ 本轮新进来的 token，框起来的是前半截 -->
+          <rect class="mkv" x="453" y="68" width="32" height="252" rx="10"/>
+          <rect class="mkv" x="670" y="68" width="136" height="252" rx="12"/>
+          <rect class="mkv" x="883" y="68" width="78" height="252" rx="12"/>
+          <!-- KV Cache 在最上面，三条箭头各自落到一个请求的缓存框里（D 是空的，取到的就是空） -->
+          <path class="marr kv" d="M690,-50 V-20 M469,-20 H895"/>
+          <path class="marr kv" d="M469,-20 V62" marker-end="url(#mkC)"/>
+          <path class="marr kv" d="M690,-20 V62" marker-end="url(#mkC)"/>
+          <path class="marr kv" d="M895,-20 V62" marker-end="url(#mkC)"/>
+          <g class="dbic">
+            <path d="M640,-140 V-70 A50,16 0 0 0 740,-70 V-140"/>
+            <ellipse cx="690" cy="-140" rx="50" ry="16"/>
+            <path class="band" d="M640,-117 A50,16 0 0 0 740,-117"/>
+            <path class="band" d="M640,-93 A50,16 0 0 0 740,-93"/>
+          </g>
+          <text class="dblbl" x="830" y="-96">KV Cache</text>
+
+          <!-- 下半整体上移，贴近上面的 Key -->
+          <g transform="translate(0,-40)">
+            <!-- 左边：Tab3 拼好的那个输入，它就是这一轮的 Q（整体右移，贴近 attention 矩阵） -->
+            <g transform="translate(36,0)">
+              <text class="mgrp w" x="274" y="392" text-anchor="middle">Query矩阵</text>
+              <g id="mk-q"></g>
+              <text class="mgrp p" x="140" y="488" text-anchor="end">请求D</text>
+              <text class="mgrp d" x="140" y="603" text-anchor="end">请求B</text>
+              <text class="mgrp d" x="140" y="649" text-anchor="end">请求C</text>
+            </g>
+
+            <g id="mk-grid"></g>
+
+            <!-- 三个对角块各自圈出来 -->
+            <rect class="mdash" x="459" y="385" width="188" height="188" rx="10"/>
+            <rect class="mdash" x="643" y="569" width="234" height="50" rx="10"/>
+            <rect class="mdash" x="873" y="615" width="142" height="50" rx="10"/>
+
+            <path class="marr" d="M1016,548 H1056" marker-end="url(#mkA)"/>
+            <rect class="mout" x="1060" y="526" width="200" height="44" rx="9"/>
+            <text class="mouttxt" x="1160" y="555">D 的新 token</text>
+            <path class="marr" d="M1016,594 H1056" marker-end="url(#mkA)"/>
+            <rect class="mout" x="1060" y="572" width="200" height="44" rx="9"/>
+            <text class="mouttxt" x="1160" y="601">B 的新 token</text>
+            <path class="marr" d="M1016,640 H1056" marker-end="url(#mkA)"/>
+            <rect class="mout" x="1060" y="618" width="200" height="44" rx="9"/>
+            <text class="mouttxt" x="1160" y="647">C 的新 token</text>
+          </g>
+
+        </svg>
+      </div>
+      <div class="ops-foot mask-foot">Query是本轮新token拼起来的，Key是KV Cache里的历史加上新token，所以Q和K的<i>长度不必相同</i></div>
+      </div></div>
+    </section>
+    <section class="slide" id="kernel">
+      <h1 class="head">Attention<b>算子实现</b></h1>
+      <div class="canvas"><div class="kernrow"><div class="flowpanel">
+        <svg class="flowfig" viewBox="0 0 520 660" role="img" aria-label="合并输入在一层里的数据流：QKV 投影、写 KV Cache、ragged attention、拼好的输出">
+          <defs>
+            <marker id="fa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6b7280"/></marker>
+          </defs>
+
+          <text class="ft" x="260" y="34">合并输入[6, d]</text>
+          <path class="fl" d="M260,44 V72" marker-end="url(#fa)"/>
+
+          <rect class="fbox" x="150" y="76" width="220" height="42" rx="9"/>
+          <text class="ft" x="260" y="103">QKV Linear</text>
+
+          <path class="fl" d="M260,118 V134 M100,134 H420 M100,134 V160 M260,134 V160 M420,134 V160"/>
+          <text class="ft sm" x="100" y="178">Query矩阵</text>
+          <text class="ft sm" x="260" y="178">Key矩阵</text>
+          <text class="ft sm" x="420" y="178">Value矩阵</text>
+
+          <!-- K、V 各自写进缓存；Q 直接进 kernel。缓存和 Query 分居两侧 -->
+          <path class="fl" d="M260,186 V222" marker-end="url(#fa)"/>
+          <path class="fl" d="M420,186 V222" marker-end="url(#fa)"/>
+
+          <rect class="fbox cache" x="175" y="226" width="330" height="118" rx="10"/>
+          <text class="ft c" x="340" y="252">KV Cache</text>
+          <text class="ft sm" x="340" y="282">请求D：0老 ＋ 4新</text>
+          <text class="ft sm" x="340" y="308">请求B：4老 ＋ 1新</text>
+          <text class="ft sm" x="340" y="334">请求C：2老 ＋ 1新</text>
+
+          <!-- 读缓存：K、V 各一根，x 和上面 Key矩阵、Value矩阵 那两列对齐 -->
+          <path class="fl" d="M260,344 V380" marker-end="url(#fa)"/>
+          <path class="fl" d="M420,344 V380" marker-end="url(#fa)"/>
+          <path class="fl" d="M100,186 V380" marker-end="url(#fa)"/>
+
+          <rect class="fbox kern" x="60" y="384" width="400" height="46" rx="10"/>
+          <text class="ft" x="260" y="413">Ragged Attention Kernel</text>
+
+          <path class="fl" d="M260,430 V448 M110,448 H410 M110,448 V466 M260,448 V466 M410,448 V466"/>
+          <text class="ft p" x="110" y="490">请求D</text>
+          <text class="fm" x="110" y="512">Q(4) × K(4)</text>
+          <text class="ft d" x="260" y="490">请求B</text>
+          <text class="fm" x="260" y="512">Q(1) × K(5)</text>
+          <text class="ft d" x="410" y="490">请求C</text>
+          <text class="fm" x="410" y="512">Q(1) × K(3)</text>
+
+          <path class="fl" d="M110,522 V538 M260,522 V538 M410,522 V538 M110,538 H410"/>
+          <path class="fl" d="M260,538 V562" marker-end="url(#fa)"/>
+
+          <text class="ft" x="260" y="582">拼好的输出[6, d]</text>
+          <path class="fl" d="M260,592 V610" marker-end="url(#fa)"/>
+
+          <rect class="fbox" x="150" y="614" width="220" height="42" rx="9"/>
+          <text class="ft" x="260" y="641">Attn Out Linear</text>
+        </svg>
+      </div><div class="codepanel">
+        <div class="codebox">
+          <div class="cbar"><span class="d r"></span><span class="d y"></span><span class="d g"></span><span class="fname">伪代码</span></div>
+          <pre><span class="kw">def</span> <span class="fn">ragged_batching</span>(packed_input, cu_seqlens, batch, kv_cache):
+    <span class="cmt"># 每个请求token数 = [4, 1, 1]</span>
+    <span class="cmt"># → cu_seqlens = [0, 4, 5, 6]</span>
+
+    <span class="var">Q</span>, <span class="var">K</span>, <span class="var">V</span> = <span class="fn">qkv_linear</span>(packed_input)
+
+    <span class="kw">for</span> i, request <span class="kw">in</span> <span class="fn">enumerate</span>(batch):
+        lo, hi = cu_seqlens[i], cu_seqlens[i + 1]
+        kv_cache[request].<span class="fn">append</span>(<span class="var">K</span>[lo:hi], <span class="var">V</span>[lo:hi])
+
+    <span class="var">O</span> = <span class="fn">empty_like</span>(<span class="var">Q</span>)
+    <span class="kw">for</span> i, request <span class="kw">in</span> <span class="fn">enumerate</span>(batch):
+        lo, hi = cu_seqlens[i], cu_seqlens[i + 1]
+        <span class="var">q</span> = <span class="var">Q</span>[lo:hi]
+        state = <span class="fn">init_online_softmax</span>()
+        <span class="kw">for</span> <span class="var">k</span>, <span class="var">v</span> <span class="kw">in</span> kv_cache[request].<span class="fn">blocks</span>():
+            scores = <span class="var">q</span> @ <span class="var">k</span>.T
+            state = <span class="fn">online_softmax_update</span>(state, scores, <span class="var">v</span>)
+        <span class="var">O</span>[lo:hi] = <span class="fn">finalize</span>(state)
+
+    <span class="kw">return</span> <span class="fn">out_linear</span>(<span class="var">O</span>)</pre>
+        </div>
+      </div></div></div>
+    </section>
+  </div>
+</main>
+<script>
+  const ids=['basics','cont2','pack','ops','mask','kernel'];
+  let current=0;
+  function show(id){current=Math.max(0,ids.indexOf(id)); if(current<0)current=0; document.querySelector('.deck').dataset.slide=ids[current]; document.querySelectorAll('.slide').forEach(s=>s.classList.toggle('active',s.id===ids[current])); document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.slide===ids[current])); if(location.hash.slice(1)!==ids[current]) history.replaceState(null,'','#'+ids[current]);}
+  document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>show(b.dataset.slide)));
+  addEventListener('hashchange',()=>show(location.hash.slice(1)));
+  addEventListener('keydown',e=>{if(e.key==='ArrowRight')show(ids[Math.min(current+1,ids.length-1)]);if(e.key==='ArrowLeft')show(ids[Math.max(current-1,0)]);if(/^[1-6]$/.test(e.key))show(ids[Number(e.key)-1]);});
+  show(ids.includes(location.hash.slice(1))?location.hash.slice(1):ids[0]);
+
+  // ---- Tab3：平面矩阵。行 = token 数（竖），列 = d（横） ----
+  const D_COLS=8;                                   // 图里设 d = 8
+  function sheet(id,rows,rowFn){
+    const el=document.getElementById(id);
+    if(!el)return;
+    el.style.gridTemplateColumns='repeat('+D_COLS+',20px)';
+    for(let r=0;r<rows;r++)for(let c=0;c<D_COLS;c++){
+      const cell=document.createElement('i');
+      cell.className='sc '+rowFn(r);
+      el.appendChild(cell);
+    }
+  }
+  sheet('in-d',4,()=>'c-pre');                      // 输入 D：4 × d —— 4 行
+  sheet('in-b',1,()=>'c-dec');                      // 输入 B：1 × d —— 1 行
+  sheet('in-c',1,()=>'c-dec');                      // 输入 C：1 × d
+  sheet('p-flat',6,r=>r<4?'c-pre':'c-dec');         // [6,d]：4+1+1 摞成 6 行
+  // 方案一的 3 层：最后面是 D（满的），前面 B、C 各只有第 1 行是真 token
+  sheet('p-d',4,()=>'c-pre');
+  sheet('p-b',4,r=>r===0?'c-dec':'c-pad');
+  sheet('p-c',4,r=>r===0?'c-dec':'c-pad');
+
+  // ---- Tab4 下半：同一个 [6,d]，用 SVG 画。32 单位的格子 / 37 的步距，
+  //      缩放 920/1480 后正好回到 Tab3 的 20px 格子 + 3px 间距 ----
+  function svgSheet(id,x0,y0,cols,rows,r0,v){
+    const g=document.getElementById(id);
+    if(!g)return;
+    for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+      const el=document.createElementNS('http://www.w3.org/2000/svg','rect');
+      el.setAttribute('x',x0+c*37); el.setAttribute('y',y0+r*37);
+      el.setAttribute('width',32);  el.setAttribute('height',32); el.setAttribute('rx',5);
+      el.setAttribute('class','cell '+((r0+r)<4?'p':'d')+(v||''));  // 前 4 行是 D 的 prefill，后 2 行是 B、C 的 decode；v='2' 是变换之后的亮一档
+      g.appendChild(el);
+    }
+  }
+  svgSheet('cm-in',  60,165, 8,6,0);                             // [6,d]
+  svgSheet('cm-out',467,165, 5,6,0,'2');                         // [6,h]，列数和颜色都变了
+  svgSheet('cm-at',1044,165, 8,6,0);
+
+  // ---- Tab5：块对角的 attention mask ----
+  // 列：d1..d4 | b1..b5 | c1..c3（B、C 的前几列是已经缓存的 KV，最后一列才是这一轮的新 token）
+  // 行：这一轮拼在一起的 6 个 query —— D 在 prefill 有 4 行，B、C 在 decode 各 1 行
+  (function(){
+    const COLS=['d1','d2','d3','d4','b1','b2','b3','b4','b5','c1','c2','c3'];
+    const ROWS=[
+      {lab:'d1', req:'p', see:[0]},                 // D 的 prefill：因果，只看自己和前面
+      {lab:'d2', req:'p', see:[0,1]},
+      {lab:'d3', req:'p', see:[0,1,2]},
+      {lab:'d4', req:'p', see:[0,1,2,3]},
+      {lab:'b5', req:'d', see:[4,5,6,7,8]},         // B 的新 token：看 B 的全部 KV
+      {lab:'c3', req:'d', see:[9,10,11]}            // C 的新 token：看 C 的全部 KV
+    ];
+    const NS='http://www.w3.org/2000/svg';
+    const grid=document.getElementById('mk-grid'),
+          q=document.getElementById('mk-q'), k=document.getElementById('mk-k');
+    if(!grid||!q||!k)return;
+    const GX=464, GY=390;                                        // mask 左上角
+    const CELL=25, PITCH=29;                                     // 和 Tab3 一样：20px 的格子 + 3px 缝
+    function block(g,x0,y0,cols,rows,cls){                       // cls(r,c) 返回格子的类名
+      for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+        const el=document.createElementNS(NS,'rect');
+        el.setAttribute('x',x0+c*PITCH); el.setAttribute('y',y0+r*PITCH);
+        el.setAttribute('width',CELL);   el.setAttribute('height',CELL); el.setAttribute('rx',4);
+        el.setAttribute('class','mc '+cls(r,c));
+        g.appendChild(el);
+      }
+    }
+    for(let r=0;r<ROWS.length;r++)for(let c=0;c<COLS.length;c++){
+      const on=ROWS[r].see.indexOf(c)>=0;
+      const el=document.createElementNS(NS,'rect');
+      el.setAttribute('x',GX+c*46); el.setAttribute('y',GY+r*46);
+      el.setAttribute('width',40);  el.setAttribute('height',40); el.setAttribute('rx',5);
+      el.setAttribute('class','mc '+(on?'on-'+ROWS[r].req:'off'));
+      grid.appendChild(el);
+    }
+    // 左边的 Q：Tab3 拼好的那个输入，按请求拆成 D（4 行 prefill）、B、C（各 1 行 decode）
+    block(q,160,423,8,4,()=>'on-p');                             // 每块竖直对齐右边 mask 里对应的那几行
+    block(q,160,582,8,1,()=>'on-d');
+    block(q,160,628,8,1,()=>'on-d');
+    // 上面的 K：一个请求一块，转置着摆（列=token）
+    // 每块都是「KV Cache 里已有的 KV」＋「本轮新进来的 token」，中间留缝分开
+    block(k,497, 80,4,8,()=>'on-p');                             // D 在 prefill：cache 是空的，4 列全是新 token
+    block(k,682, 80,4,8,()=>'cache');                            // B：4 列老 KV
+    block(k,814, 80,1,8,()=>'on-d');                             // B：1 个新 token
+    block(k,895, 80,2,8,()=>'cache');                            // C：2 列老 KV
+    block(k,969, 80,1,8,()=>'on-d');                             // C：1 个新 token
+  })();
+</script>
+</body>
+</html>
