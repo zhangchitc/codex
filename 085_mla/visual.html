@@ -1,0 +1,841 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex 085 · DeepSeek MLA</title>
+<link rel="icon" href="data:,">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap');
+:root{
+  /* —— 白色 deck 外壳（沿用 078/080/083）—— */
+  --bg:#f7f7f8;--card:#ffffff;--card-head:#fbfbfc;--card-2:#f2f2f4;
+  --ink:#0d0d0d;--muted:#6e6e80;--dim:#8e8ea0;
+  --line:#e6e6e8;--line-2:#d8d8dd;--arrow:#a8a8b4;
+  --accent:#10a37f;--accent-deep:#0a7d61;--accent-soft:rgba(16,163,127,.10);--accent-line:rgba(16,163,127,.32);
+  /* —— 图内语义色：为白底加深 —— */
+  --q:#0369a1;--q-soft:rgba(3,105,161,.08);--q-line:rgba(3,105,161,.36);       /* Query */
+  --k:#c46664;--k-soft:rgba(217,135,133,.12);--k-line:rgba(217,135,133,.55);   /* Key：沿用 Tab1 Keys 的粉红（填色 #f5cccc / 描边 #d98785 / 字 #c46664） */
+  --v:#7c5cf0;--v-soft:rgba(124,92,240,.09);--v-line:rgba(124,92,240,.40);     /* Value */
+  --c:#0a7d61;--c-soft:rgba(10,125,97,.09);--c-line:rgba(10,125,97,.40);       /* latent 底稿 */
+  --r:#d64545;--r-soft:rgba(214,69,69,.08);--r-line:rgba(214,69,69,.38);       /* RoPE 旋转 */
+  /* —— Tab1 照搬 075 Tab4 用到的变量 —— */
+  --num:#b06f16;--num-soft:rgba(176,111,22,.10);--num-line:rgba(176,111,22,.42);
+  --green:#0a7d61;--green-soft:rgba(16,163,127,.10);--green-line:rgba(16,163,127,.40);
+  --sans:Inter,"PingFang SC",-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;--mono:"JetBrains Mono","SF Mono",Menlo,monospace}
+*{box-sizing:border-box;margin:0;padding:0}html,body{min-height:100%}body{background:var(--bg);color:var(--ink);font-family:var(--sans);overflow-x:hidden;overflow-y:auto;-webkit-font-smoothing:antialiased}
+/* deck 按 1920×1080 画，窗口比它矮时页面可以往下滚，接 1080p 外屏录屏时不出滚动条 */
+.deck{min-height:max(100vh,1080px);display:flex;flex-direction:column}
+.topbar{height:78px;flex:none;border-bottom:1px solid var(--line);background:#fff;padding:0 46px;display:flex;align-items:center;justify-content:space-between;gap:28px}.brand{font-size:20px;font-weight:800;white-space:nowrap}.brand b{color:var(--accent)}.tabs{display:flex;gap:5px;padding:5px;border:1px solid var(--line);border-radius:999px;background:var(--card-2)}.tab{font:700 14px var(--sans);color:var(--muted);padding:8px 14px;background:transparent;border:1px solid transparent;border-radius:999px;cursor:pointer;white-space:nowrap}.tab:hover{color:var(--ink)}.tab[aria-selected="true"]{background:#fff;color:var(--accent);border-color:var(--accent-line);box-shadow:0 1px 3px rgba(13,13,13,.06)}.tab:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+main{position:relative;flex:1;min-height:0}.slide{position:absolute;inset:0;padding:34px 46px 42px;display:none;flex-direction:column;align-items:center;gap:22px;scroll-margin-top:78px}.slide.active{display:flex}.heading{text-align:center;flex:none}h1{font-size:34px;letter-spacing:-.5px;line-height:1.22;font-weight:850}h1 b{color:var(--accent)}.subtitle{font-size:18px;font-weight:600;color:var(--muted);margin-top:10px;line-height:1.45}
+.scene{width:min(1260px,100%);flex:none;margin-top:6px;display:flex;flex-direction:column;gap:18px}.scene > *{flex-shrink:0}.panel{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px;box-shadow:0 1px 2px rgba(13,13,13,.04),0 8px 24px rgba(13,13,13,.03)}.panel h2{font-size:18px;line-height:1.4;margin:0 0 16px;font-weight:700}.panel h2 small{font-size:15px;font-weight:500;color:var(--muted)}.split{display:grid;grid-template-columns:1fr 1fr;gap:18px}.row{display:flex;align-items:center;gap:12px}.center{text-align:center}.muted{color:var(--muted)}.q{color:var(--q)}.k{color:var(--k)}.v{color:var(--v)}.c{color:var(--c)}.r{color:var(--r)}.mono{font-family:var(--mono)}.label{font-size:16px;line-height:1.5}.micro{font-size:14px;line-height:1.5;color:var(--muted)}.number{font:750 44px/1.2 var(--mono);letter-spacing:-1.5px}.arrow{font-size:30px;color:var(--arrow);text-align:center;flex:none}.arrow small{display:block;font-size:14px;color:var(--muted);font-family:var(--sans)}.node{border:1px solid var(--line-2);background:var(--card-head);padding:14px 18px;border-radius:11px;text-align:center;font-size:18px;line-height:1.6}.node strong{font-weight:700}.node.qnode{border-color:var(--q-line);background:var(--q-soft)}.node.knode{border-color:var(--k-line);background:var(--k-soft)}.node.vnode{border-color:var(--v-line);background:var(--v-soft)}.node.cnode{border-color:var(--c-line);background:var(--c-soft)}.node.rnode{border-color:var(--r-line);background:var(--r-soft)}.node small{font-size:14px;color:var(--muted);display:block}.takeaway{width:min(1260px,100%);font-size:18px;font-weight:700;line-height:1.5;text-align:center;border:1px solid var(--accent-line);background:var(--accent-soft);border-radius:10px;padding:16px 24px;flex:none}.takeaway b{color:var(--accent-deep)}.takeaway.bad{border-color:var(--r-line);background:var(--r-soft)}.takeaway.bad b{color:var(--r)}
+.formula{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;font-size:24px;line-height:1.7}.formula math{font-size:26px}.formula.large math{font-size:32px}.mathline{text-align:center;padding:16px;border-radius:11px;background:var(--card-head);border:1px solid var(--line)}.formula sub,.formula sup{font-size:.65em}.mathterm{font-family:"STIX Two Math","Times New Roman",serif;font-style:italic;font-size:26px;white-space:nowrap}.formula .mathterm{font-size:inherit}math{font-family:"STIX Two Math","Cambria Math",serif}.equals{font-size:26px;color:var(--muted)}
+/* 01 · MHA / GQA / MQA（照搬 075 Tab4）*/
+.attn-grid{ display:flex; justify-content:center; align-items:flex-start; gap:64px; margin-top:6px; }
+.attn-col{ display:flex; flex-direction:column; align-items:center; gap:14px; }
+.attn-vtitle{ font-size:16px; font-weight:800; color:var(--ink); white-space:nowrap; text-align:center; line-height:1.4; }
+.attn-vtitle .ab{ font-family:var(--mono); color:var(--dim); font-weight:700; font-size:14px; }
+.attn-diagram{ position:relative; }
+.attn-diagram svg{ position:absolute; left:0; top:0; pointer-events:none; overflow:visible; z-index:1; }
+.attn-box{ position:absolute; border-radius:5px; z-index:2; box-sizing:border-box; }
+.attn-box.q{ background:#d3e1f4; border:2px solid #7fa1d0; }
+.attn-box.k{ background:#f5cccc; border:2px solid #d98785; }
+.attn-box.v{ background:#f8e6c0; border:2px solid #e0a83e; }
+.attn-rowlbl{ position:absolute; left:-96px; width:80px; text-align:right; transform:translateY(-50%);
+              white-space:nowrap; z-index:2; font-family:var(--sans); font-size:15px; font-weight:700; }
+.attn-rowlbl.v{ color:#c48a1c; } .attn-rowlbl.k{ color:#c46664; } .attn-rowlbl.q{ color:#5a82bd; }   /* 075 的浅色字在白底上太淡，取各自方块的描边色 */
+.attn-desc{ text-align:center; font-size:14px; color:var(--muted); line-height:1.55; max-width:280px; }
+.attn-desc b{ color:var(--ink); font-weight:700; }
+.attn-kv{ font-family:var(--mono); font-size:14px; font-weight:700; padding:6px 14px; border-radius:10px;
+          display:flex; align-items:center; gap:8px; }
+.attn-kv .n{ font-size:19px; font-weight:800; }
+.attn-kv.full{ background:var(--card-2); border:1.5px solid var(--line-2); color:var(--muted); }
+.attn-kv.full .n{ color:var(--ink); }
+.attn-kv.mid{ background:var(--num-soft); border:1.5px solid var(--num-line); color:var(--num); }
+.attn-kv.min{ background:var(--green-soft); border:1.5px solid var(--green-line); color:var(--green); }
+.p1kv{ display:flex; flex-direction:column; align-items:center; gap:15px; margin-top:30px; }
+.p1kv4{ margin-top:24px; }
+.p1kvf{ display:flex; align-items:center; gap:12px; background:var(--card); border:1px solid var(--line-2);
+        border-radius:16px; padding:20px 36px; font-family:var(--mono); font-size:28px;
+        box-shadow:0 1px 2px rgba(13,13,13,.04),0 8px 24px rgba(13,13,13,.03); }
+.p1kvf .lbl{ color:var(--ink); font-weight:700; } .p1kvf .eq,.p1kvf .mul{ color:var(--dim); }
+.p1kvf .term{ color:var(--ink); font-weight:800; }
+.p1kvf .term.two{ color:var(--num); }
+.p1kvf .term.be{ color:var(--muted); font-size:20px; font-weight:600; }
+.p1kvf .term.hkv{ color:var(--green); font-weight:800; }
+.p1kvf .term.hkv sub{ font-size:.55em; font-weight:700; }
+.p1kvsub2{ font-size:16px; color:var(--muted); line-height:1.5; }
+.p1kvsub2 b{ font-family:var(--mono); color:var(--ink); font-weight:700; }
+.p1kvsub2 sub{ font-size:.72em; }
+/* 02 / 03 · 分叉投影 */
+/* Tab2：MHA / GQA / MQA / MLA 四栏（结构、方块、行标完全沿用 Tab1，斜线纹 = 推理时缓存）*/
+.mla-fig{ display:flex; flex-direction:column; align-items:center; gap:10px; }
+.mla-legend{ align-self:flex-end; display:flex; align-items:center; gap:10px; font-size:14px; font-weight:700; color:var(--muted); }
+.mla-legend .sw{ width:58px; height:20px; border-radius:5px; border:2px solid #6e6e80;
+  background:repeating-linear-gradient(135deg,#6e6e80 0 1.5px,#fff 1.5px 5px); }.attn-grid.four{ gap:72px; margin-top:0; align-items:stretch; }
+.attn-sep{ width:0; border-left:2px dashed var(--line-2); }
+.attn-grid.four .attn-col:last-child .attn-desc{ max-width:none; }   /* MLA 栏带潜向量更宽，说明一行放得下 */
+.attn-box.cached.v{ background:repeating-linear-gradient(135deg,#e0a83e 0 1.5px,#f8e6c0 1.5px 5px); }
+.attn-box.cached.k{ background:repeating-linear-gradient(135deg,#d98785 0 1.5px,#f5cccc 1.5px 5px); }
+.attn-box.latent{ background:repeating-linear-gradient(135deg,#0a7d61 0 1.5px,#cdeee2 1.5px 5px); border:2px solid #0a7d61; }
+.attn-proj{ position:absolute; z-index:3; transform:translateX(-50%); font-size:14px; font-weight:700; color:var(--muted); white-space:nowrap; }
+.attn-latlbl{ position:absolute; z-index:3; transform:translateX(-50%); text-align:center; font-size:14px; font-weight:700; color:var(--c); line-height:1.4; white-space:nowrap; }
+/* Tab2 公式里的矩阵形状：示意，不按真实比例，只保证长短关系对（c_t 比 h_t 短、W 行比列短） */
+.mm-box{ display:flex; justify-content:center; padding:10px 40px; align-self:center; width:fit-content; }   /* 白框只包住内容，不撑满整行 */
+.mm{ display:flex; align-items:flex-start; justify-content:center; gap:0; }
+.mm-term{ display:flex; flex-direction:column; align-items:center; gap:6px; }
+/* 每列从上到下：公式符号（固定高度，k/v 两行也放得下；单行贴底，离形状近）→ 形状 → 行×列；= × 和箭头与形状同一中线 */
+.mm .mm-sym{ height:76px; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; gap:0; }
+.mm .mm-sym math{ font-size:32px; }
+.mm .mm-shape{ height:124px; }   /* 示意长短：c_t(512) < h_t(5120) < k_t/v_t(16384)，c_t 同时是 W_DKV 的行数和 W_UK 的列数 */
+.mm .mx{ border-width:2px; }
+.mm .mm-dim{ font-size:16px; margin-top:10px; }   /* 给叠层下面的「128 头」花括号留位置 */
+.mm .mm-op{ min-width:26px; padding:0 6px; }
+.mm .mm-op .mm-shape{ font:700 26px var(--mono); color:var(--dim); }
+.mm .mm-arrow{ height:124px; margin-top:82px; padding:0 28px; }   /* 符号 76 + 6 间距，落到形状中线；左右留白把两组乘法拉开 */
+.mm .mm-arrow path{ fill:none; stroke:#8e8ea0; stroke-width:4; stroke-linecap:round; }
+.mm .mm-arrow path.hd{ fill:#8e8ea0; stroke:none; }
+/* 箭头左右两组各带一个说明：降维放在左组的左边，升维放在右组的右边，竖直对准形状中线 */
+.mm-group{ display:flex; align-items:flex-start; gap:56px; }   /* 降维 / 升维两张卡片离公式远一点 */
+.mm-group.right{ flex-direction:row-reverse; }
+.mm-cap{ width:92px; margin-top:114px; padding:6px 0; display:flex; flex-direction:column; align-items:center; gap:2px; border-radius:10px; font-size:14px; font-weight:600; color:var(--muted); background:var(--card-2); border:1px solid var(--line); }   /* 82 + 62 形状中线 − 30 半高 */
+.mm-cap b{ font-size:18px; font-weight:800; color:var(--ink); }
+.mm-shape{ display:flex; flex-direction:column; align-items:center; justify-content:center; }
+.mm-arrow{ display:flex; align-items:center; color:var(--arrow); }
+.mm-dim{ font:600 14px var(--mono); color:var(--muted); white-space:nowrap; }
+.mx{ display:block; border-radius:3px; box-sizing:border-box; }
+.mx.w{ background:#e6e8ee; border:1.5px solid #a3a8b6; }
+.mx.h{ background:#f1f2f5; border:1.5px solid #a3a8b6; }
+.mx.c{ background:repeating-linear-gradient(135deg,#0a7d61 0 1.5px,#cdeee2 1.5px 5px); border:1.5px solid #0a7d61; }
+.mx.k{ background:#f5cccc; border:1.5px solid #d98785; }
+.mx.v{ background:#f8e6c0; border:1.5px solid #e0a83e; }
+.mx.q{ background:#d3e1f4; border:1.5px solid #7fa1d0; }                 /* q_t：沿用 Tab1/2 的 Queries 淡蓝 */
+.mx.cq{ background:#aec6ea; border:1.5px solid #5a82bd; }                /* c_t^Q：Query 的压缩向量，不缓存 → 不画斜线，用深一档的蓝 */
+.mx.kv{ background:linear-gradient(180deg,#f5cccc 50%,#f8e6c0 50%); border:1.5px solid #d4927a; }   /* K/V 合画一个：上粉下黄 */
+/* 16384 = 128 个头 × 每头 128：和 Tab6 结构图一样画成斜着叠的多片，每片是一个头，最前一片写"128 头" */
+.mstack{ position:relative; width:calc(var(--w) + 24px); height:calc(var(--h) + 24px); }
+.mstack .mx{ position:absolute; width:var(--w); height:var(--h); }
+.mstack .mx:nth-child(1){ left:0; top:0; }
+.mstack .mx:nth-child(2){ left:8px; top:8px; }
+.mstack .mx:nth-child(3){ left:16px; top:16px; }
+.mstack .mx:nth-child(4){ left:24px; top:24px; display:flex; align-items:center; justify-content:center; }
+.mstack .mx span{ font:700 13px var(--sans); color:var(--ink); white-space:nowrap; }
+/* 叠片下方的大括号：横向括住整摞 = 共 128 个头（照 083 Tab2 的 "L 层" 大括号）；括号和标签不占位，不影响左右对齐 */
+.mstack .hbrace{ position:absolute; left:0; top:calc(100% + 4px); width:100%; height:12px; overflow:visible; }
+.mstack .hbrace path{ fill:none; stroke:var(--arrow); stroke-width:2; stroke-linecap:round; vector-effect:non-scaling-stroke; }
+.mstack .hbrace-l{ position:absolute; left:50%; top:calc(100% + 18px); transform:translateX(-50%); font:700 13.5px var(--mono); color:var(--muted); white-space:nowrap; line-height:1; }
+.mstack .hbrace-l b{ font-size:17px; font-weight:800; color:var(--ink); }
+.mstack .mx span.v{ writing-mode:vertical-rl; font-size:13px; letter-spacing:0; }
+/* Tab2 放了矩阵图之后很满：图例挪到右下角空位，间距收紧 */
+#compress{ gap:10px; }
+#compress .attn-col{ gap:10px; }
+#compress .mla-fig{ position:relative; }
+#compress .scene{ gap:12px; margin-top:0; }
+/* KV、Query 两组乘法放在同一个框里：网格 3 列（降维 | 箭头 | 升维），每行 .mm 拆开（display:contents）落进网格 */
+#query .takeaway{width:min(1110px,100%)}   /* 和上面公式框一样宽 */
+#query .mm-box{display:grid;grid-template-columns:auto auto auto auto auto;align-items:start;row-gap:24px;padding:4px 40px 16px}
+/* Query 那行公式只有一行高（上面 KV 行要叠 k_t/v_t 两行），符号区压矮，箭头跟着上移，两行之间不留空白 */
+#query .mm-box > .mm:last-child .mm-sym{height:44px}
+#query .mm-box > .mm:last-child .mm-arrow{margin-top:50px}
+#query .mm-box > .mm{display:contents}
+/* 左右对调：升维一组放左、降维一组放右，箭头从右指向左（W 矩阵在左边乘，读起来更顺） */
+#query .mm-box > .mm > .mm-group.right{grid-column:2}
+#query .mm-box > .mm > .mm-arrow{grid-column:3}
+#query .mm-box > .mm > .mm-group:not(.right){grid-column:4}
+#query .mm-arrow svg{transform:scaleX(-1)}
+#query .mm-box > .mm:not(:last-child) > *{grid-row:1}   /* 对调后 DOM 顺序和列顺序相反，自动排布会错行，行号写死 */
+#query .mm-box > .mm:last-child > *{grid-row:2}
+#query .qside{grid-row:1 / 3;align-self:center;margin:0}
+#query .qside.l{grid-column:5;margin-left:36px}    /* 降维标签跟着降维组到右边 */
+#query .qside.r{grid-column:1;margin-right:36px}   /* 升维标签到左边 */
+/* 上下两行同一位置的项定宽（左式向量 | W | 右边向量），= × 箭头和矩阵正好竖直对齐 */
+/* 输入、输出向量的维度高亮（每组第 1 项是输出、第 5 项是输入；中间 W 的行×列保持灰色），颜色跟向量本身 */
+#query .mm-group .mm-dim, #decouple .br6 .mm-dim{padding:1px 7px;border:1.5px solid transparent}   /* 没高亮的 W 尺寸也留同样的内边距和边框位置，文字和两边的标签落在同一条线上 */
+/* 中间 W 矩阵的行×列不显示，只留输入、输出向量的维度（visibility 保留占位，布局不动） */
+#query .mm-group .mm > .mm-term:nth-child(3) .mm-dim, #decouple .br6 .mm-rope > .mm-term:first-child .mm-dim{visibility:hidden}
+#query .mm-group .mm > .mm-term:is(:nth-child(1),:nth-child(5)) .mm-dim{font-weight:800;color:var(--ink);background:#fff;border:1.5px solid var(--line-2);border-radius:7px;padding:1px 7px}
+#query .mm-box > .mm:not(:last-child) .mm-group.right .mm > .mm-term:nth-child(1) .mm-dim{color:var(--k);border-color:var(--k-line)}   /* k_t / v_t */
+#query .mm-box > .mm:not(:last-child) .mm-group.right .mm > .mm-term:nth-child(5) .mm-dim,
+#query .mm-box > .mm:not(:last-child) .mm-group:not(.right) .mm > .mm-term:nth-child(1) .mm-dim{color:var(--c);border-color:var(--c-line)}   /* c_t^KV */
+#query .mm-box > .mm:last-child .mm-group.right .mm > .mm-term:is(:nth-child(1),:nth-child(5)) .mm-dim,
+#query .mm-box > .mm:last-child .mm-group:not(.right) .mm > .mm-term:nth-child(1) .mm-dim{color:var(--q);border-color:var(--q-line)}   /* q_t、c_t^Q */
+#query .mm-group .mm > .mm-term:nth-child(1){width:68px}   /* 最长的行×列是 16384×1 */
+#query .mm-group .mm > .mm-term:nth-child(3){width:110px}  /* 16384×1536 */
+#query .mm-group .mm > .mm-term:nth-child(5){width:60px}   /* 1536×1 */
+/* 收紧横向空隙：= × 两侧、箭头两侧、降维/升维卡片和公式之间 */
+#query .mm .mm-op{min-width:20px;padding:0 2px}
+#query .mm .mm-arrow{padding:0 16px}
+#query .mm-group{gap:36px}
+#compress .p1kv4{margin-top:36px}   /* Tab2 的图比 Tab1 的图底部少 12px 留白，补上后卡片和图的间距同 Tab1 */
+#decouple .p1kvf{ padding:14px 32px; font-size:26px; }
+.p1kvf .term.rr{ color:var(--r); }   /* Tab6：共享 RoPE Key 的维度，红色同 k^R */
+.p1kvf .term.rr sub{ font-size:.55em; font-weight:700; }
+.attn-kv.lat{ background:var(--c-soft); border:1.5px solid var(--c-line); color:var(--c); }
+.training-row{display:grid;grid-template-columns:150px 56px 220px 56px 220px 56px 1fr;gap:10px;align-items:center}
+/* 04 / 05 · 改变括号，显示位置冲突 */
+/* Tab4 右侧：两种结合方式的乘加次数逐步算出来（n = 100，尺寸取 Tab2/3 的真实值） */
+/* Tab4 顶部两行公式：两列网格（标签 | 公式），整体按内容宽度居中，两行公式起点对齐 */
+.score-grid{display:grid;grid-template-columns:auto auto auto;justify-content:center;align-items:center;column-gap:20px;row-gap:6px}
+.score-grid .sl-wide{grid-column:2 / span 2}
+.score-grid .sl-lhs{justify-self:end;margin-right:-12px}   /* 和右列的 = 靠近一点，读起来是一个式子 */
+.score-line{display:contents}
+.score-lbl{justify-self:end;font:700 17px var(--sans);color:var(--muted)}
+.score-line math{justify-self:start}
+#associate .scene, #associate .takeaway, #value .scene, #value .takeaway{width:min(980px,100%)}
+#associate, #decouple{padding-bottom:160px}   /* 比 1080 略高，滚到底时最后一块下面多留一截空白，不贴着屏幕底边 */
+#value mtext{font-family:var(--sans);font-size:15px;font-weight:700;font-style:normal}   /* 花括号下的「预先合并」 */
+#conflict .scene, #conflict .takeaway{width:min(980px,100%)}
+#conflict .score-grid{grid-template-columns:auto 36px auto auto}   /* 标签 | 缩进 | 右式 | 空列（旁注已删）；左式单独占第一行，等号从第二行起往下排 */
+#conflict .c5-lhs{grid-column:2 / span 2;justify-self:start}
+#conflict .score-grid > .score-line > math{font-size:27px}
+#conflict .score-lbl{white-space:nowrap}
+/* Tab6 两条分支的公式：左式 | = 右式 | 维度，等号对齐 */
+#decouple .scene, #decouple .takeaway{width:min(1180px,100%)}
+#decouple .scene{gap:14px}
+/* Tab6：上排 内容分支（窄）| RoPE 分支矩阵乘法（宽）；下排 拼接 | 点积 + softmax */
+.mla6{display:flex;flex-direction:column;gap:12px}
+.slide{bottom:auto;min-height:100%}   /* 内容比 1080 高的页可以往下滚：slide 随内容长高，滚到底时最后一块下面保留 padding-bottom */
+/* 最上面的按头拼接：q_t、k_t 各画成一根横向量，内容段（绿）| RoPE 段（红），上方标分支名；长度 128 : 64 = 320 : 160 */
+#decouple .cc6{display:flex;align-items:center;justify-content:center;gap:32px;padding:12px 20px}
+.cc6-g{display:grid;grid-template-columns:auto auto;column-gap:12px;row-gap:8px;align-items:center}
+.cc6-g > math{font-size:30px;color:var(--ink);justify-self:end}
+.cc6-hd{display:flex}
+.cc6-hd span{font:700 15px var(--sans);text-align:center}
+.cc6-hd span:first-child, .cvec .seg.c{width:320px}
+.cc6-hd span:last-child, .cvec .seg.r{width:160px}
+.cvec{display:flex;height:48px;border-radius:9px;overflow:hidden}
+.cvec .seg{display:flex;align-items:center;justify-content:center;gap:10px;border:1.5px solid}
+.cvec .seg.c{background:var(--card-2);border-color:var(--line-2);border-radius:9px 0 0 9px}   /* 内容段用中性灰：绿色只留给 c^KV，红色只留给 RoPE */
+.cvec .seg.r{background:var(--r-soft);border-color:var(--r-line);border-left:0;border-radius:0 9px 9px 0}
+.cvec .seg math{font-size:24px;color:var(--ink)}
+/* 下面只画 RoPE 分支的矩阵乘法（k 在上 q 在下，放大一档突出）；内容分支公式写进上面拼接条的灰色段 */
+/* 左列：分支名 + 两行矩阵乘法；右列：Tab2 式示意图，竖跨两行矩阵 */
+.br6{display:grid;grid-template-columns:auto auto;justify-content:center;column-gap:150px;row-gap:6px;padding:14px 22px 10px 84px;align-items:start}   /* 左边多留的 62px = k^R 左边「所有头共享」伸出去的宽度，左右视觉留白相等 */
+.br6 > .mm{grid-column:1}
+.br6 > .mm{justify-content:flex-start;zoom:1.12}
+.br6 > .mm + .mm{order:-1}   /* k^R 那行排到 q^R 上面：整页统一 k 在上、q 在下 */
+/* 输入、输出向量的维度高亮，同「公式定义」页：k^R 红、h_t 墨色、q^R 和 c_t^Q 蓝；W 的行×列保持灰色 */
+#decouple .br6 > .mm > .mm-term:first-child .mm-dim, #decouple .br6 .mm-rope > .mm-term:last-child .mm-dim{font-weight:800;color:var(--ink);background:#fff;border:1.5px solid var(--line-2);border-radius:7px;padding:1px 7px}
+#decouple .br6 > .mm:nth-child(2) > .mm-term:first-child .mm-dim{color:var(--r);border-color:var(--r-line)}   /* k^R */
+#decouple .br6 > .mm:nth-child(1) > .mm-term:first-child .mm-dim, #decouple .br6 > .mm:nth-child(1) .mm-rope > .mm-term:last-child .mm-dim{color:var(--q);border-color:var(--q-line)}   /* q^R、c_t^Q */
+.r6fig{grid-column:2;grid-row:1 / 3;align-self:center}   /* 照 Tab2 的三行间距，整块竖直居中 */
+.attn-box.kr{ background:repeating-linear-gradient(135deg,#d64545 0 1.5px,#f8d4d4 1.5px 5px); border:2px solid #d64545; }   /* k^R：红斜线，同左边矩阵 */
+.attn-box.h{ background:#f1f2f5; border:2px solid #a3a8b6; }
+.attn-box.lq{ background:#aec6ea; border:2px solid #5a82bd; }
+.attn-latlbl.d6{ color:var(--ink); }
+.attn-latlbl.d6 math{ font-size:24px; }
+#diag6-rope .attn-proj math{ font-size:21px; }
+.attn-proj math{ font-size:17px; }
+#decouple .p1kvsub2{white-space:nowrap}   /* 页面收窄到 1000 后这行会折到第二行 */
+/* 同一列的项宽度固定，上下两行的 = × 和形状正好对齐 */
+.br6 .mm > .mm-term:first-child{width:68px}            /* 刚好放下 8192×1 标签 */
+.br6 .mm-rope > .mm-term:first-of-type{width:108px}     /* W^QR 叠层宽度 */
+.br6 .mm-rope > .mm-term:last-child{width:68px}
+.br6 .mm .mm-op{min-width:20px;padding:0 2px}            /* 收紧 = × 两侧 */
+.br6 .mm-rope{margin:0 0 0 44px}                         /* 左边只留「RoPE(」伸出去的宽度 */
+#decouple .mm .mm-sym{height:40px}
+#decouple .mm .mm-sym math{font-size:26px}
+#decouple .mm .mm-shape{height:116px}   /* 两列统一高度：16384 的叠层最高，下面还有「128 头」花括号；左右两列的行×列落在同一条横线上 */
+#decouple .br6 .mm-dim{margin-top:2px}
+/* 每行形状区只留本行最高形状的高度，行×列紧贴在形状下面：k^R 行最高是 h_t(104)，q^R 行是叠层 + 「128 头」花括号 */
+#decouple .br6 > .mm:nth-child(2) .mm-shape{height:108px}
+#decouple .br6 > .mm:nth-child(1) .mm-shape{height:104px;justify-content:flex-start;padding-top:8px}
+/* k^R 只有一份、128 个头共用：不画叠层，在形状下方写明（和 W 叠层下的「128 头」同一位置） */
+.kshare{position:relative}
+.kshare-l{position:absolute;top:50%;right:calc(100% + 12px);transform:translateY(-50%);white-space:nowrap;text-align:right;line-height:1.35;font:700 13.5px var(--sans);color:var(--r)}   /* 写在 k^R 左边，下面让给行×列 */
+#decouple .mm .mm-dim{font-size:14px}
+#decouple .mm .mm-op .mm-shape{font-size:22px}
+#decouple .mx.r{background:repeating-linear-gradient(135deg,#d64545 0 1.5px,#f8d4d4 1.5px 5px);border:1.5px solid #d64545}   /* k^R 进缓存 → 红斜线，同 MLA 全图 */
+/* RoPE( … ) 写在符号行里：「RoPE(」贴在 W 左边、「)」贴在向量右边，都不占位；W 这一组左右多留白给括号。
+   内容分支（.plain）没有括号，但留白一样，上下两行对齐 */
+.mm-rope{display:flex;align-items:flex-start;margin:0 12px 0 46px}
+.rp{position:relative;display:inline-flex;align-items:flex-end}
+.rp-l, .rp-r{position:absolute;bottom:0;white-space:nowrap}
+.rp-l{right:100%;padding-right:1px}
+.rp-r{left:100%;padding-left:1px}
+/* MLA 全图（Tab8）：结构图居中，公式写在图内连线旁；整块放大 1.25 倍 */
+.ov{zoom:1.25;margin-top:6px}
+#decouple .branch{gap:8px;padding:14px 18px}
+#decouple .branch h2{font-size:16px}
+#decouple .branch h2 small{font-size:13px;color:var(--dim)}
+.bf-grid{display:grid;grid-template-columns:auto auto 1fr;align-items:baseline;column-gap:10px;row-gap:4px;padding:2px 6px}
+.bf-grid math{font-size:24px;color:var(--ink)}
+.bf-l{justify-self:end}
+.bf-d{justify-self:end;font:600 14px var(--mono);color:var(--muted)}
+.bf-concat{grid-template-columns:auto auto auto!important;justify-content:center!important;padding:12px 18px;row-gap:2px!important;column-gap:10px!important;text-align:left}
+.bf-concat .score-lbl{grid-column:1 / -1;justify-self:start;font-size:15px;margin-top:4px}
+.bf-concat math{font-size:24px;color:var(--ink)}
+.bf-concat .bf-d{justify-self:start;margin-left:24px}
+.bf-concat mtext{font-family:var(--sans);font-size:13px;font-weight:700;font-style:normal}
+/* 论文 MLA 结构图：形状画在 SVG 里，带上下标的标签用 MathML 叠在上面 */
+.mlaf{position:relative;width:820px;height:545px;margin-left:44px}   /* 最左边的 q^C 标签和公式超出 x=0 约 40，左边补上让整图居中 */
+.mlaf svg{position:absolute;inset:0;overflow:visible}
+.mlaf .lb{position:absolute;transform:translateY(-50%);white-space:nowrap;font-size:15px;color:var(--ink);line-height:1}
+.mlaf .lb.r{transform:translate(-100%,-50%)}
+.mlaf .lb.c{transform:translate(-50%,-50%)}
+.mlaf .lb math{font-size:19px}
+.mlaf .lb.it{font-style:italic;font-size:13px;color:var(--muted);line-height:1.15}
+.mlaf .lb.zh{font-style:normal}   /* 中文不用斜体，伪斜体很难看 */
+.mlaf .dm{font:600 12px var(--sans);color:var(--dim)}   /* 向量维度 */
+#conflict .position-row{grid-template-columns:90px 1fr 200px}
+#conflict .position-row .formula math{font-size:26px;color:var(--ink)}
+#conflict .rotation math{color:var(--ink)}   /* 这页内容窄，整体收窄，别留大片横向空白 */
+.abs-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.abs-col{display:flex;flex-direction:column;align-items:center;gap:22px;padding:18px 28px 20px}
+.abs-col .tag{align-self:flex-start;font-size:18px;font-weight:700}
+.abs-col .tag math{font-size:21px;color:var(--ink)}   /* W_UK 和顶部公式同色：W 琥珀、下标墨色 */
+.abs-col .mmv{margin-top:14px}   /* 给虚线框上方的角标留位置 */
+.calc{display:grid;gap:6px;width:100%;text-align:left;border-top:1px solid var(--line);padding-top:14px}
+.calc-row{display:grid;grid-template-columns:1fr auto;align-items:baseline;gap:10px;font-size:16px}
+/* Tab4 中间：把两种结合方式的矩阵乘法画出来（示意比例：16384 = 120px，512 = 48px），虚线框 = 一起算的那一组 */
+.mmv{display:flex;align-items:flex-start;justify-content:center;gap:2px}
+.mmv-term{display:flex;flex-direction:column;align-items:center;gap:6px;min-width:40px}
+.mmv-shape{height:150px;display:flex;align-items:center;justify-content:center}
+/* 符号在形状上方、行×列在下方：.mmv-lbl 拆开（display:contents），用 order 排到形状两侧 */
+.mmv-lbl{display:contents}
+.mmv-lbl math{order:-1;display:block;height:34px;font-size:22px;text-align:center;color:var(--ink)}   /* 不继承虚线框的颜色，上下标保持墨色，和顶部公式一致 */
+.mmv-lbl .d{order:1;font:600 13px var(--mono);color:var(--muted)}
+.mmv-op{height:150px;margin-top:40px;display:flex;align-items:center;font:700 22px var(--mono);color:var(--dim);padding:0 4px}   /* 符号 34 + 间距 6，和形状中线对齐 */
+/* 合并的那一组用虚线框圈出来：框只画不占位，里外的形状中线保持一致 */
+.mmv-paren{position:relative;display:flex;align-items:flex-start;gap:2px;margin:0 10px}
+.mmv-paren::before{content:"";position:absolute;inset:-16px -10px -6px;border:1.5px dashed;border-radius:12px}
+.mmv-paren > *{position:relative}
+.mmv-paren.k::before{border-color:var(--k-line);background:var(--k-soft)}
+.mmv-paren.q::before{border-color:var(--q-line);background:var(--q-soft)}
+.mmv-paren.c::before{border-color:var(--c-line);background:var(--c-soft)}
+.mmv-paren.nobox::before{display:none}   /* 单个 c_j^KV 不用框，只留 ×100 角标 */
+.mmv-paren.k{color:var(--k)} .mmv-paren.q{color:var(--q)} .mmv-paren.c{color:var(--c)}
+.mmv-paren .mmv-op{color:var(--dim)}
+.mmv-badge{position:absolute;top:-28px;left:50%;transform:translateX(-50%);z-index:2;white-space:nowrap;font-size:12px;font-weight:700;padding:1px 8px;border-radius:999px;background:#fff;border:1px solid currentColor}
+.calc-lbl{color:var(--muted)}
+.calc-lbl math{font-size:20px;color:var(--ink)}   /* 和顶部公式同一套 MathML 写法：底字母上色，上下标保持墨色 */
+/* Tab4 矩阵形状用顶部公式的同一组颜色：q 蓝、W_UK 粉红（Key 侧）、c^KV 绿 */
+#associate .mx.q{background:var(--q-soft);border-color:var(--q-line);background:rgba(3,105,161,.16)}
+#associate .mx.w{background:#f5cccc;border-color:#d98785}.calc-expr{font-family:var(--mono);font-size:15px;color:var(--muted);text-align:right}
+.calc-row.total{border-top:1px dashed var(--line-2);padding-top:6px;margin-top:2px}
+.calc-row.total .calc-lbl{color:var(--ink);font-weight:700}
+.calc-sum{text-align:center;font-size:18px;font-weight:700;color:var(--ink)}
+.calc-sum .mono{font-size:20px}
+.compare-row{display:grid;grid-template-columns:160px 1fr 200px;align-items:center;gap:18px;padding:20px 24px}.compare-row .tag{font-size:18px;font-weight:700}.work{font-size:16px;text-align:center;border-left:1px solid var(--line);padding-left:18px}.work strong{font:700 28px var(--mono);display:block;margin-bottom:5px}.paren{border:1px solid var(--k-line);background:var(--k-soft);padding:10px 16px;border-radius:9px}.paren.blue{border-color:var(--q-line);background:var(--q-soft)}.conflict-formula{padding:22px}.rotation{padding:6px 14px;background:var(--r-soft);border:1px solid var(--r-line);border-radius:8px;color:var(--r)}.position-rows{display:grid;gap:10px}.position-row{display:grid;grid-template-columns:120px 1fr 220px;gap:14px;align-items:center;padding:12px 22px;border:1px solid var(--line);border-radius:11px;background:var(--card)}.position-row .formula{font-size:21px}.position-row .rotation{padding:3px 11px}.rotate-icon{width:28px;height:28px;border:2px solid var(--r);border-radius:50%;display:inline-block;position:relative}.rotate-icon:after{content:"";position:absolute;width:10px;height:2px;background:var(--r);left:12px;top:11px;transform-origin:left}.position-row:nth-child(1) .rotate-icon:after{transform:rotate(-35deg)}.position-row:nth-child(2) .rotate-icon:after{transform:rotate(45deg)}.position-row:nth-child(3) .rotate-icon:after{transform:rotate(130deg)}
+/* 06 · 内容与位置两条通路 */
+.branch{padding:20px;display:flex;flex-direction:column;gap:16px}.branch h2{margin:0}.branch-vectors{display:grid;grid-template-columns:1fr 50px 1fr;gap:14px;align-items:center}.vector-part{padding:14px 12px;text-align:center;border-radius:11px;border:1px solid var(--line-2);background:var(--card-head)}.vector-part.content{border-color:var(--c-line);background:var(--c-soft)}.vector-part.rope{border-color:var(--r-line);background:var(--r-soft)}.vector-part .mathterm{font-size:28px}.cache-sum{display:grid;grid-template-columns:1fr 44px 150px;align-items:center;gap:18px}.cache-bar{height:70px;display:flex;border-radius:11px;overflow:hidden;border:1px solid var(--c-line)}.cache-bar .latent{flex:8;background:rgba(10,125,97,.13);display:flex;align-items:center;justify-content:center;gap:16px;font-size:20px}.cache-bar .position{flex:1;background:rgba(214,69,69,.13);color:var(--r);display:flex;align-items:center;justify-content:center;font:700 23px var(--mono)}#decouple .number{font-size:40px}</style>
+</head>
+<body>
+<div class="deck">
+  <header class="topbar">
+    <div class="brand">多头潜在注意力 <b>Multi-Head Latent Attention</b></div>
+    <nav class="tabs" role="tablist" aria-label="MLA 推导步骤">
+      <button class="tab" id="tab-gqa" role="tab" aria-controls="gqa" data-slide="gqa">多头注意力</button>
+      <button class="tab" id="tab-compress" role="tab" aria-controls="compress" data-slide="compress">低秩联合压缩</button>
+      <button class="tab" id="tab-query" role="tab" aria-controls="query" data-slide="query">公式定义</button>
+      <button class="tab" id="tab-associate" role="tab" aria-controls="associate" data-slide="associate">矩阵吸收</button>
+      <button class="tab" id="tab-conflict" role="tab" aria-controls="conflict" data-slide="conflict">RoPE 冲突</button>
+      <button class="tab" id="tab-decouple" role="tab" aria-controls="decouple" data-slide="decouple">解耦 RoPE</button>
+      <button class="tab" id="tab-value" role="tab" aria-controls="value" data-slide="value">Value 吸收</button>
+      <button class="tab" id="tab-overview" role="tab" aria-controls="overview" data-slide="overview">MLA 全图</button>
+    </nav>
+  </header>
+  <main>
+    <section class="slide" id="gqa" role="tabpanel" aria-labelledby="tab-gqa">
+      <div class="heading"><h1><b>多头注意力的问题</b>：KV Cache显存占用太大</h1><div class="subtitle">MHA 每个头都存自己的 K、V，显存开销太大</div></div>
+
+      <div class="mla-fig">
+      <div class="mla-legend"><span class="sw"></span>推理时缓存</div>
+      <div class="attn-grid" style="margin-top:0">
+        <div class="attn-col">
+          <div class="attn-vtitle">Multi-Head Attention<br><span class="ab">(MHA)</span></div>
+          <div class="attn-diagram" id="diag-mha"></div>
+          <div class="attn-desc">每个 <b>Q</b> 头都有<b>独立</b>的 K、V</div>
+          <div class="attn-kv full">KV 头数 <span class="n">8</span> · 满额</div>
+        </div>
+        <div class="attn-col">
+          <div class="attn-vtitle">Multi-Query Attention<br><span class="ab">(MQA)</span></div>
+          <div class="attn-diagram" id="diag-mqa"></div>
+          <div class="attn-desc">所有 <b>Q</b> 头<b>共享</b>同一套 K、V</div>
+          <div class="attn-kv mid">KV 头数 <span class="n">1</span> · 只剩 1/8</div>
+        </div>
+        <div class="attn-col">
+          <div class="attn-vtitle">Grouped-Query Attention<br><span class="ab">(GQA)</span></div>
+          <div class="attn-diagram" id="diag-gqa"></div>
+          <div class="attn-desc"><b>Q</b> 头<b>分组</b>，同组共享一套 K、V</div>
+          <div class="attn-kv min">KV 头数 <span class="n">4</span> · 减半</div>
+        </div>
+      </div>
+      </div>
+
+      <div class="p1kv p1kv4">
+        <div class="p1kvf">
+          <span class="lbl">单token占用KV&nbsp;Cache</span>
+          <span class="eq">=</span>
+          <span class="term two">2</span><span class="mul">×</span>
+          <span class="term two">L</span><span class="mul">×</span>
+          <span class="term hkv">h<sub>kv</sub></span><span class="mul">×</span>
+          <span class="term">d<sub>h</sub></span>
+        </div>
+        <div class="p1kvsub2">以 DeepSeek-V2 为例：注意力头数 <b>h<sub>kv</sub> = 128</b>，每个头 <b>d<sub>h</sub> = 128</b> 维，单token占用 <b>L × 32,768</b> 个元素</div>
+      </div>
+    </section>
+
+    <section class="slide" id="compress" role="tabpanel" aria-labelledby="tab-compress">
+      <div class="heading"><h1><b>低秩联合压缩</b>：Low-Rank Key-Value Joint Compression</h1><div class="subtitle">Key 和 Value 共享潜向量，各头上投影不同</div></div>
+      <div class="mla-fig">
+        <div class="mla-legend"><span class="sw"></span>推理时缓存</div>
+        <div class="attn-grid four" style="margin-top:0">
+          <div class="attn-col">
+            <div class="attn-vtitle">Multi-Head Attention<br><span class="ab">(MHA)</span></div>
+            <div class="attn-diagram" id="diag2-mha"></div>
+            <div class="attn-desc">每个 <b>Q</b> 头都缓存<b>独立</b>的 K、V</div>
+            <div class="attn-kv full">缓存 <span class="n">8</span> 套 K、V</div>
+          </div>
+          <div class="attn-sep"></div>
+          <div class="attn-col">
+            <div class="attn-vtitle">Multi-Head Latent Attention<br><span class="ab">(MLA)</span></div>
+            <div class="attn-diagram" id="diag2-mla"></div>
+            <div class="attn-desc">只缓存<b>一份压缩潜向量</b>，每头 K、V 由它投影出来</div>
+            <div class="attn-kv lat">缓存 <span class="n">1</span> 份潜向量</div>
+          </div>
+        </div>
+      </div>
+      <!-- KV 占用计算：和 Tab1 同一个公式卡（同样的位置、间距、大小），h_kv 换成潜向量维度 d_c -->
+      <div class="p1kv p1kv4">
+        <div class="p1kvf">
+          <span class="lbl">单token占用KV&nbsp;Cache</span>
+          <span class="eq">=</span>
+          <span class="term two">L</span><span class="mul">×</span>
+          <span class="term hkv">d<sub>c</sub></span>
+        </div>
+        <div class="p1kvsub2">潜向量 <b>d<sub>c</sub> = 512</b> 维，单token占用 <b>L × 512</b> 个元素，是 MHA 的 <b>1/64</b></div>
+      </div>
+    </section>
+
+    <section class="slide" id="query" role="tabpanel" aria-labelledby="tab-query">
+      <div class="heading"><h1><b>压缩公式定义</b></h1></div>
+      <div class="scene">
+        <!-- 上：KV 压缩（从 Tab2 挪过来）；下：Query 压缩。
+             公式按列拆开，每一项正好写在自己的矩阵上方：上排公式符号（含 = ×），中排矩阵形状，下排行×列。
+             右边 k_t/v_t、W_UK/W_UV 上下叠在同一列里；= × c_t 是两行共用的，居中写一次 -->
+        <!-- 网格：降维标签 | 降维一组 | 箭头 | 升维一组 | 升维标签；两个标签各写一次，竖跨两行、居中 -->
+        <div class="mathline mm-box">
+        <div class="mm-cap qside l"><b>降维</b>向下投影</div><div class="mm-cap qside r"><b>升维</b>向上投影</div>
+        <div class="mm">
+          <div class="mm-group"><div class="mm">
+          <div class="mm-term"><div class="mm-sym"><math><msubsup><mi class="c">c</mi><mi>t</mi><mi>KV</mi></msubsup></math></div><div class="mm-shape"><i class="mx c" style="width:22px;height:64px"></i></div><div class="mm-dim">512×1</div></div>
+          <div class="mm-term mm-op"><div class="mm-sym"><math><mo>=</mo></math></div><div class="mm-shape">=</div></div>
+          <div class="mm-term"><div class="mm-sym"><math><msup><mi>W</mi><mi>DKV</mi></msup></math></div><div class="mm-shape"><i class="mx w" style="width:104px;height:64px"></i></div><div class="mm-dim">512×5120</div></div>
+          <div class="mm-term mm-op"><div class="mm-sym"><math><mo>×</mo></math></div><div class="mm-shape">×</div></div>
+          <div class="mm-term"><div class="mm-sym"><math><msub><mi>h</mi><mi>t</mi></msub></math></div><div class="mm-shape"><i class="mx h" style="width:22px;height:104px"></i></div><div class="mm-dim">5120×1</div></div>
+          </div></div>
+          <div class="mm-arrow"><svg width="96" height="24" viewBox="0 0 96 24"><path d="M2 12 H78"/><path d="M74 3 L93 12 L74 21 Z" class="hd"/></svg></div>
+          <div class="mm-group right"><div class="mm">
+          <div class="mm-term"><div class="mm-sym"><math><msub><mi>k</mi><mi>t</mi></msub></math><math><msub><mi>v</mi><mi>t</mi></msub></math></div><div class="mm-shape"><div class="mstack" style="--w:26px;--h:60px"><i class="mx kv"></i><i class="mx kv"></i><i class="mx kv"></i><i class="mx kv"><span class="v">128维</span></i></div></div><div class="mm-dim">16384×1</div></div>
+          <div class="mm-term mm-op"><div class="mm-sym"><math><mo>=</mo></math></div><div class="mm-shape">=</div></div>
+          <div class="mm-term braced"><div class="mm-sym"><math><msup><mi>W</mi><mi>UK</mi></msup></math><math><msup><mi>W</mi><mi>UV</mi></msup></math></div><div class="mm-shape"><div class="mstack" style="--w:64px;--h:60px"><i class="mx w"></i><i class="mx w"></i><i class="mx w"></i><i class="mx w"></i><svg class="hbrace" viewBox="0 0 88 12" preserveAspectRatio="none"><path d="M1 1 C1 11 44 1 44 11 C44 1 87 11 87 1"/></svg><span class="hbrace-l"><b>128</b> 头</span></div></div><div class="mm-dim">16384×512</div></div>
+          <div class="mm-term mm-op"><div class="mm-sym"><math><mo>×</mo></math></div><div class="mm-shape">×</div></div>
+          <div class="mm-term"><div class="mm-sym"><math><msubsup><mi class="c">c</mi><mi>t</mi><mi>KV</mi></msubsup></math></div><div class="mm-shape"><i class="mx c" style="width:22px;height:64px"></i></div><div class="mm-dim">512×1</div></div>
+          </div></div>
+        </div>
+        <!-- Query 压缩，和上面同一个框：c_t^Q = W_DQ × h_t → q_t = W_UQ × c_t^Q。
+             长短沿用 Tab2 的示意比例：h_t(5120)=104，q_t(16384)=144，c_t^Q(1536) 介于 c_t^KV(512)=64 和 h_t 之间 -->
+        <div class="mm">
+          <div class="mm-group"><div class="mm">
+          <div class="mm-term"><div class="mm-sym"><math><msubsup><mi class="q">c</mi><mi>t</mi><mi>Q</mi></msubsup></math></div><div class="mm-shape"><i class="mx cq" style="width:22px;height:84px"></i></div><div class="mm-dim">1536×1</div></div>
+          <div class="mm-term mm-op"><div class="mm-sym"><math><mo>=</mo></math></div><div class="mm-shape">=</div></div>
+          <div class="mm-term"><div class="mm-sym"><math><msup><mi>W</mi><mi>DQ</mi></msup></math></div><div class="mm-shape"><i class="mx w" style="width:104px;height:84px"></i></div><div class="mm-dim">1536×5120</div></div>
+          <div class="mm-term mm-op"><div class="mm-sym"><math><mo>×</mo></math></div><div class="mm-shape">×</div></div>
+          <div class="mm-term"><div class="mm-sym"><math><msub><mi>h</mi><mi>t</mi></msub></math></div><div class="mm-shape"><i class="mx h" style="width:22px;height:104px"></i></div><div class="mm-dim">5120×1</div></div>
+          </div></div>
+          <div class="mm-arrow"><svg width="96" height="24" viewBox="0 0 96 24"><path d="M2 12 H78"/><path d="M74 3 L93 12 L74 21 Z" class="hd"/></svg></div>
+          <div class="mm-group right"><div class="mm">
+          <div class="mm-term"><div class="mm-sym"><math><msub><mi>q</mi><mi>t</mi></msub></math></div><div class="mm-shape"><div class="mstack" style="--w:26px;--h:60px"><i class="mx q"></i><i class="mx q"></i><i class="mx q"></i><i class="mx q"><span class="v">128维</span></i></div></div><div class="mm-dim">16384×1</div></div>
+          <div class="mm-term mm-op"><div class="mm-sym"><math><mo>=</mo></math></div><div class="mm-shape">=</div></div>
+          <div class="mm-term"><div class="mm-sym"><math><msup><mi>W</mi><mi>UQ</mi></msup></math></div><div class="mm-shape"><div class="mstack" style="--w:84px;--h:60px"><i class="mx w"></i><i class="mx w"></i><i class="mx w"></i><i class="mx w"></i><svg class="hbrace" viewBox="0 0 108 12" preserveAspectRatio="none"><path d="M1 1 C1 11 54 1 54 11 C54 1 107 11 107 1"/></svg><span class="hbrace-l"><b>128</b> 头</span></div></div><div class="mm-dim">16384×1536</div></div>
+          <div class="mm-term mm-op"><div class="mm-sym"><math><mo>×</mo></math></div><div class="mm-shape">×</div></div>
+          <div class="mm-term"><div class="mm-sym"><math><msubsup><mi class="q">c</mi><mi>t</mi><mi>Q</mi></msubsup></math></div><div class="mm-shape"><i class="mx cq" style="width:22px;height:84px"></i></div><div class="mm-dim">1536×1</div></div>
+          </div></div>
+        </div></div>
+      </div><div class="takeaway">KV 的压缩是为了<b>推理时减小 KV Cache 的大小</b>，而 Query 的压缩则是为了<b>训练时减小中间激活值的大小</b></div>
+    </section>
+
+    <section class="slide" id="associate" role="tabpanel" aria-labelledby="tab-associate">
+      <div class="heading"><h1><b>矩阵吸收</b>：Matrix Absorption</h1><div class="subtitle">利用矩阵乘法结合律，把上投影矩阵 <math><msup><mi class="k">W</mi><mi>UK</mi></msup></math> 提前乘进当前 Query</div></div>
+      <div class="scene">
+        <!-- 符号沿用 Tab2/3：k_j = W_UK c_j^KV（Tab2），q_i 是当前 token i 的 Query（Tab3）；j 是历史 token -->
+        <!-- 第一行：推理时当前 token i 要和全部 n 个历史 token 各算一个分数；第二行：其中任意一项怎么展开 -->
+        <div class="mathline formula large score-grid">
+          <div class="score-line"><span class="score-lbl">推理时要算</span><math class="sl-wide"><msub><mi class="q">q</mi><mi>i</mi></msub><mo>·</mo><msub><mi class="k">k</mi><mn>1</mn></msub><mo>,</mo><mspace width="0.4em"/><msub><mi class="q">q</mi><mi>i</mi></msub><mo>·</mo><msub><mi class="k">k</mi><mn>2</mn></msub><mo>,</mo><mspace width="0.4em"/><mo>…</mo><mo>,</mo><mspace width="0.4em"/><msub><mi class="q">q</mi><mi>i</mi></msub><mo>·</mo><msub><mi class="k">k</mi><mi>n</mi></msub></math></div>
+          <!-- 展开分三行，等号对齐：左列 q_i·k_j，右列每行以 = 开头 -->
+          <div class="score-line"><span class="score-lbl">其中每一项</span><math class="sl-lhs"><msub><mi class="q">q</mi><mi>i</mi></msub><mo>·</mo><msub><mi class="k">k</mi><mi>j</mi></msub></math><math><mo>=</mo><msubsup><mi class="q">q</mi><mi>i</mi><mi>T</mi></msubsup><msub><mi class="k">k</mi><mi>j</mi></msub></math></div>
+          <div class="score-line"><span></span><span></span><math><mo>=</mo><msubsup><mi class="q">q</mi><mi>i</mi><mi>T</mi></msubsup><mo>(</mo><msup><mi class="k">W</mi><mi>UK</mi></msup><msubsup><mi class="c">c</mi><mi>j</mi><mi>KV</mi></msubsup><mo>)</mo></math></div>
+          <div class="score-line"><span></span><span></span><math><mo>=</mo><mo>(</mo><msubsup><mi class="q">q</mi><mi>i</mi><mi>T</mi></msubsup><msup><mi class="k">W</mi><mi>UK</mi></msup><mo>)</mo><msubsup><mi class="c">c</mi><mi>j</mi><mi>KV</mi></msubsup></math></div>
+        </div>
+        <!-- 两种结合方式左右并排：每栏上面画矩阵乘法，下面列计算量 -->
+        <div class="abs-grid">
+        <div class="panel abs-col"><div class="tag k">把 <math><msup><mi class="k">W</mi><mi>UK</mi></msup></math> 合并进 Key 向量</div><div class="mmv">
+          <div class="mmv-term"><div class="mmv-shape"><i class="mx q" style="width:150px;height:24px"></i></div><div class="mmv-lbl"><math><msubsup><mi class="q">q</mi><mi>i</mi><mi>T</mi></msubsup></math><span class="d">1×16384</span></div></div>
+          <div class="mmv-op">×</div>
+          <div class="mmv-paren k"><span class="mmv-badge k">×100</span>
+            <div class="mmv-term"><div class="mmv-shape"><i class="mx w" style="width:60px;height:150px"></i></div><div class="mmv-lbl"><math><msup><mi class="k">W</mi><mi>UK</mi></msup></math><span class="d">16384×512</span></div></div>
+            <div class="mmv-op">×</div>
+            <div class="mmv-term"><div class="mmv-shape"><i class="mx c" style="width:24px;height:60px"></i></div><div class="mmv-lbl"><math><msubsup><mi class="c">c</mi><mi>j</mi><mi>KV</mi></msubsup></math><span class="d">512×1</span></div></div>
+          </div>
+        </div><div class="calc">
+          <div class="calc-row"><span class="calc-lbl">① 合并 <math><msup><mi class="k">W</mi><mi>UK</mi></msup><msubsup><mi class="c">c</mi><mi>j</mi><mi>KV</mi></msubsup></math></span><span class="calc-expr">16384 × 512 × 1</span></div>
+          <div class="calc-row"><span class="calc-lbl">② 再左乘 <math><msubsup><mi class="q">q</mi><mi>i</mi><mi>T</mi></msubsup></math></span><span class="calc-expr">1 × 16384 × 1</span></div>
+          <div class="calc-row"><span class="calc-lbl">每个历史 token</span><span class="calc-expr">① + ②</span></div>
+          <div class="calc-row total"><span class="calc-lbl">n = 100 个历史 token</span><span class="calc-expr">(① + ②) × 100</span></div>
+        </div></div>
+        <div class="panel abs-col"><div class="tag q">把 <math><msup><mi class="k">W</mi><mi>UK</mi></msup></math> 合并进 Query 向量</div><div class="mmv">
+          <div class="mmv-paren q"><span class="mmv-badge q">只算 1 次</span>
+            <div class="mmv-term"><div class="mmv-shape"><i class="mx q" style="width:150px;height:24px"></i></div><div class="mmv-lbl"><math><msubsup><mi class="q">q</mi><mi>i</mi><mi>T</mi></msubsup></math><span class="d">1×16384</span></div></div>
+            <div class="mmv-op">×</div>
+            <div class="mmv-term"><div class="mmv-shape"><i class="mx w" style="width:60px;height:150px"></i></div><div class="mmv-lbl"><math><msup><mi class="k">W</mi><mi>UK</mi></msup></math><span class="d">16384×512</span></div></div>
+          </div>
+          <div class="mmv-op">×</div>
+          <div class="mmv-paren c nobox">            <div class="mmv-term"><div class="mmv-shape"><i class="mx c" style="width:24px;height:60px"></i></div><div class="mmv-lbl"><math><msubsup><mi class="c">c</mi><mi>j</mi><mi>KV</mi></msubsup></math><span class="d">512×1</span></div></div>
+          </div>
+        </div><div class="calc">
+          <div class="calc-row"><span class="calc-lbl">① 合并 <math><msubsup><mi class="q">q</mi><mi>i</mi><mi>T</mi></msubsup><msup><mi class="k">W</mi><mi>UK</mi></msup></math></span><span class="calc-expr">16384 × 512 × 1</span></div>
+          <div class="calc-row"><span class="calc-lbl">② 再右乘每个 <math><msubsup><mi class="c">c</mi><mi>j</mi><mi>KV</mi></msubsup></math></span><span class="calc-expr">1 × 512 × 1</span></div>
+          <div class="calc-row"><span class="calc-lbl">每个历史 token</span><span class="calc-expr">②</span></div>
+          <div class="calc-row total"><span class="calc-lbl">n = 100 个历史 token</span><span class="calc-expr">① + ② × 100</span></div>
+        </div></div>
+        </div>
+        <div class="calc-sum">n = 100 时，合并进 Query 少算约 <span class="mono">100</span> 倍</div>
+      </div><div class="takeaway">低秩联合压缩不仅<b>极大的减小了KV Cache的显存占用</b>，结合矩阵吸收还能<b>显著的降低推理计算量</b></div>
+    </section>
+
+    <section class="slide" id="conflict" role="tabpanel" aria-labelledby="tab-conflict">
+      <div class="heading"><h1>RoPE的加入会<b>破坏矩阵压缩</b></h1></div>
+      <div class="scene">
+        <!-- 沿用 Tab4 的推理公式，给 q、k 各乘上自己位置的 RoPE 旋转矩阵 R（红色）。
+             RoPE 的性质：RoPE(i)^T RoPE(j) = RoPE(j−i)，只和相对位置有关 -->
+        <div class="mathline formula large score-grid">
+          <div class="score-line"><span class="score-lbl">其中每一项</span><math class="c5-lhs"><mo>(</mo><mi class="r">RoPE</mi><mo stretchy="false">(</mo><mi>i</mi><mo stretchy="false">)</mo><msub><mi class="q">q</mi><mi>i</mi></msub><mo>)</mo><mo>·</mo><mo>(</mo><mi class="r">RoPE</mi><mo stretchy="false">(</mo><mi>j</mi><mo stretchy="false">)</mo><msub><mi class="k">k</mi><mi>j</mi></msub><mo>)</mo></math><span></span></div>
+          <div class="score-line"><span></span><span></span><math><mo>=</mo><msup><mrow><mo>(</mo><mi class="r">RoPE</mi><mo stretchy="false">(</mo><mi>i</mi><mo stretchy="false">)</mo><msub><mi class="q">q</mi><mi>i</mi></msub><mo>)</mo></mrow><mi>T</mi></msup><mi class="r">RoPE</mi><mo stretchy="false">(</mo><mi>j</mi><mo stretchy="false">)</mo><msub><mi class="k">k</mi><mi>j</mi></msub></math><span></span></div>
+          <div class="score-line"><span></span><span></span><math><mo>=</mo><msubsup><mi class="q">q</mi><mi>i</mi><mi>T</mi></msubsup><msup><mrow><mi class="r">RoPE</mi><mo stretchy="false">(</mo><mi>i</mi><mo stretchy="false">)</mo></mrow><mi>T</mi></msup><mi class="r">RoPE</mi><mo stretchy="false">(</mo><mi>j</mi><mo stretchy="false">)</mo><msub><mi class="k">k</mi><mi>j</mi></msub></math><span></span></div>
+          <div class="score-line"><span></span><span></span><math><mo>=</mo><msubsup><mi class="q">q</mi><mi>i</mi><mi>T</mi></msubsup><mi class="r">RoPE</mi><mo stretchy="false">(</mo><mo form="prefix" lspace="0" rspace="0">−</mo><mi>i</mi><mo stretchy="false">)</mo><mi class="r">RoPE</mi><mo stretchy="false">(</mo><mi>j</mi><mo stretchy="false">)</mo><msub><mi class="k">k</mi><mi>j</mi></msub></math><span></span></div>
+          <div class="score-line"><span></span><span></span><math><mo>=</mo><msubsup><mi class="q">q</mi><mi>i</mi><mi>T</mi></msubsup><mi class="r">RoPE</mi><mo stretchy="false">(</mo><mi>j</mi><mo>−</mo><mi>i</mi><mo stretchy="false">)</mo><msub><mi class="k">k</mi><mi>j</mi></msub></math><span></span></div>
+          <div class="score-line"><span></span><span></span><math><mo>=</mo><msubsup><mi class="q">q</mi><mi>i</mi><mi>T</mi></msubsup><mi class="r">RoPE</mi><mo stretchy="false">(</mo><mi>j</mi><mo>−</mo><mi>i</mi><mo stretchy="false">)</mo><msup><mi class="k">W</mi><mi>UK</mi></msup><msubsup><mi class="c">c</mi><mi>j</mi><mi>KV</mi></msubsup></math><span></span></div>
+        </div>
+        <!-- 逐个历史 token 展开：夹在 q_i^T 和 W_UK 中间的 R_{j−i} 每一行都不一样 -->
+        <div class="position-rows">
+          <div class="position-row"><div class="label mono">j = 1</div><div class="formula"><math><msubsup><mi class="q">q</mi><mi>i</mi><mi>T</mi></msubsup></math><span class="rotation"><math><mi class="r">RoPE</mi><mo stretchy="false">(</mo><mn>1</mn><mo>−</mo><mi>i</mi><mo stretchy="false">)</mo></math></span><math><msup><mi class="k">W</mi><mi>UK</mi></msup><msubsup><mi class="c">c</mi><mn>1</mn><mi>KV</mi></msubsup></math></div><div class="row"><span class="rotate-icon" aria-hidden="true"></span><span class="label r">这一份旋转</span></div></div>
+          <div class="position-row"><div class="label mono">j = 2</div><div class="formula"><math><msubsup><mi class="q">q</mi><mi>i</mi><mi>T</mi></msubsup></math><span class="rotation"><math><mi class="r">RoPE</mi><mo stretchy="false">(</mo><mn>2</mn><mo>−</mo><mi>i</mi><mo stretchy="false">)</mo></math></span><math><msup><mi class="k">W</mi><mi>UK</mi></msup><msubsup><mi class="c">c</mi><mn>2</mn><mi>KV</mi></msubsup></math></div><div class="row"><span class="rotate-icon" aria-hidden="true"></span><span class="label r">又一份旋转</span></div></div>
+          <div class="position-row"><div class="label mono">j = n</div><div class="formula"><math><msubsup><mi class="q">q</mi><mi>i</mi><mi>T</mi></msubsup></math><span class="rotation"><math><mi class="r">RoPE</mi><mo stretchy="false">(</mo><mi>n</mi><mo>−</mo><mi>i</mi><mo stretchy="false">)</mo></math></span><math><msup><mi class="k">W</mi><mi>UK</mi></msup><msubsup><mi class="c">c</mi><mi>n</mi><mi>KV</mi></msubsup></math></div><div class="row"><span class="rotate-icon" aria-hidden="true"></span><span class="label r">每个位置不同</span></div></div>
+        </div>
+      </div><div class="takeaway bad">RoPE 的加入<b>破坏了矩阵吸收</b>，使得点积的计算又回到了<b>计算量巨大的原始维度</b></div>
+    </section>
+
+    <section class="slide" id="decouple" role="tabpanel" aria-labelledby="tab-decouple">
+      <div class="heading"><h1><b>解耦RoPE</b>：把内容和位置的点积分开</h1><div class="subtitle">拼接向量的点积 = 内容分数 + RoPE 分数</div></div>
+      <div class="scene">
+        <!-- 两条分支都照 Tab2/3 的「上排符号 · 中排形状 · 下排行×列」画矩阵乘法：上行 RoPE 分支（DeepSeek-V2 式 (14)(15)），下行内容分支（Tab2/3 的上投影，不旋转）。
+             左列 Query、右列 Key，上下对齐；红色虚线框 = 框里的乘积再做 RoPE。
+             示意比例沿用 Tab2/3：h_t(5120)=104，c_t^Q(1536)=84，c_t^KV(512)=64；每头 128 维 = 60，每头 64 维 = 40。
+             q 每头一份（叠层 + 128 头花括号），k^R 只有一份、进缓存（红斜线） -->
+        <!-- 最上面醒目位置：按头拼接（论文式 (16)(17)）；下面两条分支分别给出拼接的两半，点积 + softmax 挪到「Value 吸收」页 -->
+        <div class="mla6">
+        <!-- 每个头的 q、k 画成一根横向量：前 128 维来自内容分支（绿），后 64 维来自 RoPE 分支（红），长度按 128 : 64 -->
+        <div class="mathline cc6">
+          <span class="score-lbl">每个头拼接</span>
+          <div class="cc6-g">
+            <span></span><div class="cc6-hd"><span>内容分支</span><span class="r">RoPE 分支</span></div>
+            <math><msub><mi class="k">k</mi><mi>t</mi></msub><mo>=</mo></math><div class="cvec"><div class="seg c"><math><msubsup><mi class="k">k</mi><mi>t</mi><mi>C</mi></msubsup><mo>=</mo><msup><mi class="k">W</mi><mi>UK</mi></msup><msubsup><mi class="c">c</mi><mi>t</mi><mi>KV</mi></msubsup></math></div><div class="seg r"><math><msubsup><mi class="r">k</mi><mi>t</mi><mi>R</mi></msubsup></math></div></div>
+            <math><msub><mi class="q">q</mi><mi>t</mi></msub><mo>=</mo></math><div class="cvec"><div class="seg c"><math><msubsup><mi class="q">q</mi><mi>t</mi><mi>C</mi></msubsup><mo>=</mo><msup><mi class="q">W</mi><mi>UQ</mi></msup><msubsup><mi class="q">c</mi><mi>t</mi><mi>Q</mi></msubsup></math></div><div class="seg r"><math><msubsup><mi class="q">q</mi><mi>t</mi><mi>R</mi></msubsup></math></div></div>
+          </div>
+        </div>
+        <!-- 下面：RoPE 分支画矩阵，是这页的主角（内容分支的公式直接写在上面拼接条的灰色段里） -->
+        <div class="panel br6">
+              <div class="mm">
+                <div class="mm-term"><div class="mm-sym"><math><msubsup><mi class="q">q</mi><mi>t</mi><mi>R</mi></msubsup></math></div><div class="mm-shape"><div class="mstack" style="--w:26px;--h:40px"><i class="mx q"></i><i class="mx q"></i><i class="mx q"></i><i class="mx q"><span class="v">64维</span></i></div></div><div class="mm-dim">8192×1</div></div>
+                <div class="mm-term mm-op"><div class="mm-sym"><math><mo>=</mo></math></div><div class="mm-shape">=</div></div>
+                <div class="mm-rope">
+                  <div class="mm-term"><div class="mm-sym"><span class="rp"><span class="rp-l"><math><mi class="r">RoPE</mi><mo stretchy="false">(</mo></math></span><math><msup><mi class="q">W</mi><mi>QR</mi></msup></math></span></div><div class="mm-shape"><div class="mstack" style="--w:84px;--h:40px"><i class="mx w"></i><i class="mx w"></i><i class="mx w"></i><i class="mx w"></i><svg class="hbrace" viewBox="0 0 108 12" preserveAspectRatio="none"><path d="M1 1 C1 11 54 1 54 11 C54 1 107 11 107 1"/></svg><span class="hbrace-l"><b>128</b> 头</span></div></div><div class="mm-dim">8192×1536</div></div>
+                  <div class="mm-term mm-op"><div class="mm-sym"><math><mo>×</mo></math></div><div class="mm-shape">×</div></div>
+                  <div class="mm-term"><div class="mm-sym"><span class="rp"><math><msubsup><mi class="q">c</mi><mi>t</mi><mi>Q</mi></msubsup></math><span class="rp-r"><math><mo stretchy="false">)</mo></math></span></span></div><div class="mm-shape"><i class="mx cq" style="width:22px;height:84px"></i></div><div class="mm-dim">1536×1</div></div>
+                </div>
+              </div>
+              <div class="mm">
+                <div class="mm-term"><div class="mm-sym"><math><msubsup><mi class="r">k</mi><mi>t</mi><mi>R</mi></msubsup></math></div><div class="mm-shape"><div class="kshare"><i class="mx r" style="width:22px;height:40px"></i><span class="kshare-l">所有头共享</span></div></div><div class="mm-dim">64×1</div></div>
+                <div class="mm-term mm-op"><div class="mm-sym"><math><mo>=</mo></math></div><div class="mm-shape">=</div></div>
+                <div class="mm-rope">
+                  <div class="mm-term"><div class="mm-sym"><span class="rp"><span class="rp-l"><math><mi class="r">RoPE</mi><mo stretchy="false">(</mo></math></span><math><msup><mi class="r">W</mi><mi>KR</mi></msup></math></span></div><div class="mm-shape"><i class="mx w" style="width:104px;height:40px"></i></div><div class="mm-dim">64×5120</div></div>
+                  <div class="mm-term mm-op"><div class="mm-sym"><math><mo>×</mo></math></div><div class="mm-shape">×</div></div>
+                  <div class="mm-term"><div class="mm-sym"><span class="rp"><math><msub><mi>h</mi><mi>t</mi></msub></math><span class="rp-r"><math><mo stretchy="false">)</mo></math></span></span></div><div class="mm-shape"><i class="mx h" style="width:22px;height:104px"></i></div><div class="mm-dim">5120×1</div></div>
+                </div>
+              </div>
+              <!-- 右边：照 Tab2 右图画法的 RoPE 分支示意（JS 生成）：Keys 只有 1 个、所有 Query 头共用 -->
+              <div class="attn-diagram r6fig" id="diag6-rope"></div>
+        </div>
+        </div>
+        <!-- KV 占用：沿用 Tab2 的公式卡，缓存多了一份 64 维的共享 k^R。32768 / 576 ≈ 56.9 -->
+        <div class="p1kv" style="margin-top:0;gap:12px">
+          <div class="p1kvf">
+            <span class="lbl">单token占用KV&nbsp;Cache</span>
+            <span class="eq">=</span>
+            <span class="term two">L</span><span class="mul">×</span>
+            <span class="mul">(</span><span class="term hkv">d<sub>c</sub></span><span class="mul">+</span><span class="term rr">d<sub>r</sub></span><span class="mul">)</span>
+          </div>
+          <div class="p1kvsub2">潜向量 <b>d<sub>c</sub> = 512</b> 维，共享 RoPE Key <b>d<sub>r</sub> = 64</b> 维，单token占用 <b>L × 576</b> 个元素，约是 MHA 的 <b>1/57</b></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" id="value" role="tabpanel" aria-labelledby="tab-value">
+      <div class="heading"><h1><b>Value 吸收</b>：先加权求和，再投影</h1></div>
+      <div class="scene">
+        <!-- 照 Tab4 的推导写法。固定一个头：v_j = W_UV c_j^KV（每头 W_UV 128×512），A_i(j) 是上一步 softmax 给出的标量权重。
+             再乘这个头那一块输出矩阵 W_O（5120×128），W_O W_UV 可以离线合并成 5120×512（论文：W_UV 可被吸收进 W_O） -->
+        <div class="mathline formula large score-grid">
+          <!-- 从「解耦 RoPE」页挪过来：拼接向量的点积拆成内容 + 位置两项，除以 √(128+64) 后对所有历史 token j 做 softmax（论文式 (18)） -->
+          <div class="score-line"><span class="score-lbl">点积拆成两项</span><math class="sl-lhs"><msub><mi class="q">q</mi><mi>i</mi></msub><mo>·</mo><msub><mi class="k">k</mi><mi>j</mi></msub></math><math><mo>=</mo><munder><mrow><msubsup><mi class="q">q</mi><mi>i</mi><mi>C</mi></msubsup><mo>·</mo><msubsup><mi class="k">k</mi><mi>j</mi><mi>C</mi></msubsup></mrow><mtext>内容 · 可吸收</mtext></munder><mo>+</mo><munder><mrow><msubsup><mi class="q">q</mi><mi>i</mi><mi>R</mi></msubsup><mo>·</mo><msubsup><mi class="r">k</mi><mi>j</mi><mi>R</mi></msubsup></mrow><mtext class="r">位置 · 直接算</mtext></munder></math></div>
+          <div class="score-line"><span class="score-lbl">再做 softmax</span><math class="sl-lhs"><mi>A</mi><mo stretchy="false">(</mo><mi>i</mi><mo>,</mo><mi>j</mi><mo stretchy="false">)</mo></math><math><mo>=</mo><mi>Softmax</mi><mrow><mo>(</mo><mfrac><mrow><msub><mi class="q">q</mi><mi>i</mi></msub><mo>·</mo><msub><mi class="k">k</mi><mi>j</mi></msub></mrow><msqrt><mrow><msub><mi>d</mi><mi>h</mi></msub><mo>+</mo><msub><mi>d</mi><mi>r</mi></msub></mrow></msqrt></mfrac><mo>)</mo></mrow></math></div>
+          <div class="score-line"><span class="score-lbl">加权求和</span><math class="sl-lhs"><msub><mi class="v">o</mi><mi>i</mi></msub></math><math><mo>=</mo><mi>A</mi><mo stretchy="false">(</mo><mi>i</mi><mo>,</mo><mn>1</mn><mo stretchy="false">)</mo><msub><mi class="v">v</mi><mn>1</mn></msub><mo>+</mo><mi>A</mi><mo stretchy="false">(</mo><mi>i</mi><mo>,</mo><mn>2</mn><mo stretchy="false">)</mo><msub><mi class="v">v</mi><mn>2</mn></msub><mo>+</mo><mo>…</mo><mo>+</mo><mi>A</mi><mo stretchy="false">(</mo><mi>i</mi><mo>,</mo><mi>n</mi><mo stretchy="false">)</mo><msub><mi class="v">v</mi><mi>n</mi></msub></math></div>
+          <!-- 展开分三行，等号对齐：左列 o_i，右列每行以 = 开头 -->
+          <div class="score-line"><span></span><span></span><math><mo>=</mo><munder><mo>∑</mo><mi>j</mi></munder><mi>A</mi><mo stretchy="false">(</mo><mi>i</mi><mo>,</mo><mi>j</mi><mo stretchy="false">)</mo><msub><mi class="v">v</mi><mi>j</mi></msub></math></div>
+          <div class="score-line"><span></span><span></span><math><mo>=</mo><munder><mo>∑</mo><mi>j</mi></munder><mi>A</mi><mo stretchy="false">(</mo><mi>i</mi><mo>,</mo><mi>j</mi><mo stretchy="false">)</mo><mo>(</mo><msup><mi class="v">W</mi><mi>UV</mi></msup><msubsup><mi class="c">c</mi><mi>j</mi><mi>KV</mi></msubsup><mo>)</mo></math></div>
+          <div class="score-line"><span></span><span></span><math><mo>=</mo><msup><mi class="v">W</mi><mi>UV</mi></msup><mo>(</mo><munder><mo>∑</mo><mi>j</mi></munder><mi>A</mi><mo stretchy="false">(</mo><mi>i</mi><mo>,</mo><mi>j</mi><mo stretchy="false">)</mo><msubsup><mi class="c">c</mi><mi>j</mi><mi>KV</mi></msubsup><mo>)</mo></math></div>
+          <!-- 输出投影：这个头的结果再乘 W_O；W_O W_UV 预先合并成一个矩阵 -->
+          <div class="score-line"><span class="score-lbl">再乘输出矩阵</span><math class="sl-lhs"><msup><mi>W</mi><mi>O</mi></msup><msub><mi class="v">o</mi><mi>i</mi></msub></math><math><mo>=</mo><msup><mi>W</mi><mi>O</mi></msup><msup><mi class="v">W</mi><mi>UV</mi></msup><mo>(</mo><munder><mo>∑</mo><mi>j</mi></munder><mi>A</mi><mo stretchy="false">(</mo><mi>i</mi><mo>,</mo><mi>j</mi><mo stretchy="false">)</mo><msubsup><mi class="c">c</mi><mi>j</mi><mi>KV</mi></msubsup><mo>)</mo></math></div>
+          <div class="score-line"><span></span><span></span><math><mo>=</mo><munder><munder><mrow><mo stretchy="false">(</mo><msup><mi>W</mi><mi>O</mi></msup><msup><mi class="v">W</mi><mi>UV</mi></msup><mo stretchy="false">)</mo></mrow><mo stretchy="true">⏟</mo></munder><mtext>预先合并</mtext></munder><mo stretchy="false">(</mo><munder><mo>∑</mo><mi>j</mi></munder><mi>A</mi><mo stretchy="false">(</mo><mi>i</mi><mo>,</mo><mi>j</mi><mo stretchy="false">)</mo><msubsup><mi class="c">c</mi><mi>j</mi><mi>KV</mi></msubsup><mo stretchy="false">)</mo></math></div>
+        </div>
+      </div><div class="takeaway">矩阵吸收的规律：<math><msup><mi class="k">W</mi><mi>UK</mi></msup></math> <b>和</b> <math><msup><mi class="q">W</mi><mi>UQ</mi></msup></math> <b>预先合并</b>，<math><msup><mi class="v">W</mi><mi>UV</mi></msup></math> <b>和</b> <math><msup><mi>W</mi><mi>O</mi></msup></math> <b>预先合并</b>，推理时<b>上投影不再单独计算</b></div>
+    </section>
+
+    <section class="slide" id="overview" role="tabpanel" aria-labelledby="tab-overview">
+      <div class="heading"><h1><b>MLA整体架构</b></h1></div>
+      <!-- 结构图（JS 生成），各条公式直接写在对应的连线旁 -->
+      <div class="ov"><div class="mlaf" id="mla-fig"></div></div>
+    </section>
+
+  </main>
+</div>
+<script>
+const tabs = [...document.querySelectorAll('.tab')];
+const slides = [...document.querySelectorAll('.slide')];
+const ids = slides.map(slide => slide.id);
+console.assert(new Set(ids).size === ids.length && tabs.length === slides.length, 'Slide / tab mapping must be unique');
+function show(id) {
+  const index = Math.max(0, ids.indexOf(id));
+  slides.forEach((slide, i) => slide.classList.toggle('active', i === index));
+  tabs.forEach((tab, i) => {
+    tab.setAttribute('aria-selected', String(i === index));
+    tab.tabIndex = i === index ? 0 : -1;
+  });
+}
+function navigate(index) {
+  location.hash = ids[(index + ids.length) % ids.length];
+}
+tabs.forEach((tab, i) => tab.addEventListener('click', () => navigate(i)));
+window.addEventListener('hashchange', () => show(location.hash.slice(1)));
+document.addEventListener('keydown', event => {
+  if (event.altKey || event.ctrlKey || event.metaKey || /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
+  const index = slides.findIndex(slide => slide.classList.contains('active'));
+  if (event.key === 'ArrowRight' || event.key === 'ArrowLeft' || (event.key === ' ' && event.target === document.body)) {
+    event.preventDefault();
+    const next = (index + (event.key === 'ArrowLeft' ? -1 : 1) + ids.length) % ids.length;
+    navigate(next);
+    if (event.target.matches('.tab')) tabs[next].focus();
+  } else if (/^[1-9]$/.test(event.key)) navigate(Number(event.key) - 1);
+});
+
+// ---- Tab1：MHA / MQA / GQA 结构图（照搬 075 Tab4：左侧行标 V/K/Q · 空心竖条 · 虚线只连 K→Q）----
+(function(){
+  const BW=22, BH=66, PITCH=33, yV=0, yK=82, yQ=190;         // 竖长条 + 三行位置（V 顶 / K 中 / Q 底）
+  const NS='http://www.w3.org/2000/svg';
+  // opts（Tab2 用）：cached = K/V 加斜线纹；latent = MLA 右侧那根压缩潜向量
+  function build(id, nQ, groups, labels, opts={}){
+    const host=document.getElementById(id); if(!host) return;
+    const LW=opts.latent?150:0;                               // 潜向量 + 投影箭头占的额外宽度
+    const W=nQ*PITCH+LW, H=yQ+BH;
+    host.style.width=W+'px'; host.style.height=H+'px';
+    const qx=i=>i*PITCH+PITCH/2;                              // 第 i 个 Q 头的中心 x
+    const units=[]; let start=0;                             // 每个 KV 单元覆盖的 Q 头分组
+    groups.forEach(g=>{ const idxs=[]; for(let j=0;j<g;j++) idxs.push(start+j);
+      const cx=idxs.reduce((s,k)=>s+qx(k),0)/idxs.length; units.push({cx,idxs}); start+=g; });
+    // 虚线连线：只连 K 底 → Q 顶（V 直接叠在 K 上方、不连线，照抄参考图）
+    const svg=document.createElementNS(NS,'svg');
+    svg.setAttribute('viewBox','0 0 '+W+' '+H); svg.style.width=W+'px'; svg.style.height=H+'px';
+    const line=(x1,y1,x2,y2)=>{ const l=document.createElementNS(NS,'line');
+      l.setAttribute('x1',x1); l.setAttribute('y1',y1); l.setAttribute('x2',x2); l.setAttribute('y2',y2);
+      l.setAttribute('stroke','#8c9099'); l.setAttribute('stroke-width','1.4'); l.setAttribute('stroke-dasharray','3 3'); svg.appendChild(l); };
+    units.forEach(u=>{ u.idxs.forEach(i=>line(qx(i),yQ,u.cx,yK+BH)); });
+    host.appendChild(svg);
+    const box=(cls,cx,y)=>{ const b=document.createElement('div'); b.className='attn-box '+cls;
+      b.style.left=(cx-BW/2)+'px'; b.style.top=y+'px'; b.style.width=BW+'px'; b.style.height=BH+'px';
+      host.appendChild(b); };
+    const kv=opts.cached?' cached':'';
+    units.forEach(u=>{ box('v'+kv,u.cx,yV); box('k'+kv,u.cx,yK); });
+    for(let i=0;i<nQ;i++) box('q',qx(i),yQ);
+    if(opts.latent){                                          // 照抄参考图：潜向量竖条 + 两条虚线收成梯形 + 向左的 projection 箭头
+      const lx=nQ*PITCH+LW-30, lt=14, lb=yK+BH-10, last=qx(nQ-1)+BW/2;
+      const b=document.createElement('div'); b.className='attn-box latent';
+      b.style.left=(lx-BW/2)+'px'; b.style.top=lt+'px'; b.style.width=BW+'px'; b.style.height=(lb-lt)+'px';
+      host.appendChild(b);
+      line(last+4,yV,lx-BW/2,lt); line(last+4,yK+BH,lx-BW/2,lb);
+      const ay=(yV+yK+BH)/2, ax1=lx-BW/2-12, ax0=last+14;     // 粗箭头：从潜向量指回 K/V
+      const ar=document.createElementNS(NS,'path');
+      ar.setAttribute('d','M '+ax1+' '+(ay-5)+' L '+(ax0+16)+' '+(ay-5)+' L '+(ax0+16)+' '+(ay-12)+' L '+ax0+' '+ay+' L '+(ax0+16)+' '+(ay+12)+' L '+(ax0+16)+' '+(ay+5)+' L '+ax1+' '+(ay+5)+' Z');
+      ar.setAttribute('fill','#6e6e80'); svg.appendChild(ar);
+      const pj=document.createElement('div'); pj.className='attn-proj'; pj.textContent='投影';
+      pj.style.left=((ax0+ax1)/2)+'px'; pj.style.top=(ay-36)+'px'; host.appendChild(pj);
+      const ll=document.createElement('div'); ll.className='attn-latlbl';
+      ll.innerHTML='压缩潜向量 <math style="font-size:18px"><msubsup><mi>c</mi><mi>t</mi><mi>KV</mi></msubsup></math>';
+      ll.style.left=lx+'px'; ll.style.top=(lb+12)+'px'; host.appendChild(ll);
+    }
+    // 左侧行标 V / K / Q（只在最左的 MHA 栏加，三栏行高一致、视觉贯穿三列）
+    if(labels){ [['Values','v',yV],['Keys','k',yK],['Queries','q',yQ]].forEach(([t,c,y])=>{
+      const lb=document.createElement('div'); lb.className='attn-rowlbl '+c;
+      lb.textContent=t; lb.style.top=(y+BH/2)+'px'; host.appendChild(lb); }); }
+  }
+  build('diag-mha',8,[1,1,1,1,1,1,1,1], true, {cached:true});   // 每头独立：8 套 KV
+  build('diag-mqa',8,[8], false, {cached:true});                // 全体共享：1 套 KV
+  build('diag-gqa',8,[2,2,2,2], false, {cached:true});          // 分 4 组：4 套 KV
+  // Tab2：MHA 对比 MLA；MHA 缓存每头 K/V，MLA 只缓存潜向量
+  build('diag2-mha',8,[1,1,1,1,1,1,1,1], true, {cached:true});
+  build('diag2-mla',8,[1,1,1,1,1,1,1,1], false, {latent:true});
+
+  // Tab6：照 Tab2 右边 MLA 图的画法画 RoPE 分支——Keys 只有 1 个（所有头共享、进缓存，红斜线），
+  // 8 个 Query 头都连到它；k^R 从 h_t 投影、q^R 从 c_t^Q 投影，右边各画一根来源向量 + 「投影」箭头
+  (function(){
+    const host=document.getElementById('diag6-rope'); if(!host) return;
+    // Values 不经过 RoPE 分支，只作为上下文淡化画在最上面（同 Tab2 的 V/K/Q 三行）
+    const nQ=8, yV=0, yK=82, yQ=190, LW=170;                   // 三行位置同 Tab2（V 顶 / K 中 / Q 底）
+    const W=nQ*PITCH+LW, H=yQ+BH;
+    host.style.width=W+'px'; host.style.height=H+'px';
+    const qx=i=>i*PITCH+PITCH/2, kx=(qx(0)+qx(nQ-1))/2;
+    const svg=document.createElementNS(NS,'svg');
+    svg.setAttribute('viewBox','0 0 '+W+' '+H); svg.style.width=W+'px'; svg.style.height=H+'px';
+    const line=(x1,y1,x2,y2)=>{ const l=document.createElementNS(NS,'line');
+      l.setAttribute('x1',x1); l.setAttribute('y1',y1); l.setAttribute('x2',x2); l.setAttribute('y2',y2);
+      l.setAttribute('stroke','#8c9099'); l.setAttribute('stroke-width','1.4'); l.setAttribute('stroke-dasharray','3 3'); svg.appendChild(l); };
+    for(let i=0;i<nQ;i++) line(qx(i),yQ,kx,yK+BH);           // 8 个 Q 头共用同一个 k^R
+    host.appendChild(svg);
+    const box=(cls,cx,y,h)=>{ const b=document.createElement('div'); b.className='attn-box '+cls;
+      b.style.left=(cx-BW/2)+'px'; b.style.top=y+'px'; b.style.width=BW+'px'; b.style.height=(h||BH)+'px'; host.appendChild(b); return b; };
+    for(let i=0;i<nQ;i++) box('v',qx(i),yV);
+    box('kr',kx,yK);
+    for(let i=0;i<nQ;i++) box('q',qx(i),yQ);
+    // 右边来源向量 + 往左的投影箭头（同 Tab2 的粗箭头）；「投影」字取较短那根（Q 行）箭头的中点
+    const pjx=((qx(nQ-1)+BW/2+14)+(W-24-BW/2-12))/2;
+    const src=(cls,y,txt,lbl,targetR)=>{
+      const lx=W-24; box(cls,lx,y);
+      const ay=y+BH/2, ax1=lx-BW/2-12, ax0=targetR+14;
+      const ar=document.createElementNS(NS,'path');
+      ar.setAttribute('d','M '+ax1+' '+(ay-5)+' L '+(ax0+16)+' '+(ay-5)+' L '+(ax0+16)+' '+(ay-12)+' L '+ax0+' '+ay+' L '+(ax0+16)+' '+(ay+12)+' L '+(ax0+16)+' '+(ay+5)+' L '+ax1+' '+(ay+5)+' Z');
+      ar.setAttribute('fill','#6e6e80'); svg.appendChild(ar);
+      const pj=document.createElement('div'); pj.className='attn-proj'; pj.innerHTML=txt;
+      pj.style.left=pjx+'px'; pj.style.top=(ay-44)+'px'; host.appendChild(pj);   // 两个「投影」字同一个横坐标，上下对齐
+      const ll=document.createElement('div'); ll.className='attn-latlbl d6'; ll.innerHTML=lbl;
+      ll.style.left=lx+'px'; ll.style.top=(y+BH+8)+'px'; host.appendChild(ll);
+    };
+    src('h',yK,'投影 <math><msup><mi class="r">W</mi><mi>KR</mi></msup></math>','<math><msub><mi>h</mi><mi>t</mi></msub></math>',kx+BW/2);
+    src('lq',yQ,'投影 <math><msup><mi class="q">W</mi><mi>QR</mi></msup></math>','<math><msubsup><mi class="q">c</mi><mi>t</mi><mi>Q</mi></msubsup></math>',qx(nQ-1)+BW/2);
+    // 行标 + 「所有头共享」
+    [['Values','v',yV],['Keys','k',yK],['Queries','q',yQ]].forEach(([t,c,y])=>{ const lb=document.createElement('div'); lb.className='attn-rowlbl '+c;
+      lb.textContent=t; lb.style.top=(y+BH/2)+'px'; host.appendChild(lb); });
+  })();
+})();
+
+// ---- Tab8（MLA 全图）：照 DeepSeek-V2 论文图 2 画 MLA 结构（形状 SVG + MathML 标签）；斜线纹 = 推理时缓存 ----
+(function(){
+  const host=document.getElementById('mla-fig'); if(!host) return;
+  const NS='http://www.w3.org/2000/svg';
+  const svg=document.createElementNS(NS,'svg'); host.appendChild(svg);
+  const el=(tag,attrs,parent)=>{ const e=document.createElementNS(NS,tag); for(const k in attrs) e.setAttribute(k,attrs[k]); (parent||svg).appendChild(e); return e; };
+  const C={ink:'#6e6e80',q:'#0369a1',qs:'#e6f0f7',k:'#d98785',ks:'#fbe3e3',v:'#7c5cf0',vs:'#efebfd',c:'#0a7d61',r:'#d64545',h:'#8e8ea0'};
+  // 斜线纹：c^KV 绿、k^R 红、图例灰
+  const defs=el('defs',{});
+  [['hc',C.c,'#cdeee2'],['hr',C.r,'#f8d4d4'],['hg',C.ink,'#ffffff']].forEach(([id,fg,bg])=>{
+    const p=el('pattern',{id,width:4,height:4,patternUnits:'userSpaceOnUse',patternTransform:'rotate(45)'},defs);
+    el('rect',{width:4,height:4,fill:bg},p); el('line',{x1:0,y1:0,x2:0,y2:4,stroke:fg,'stroke-width':1.6},p);
+  });
+  const mk=el('marker',{id:'mla-ah',viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:7,markerHeight:7,orient:'auto-start-reverse'},defs);
+  el('path',{d:'M0 0 L10 5 L0 10 z',fill:C.ink},mk);
+  const line=(pts,arrow)=>el('polyline',{points:pts.map(p=>p.join(',')).join(' '),fill:'none',stroke:C.ink,'stroke-width':1.4,...(arrow?{'marker-end':'url(#mla-ah)'}:{})});
+  // 向量胶囊：items 里 'o' = 一个分量圆，'…' = 省略
+  const capW=items=>items.reduce((s,i)=>s+(i==='o'?20:16),0)+10;
+  function capsule(cx,y,items,col,fill,hatch){
+    const w=capW(items), x0=cx-w/2;
+    el('rect',{x:x0,y,width:w,height:24,rx:7,fill:'#fff',stroke:col,'stroke-width':1.6});
+    let x=x0+5;
+    items.forEach(it=>{
+      if(it==='o'){ el('circle',{cx:x+10,cy:y+12,r:7.5,fill:hatch?`url(#${hatch})`:fill,stroke:col,'stroke-width':1.4}); x+=20; }
+      else { const t=el('text',{x:x+8,y:y+16,'text-anchor':'middle','font-size':13,fill:C.ink}); t.textContent='…'; x+=16; }
+    });
+    return {l:x0,r:x0+w};
+  }
+  // 每个头一份：后面叠两层，表示 128 个头
+  function stack(cx,y,n,col,fill){ [[-8,-8],[-4,-4],[0,0]].forEach(([dx,dy])=>capsule(cx+dx,y+dy,Array(n).fill('o'),col,fill)); const w=capW(Array(n).fill('o')); return {l:cx-w/2-8,r:cx+w/2}; }
+  const lb=(x,y,html,cls)=>{ const d=document.createElement('div'); d.className='lb '+(cls||''); d.style.left=x+'px'; d.style.top=y+'px'; d.innerHTML=html; host.appendChild(d); };
+  const M=s=>'<math>'+s+'</math>';
+  const sub=(b,s,col)=>`<msub><mi${col?` class="${col}"`:''}>${b}</mi><mi>${s}</mi></msub>`;
+  const sss=(b,s,p,col)=>`<msubsup><mi${col?` class="${col}"`:''}>${b}</mi><mrow>${s}</mrow><mi>${p}</mi></msubsup>`;
+  const t='<mi>t</mi>';   // 不写头下标 h：每头一份用叠层表示
+
+  // 图例
+  capsule(640,4,['o','o'],C.ink,null,'hg'); lb(678,16,'推理时缓存');
+  // Output / MHA / Input
+  const out=capsule(380,40,['o','o','o','o','…','…','o','o','o','o'],C.h,'#fff');
+  lb(380,22,'Output Hidden '+M(sub('u','t')),'c');   // 标签写在向量上方
+  el('rect',{x:16,y:90,width:744,height:32,rx:8,fill:'#fbf1d8',stroke:'#e0c07a','stroke-width':1.6});
+  const mt=el('text',{x:388,y:111,'text-anchor':'middle','font-size':16,'font-weight':600,fill:'#0d0d0d','font-family':'Inter,PingFang SC,sans-serif'}); mt.textContent='Multi-Head Attention';
+  line([[380,90],[380,65]],true);
+  const inp=capsule(350,485,['o','o','o','o','…','…','o','o','o','o'],C.h,'#fff');   // 比论文图往下挪，给横线下方的公式留出位置
+  lb(350,528,'Input Hidden '+M(sub('h','t')),'c');   // 标签写在向量下方
+  // 两个 latent：c^Q 不缓存（实心浅蓝），c^KV 缓存（绿斜线）；比论文图往下挪 30，给上投影的两根竖线之间留出写公式的高度
+  const cq=capsule(150,380,['o','o','…','o','o'],C.q,C.qs);
+  lb(cq.l-8,392,'Latent '+M(sss('c',t,'Q','q')),'r');
+  const ckv=capsule(635,380,['o','o','…','o','o'],C.c,null,'hc');
+  lb(ckv.l-8,392,'Latent '+M(sss('c',t,'KV','c')),'r');
+  // 各头的 q^C / q^R / k^C / v^C，k^R 只有一个、所有头共享（红斜线）
+  // q^C 左移 80、q^R 左移 30，v^C 右移 40：每个叠层右边都留出写维度的位置
+  const qc=stack(70,262,2,C.q,C.qs);  lb(qc.l-6,270,M('<mo>{</mo>'+sss('q',t,'C','q')+'<mo>}</mo>'),'r');
+  const qr=stack(235,262,1,C.q,C.qs);  lb(qr.l-6,270,M('<mo>{</mo>'+sss('q',t,'R','q')+'<mo>}</mo>'),'r');
+  el('circle',{cx:350,cy:274,r:11,fill:'url(#hr)',stroke:C.r,'stroke-width':1.6});
+  lb(333,274,M(sss('k',t,'R','r')),'r');
+  const kc=stack(530,262,2,C.k,C.ks); lb(kc.l-6,270,M('<mo>{</mo>'+sss('k',t,'C','k')+'<mo>}</mo>'),'r');   // Key/Value 一侧整体右移 20，给 k^R 竖线右边的公式让位
+  const vc=stack(740,262,2,C.v,C.vs); lb(vc.l-6,270,M('<mo>{</mo>'+sss('v',t,'C','v')+'<mo>}</mo>'),'r');   // 比论文图往右挪，k^C、v^C 两根竖线之间要放下两行公式
+  // 拼接后的每头 q、k
+  const qq=stack(152,168,3,C.q,C.qs); lb(qq.l-6,176,M('<mo>{</mo><mo>[</mo>'+sss('q',t,'C','q')+'<mo>;</mo>'+sss('q',t,'R','q')+'<mo>]</mo><mo>}</mo>'),'r');
+  const kk=stack(438,168,3,C.k,C.ks); lb(kk.l-6,176,M('<mo>{</mo><mo>[</mo>'+sss('k',t,'C','k')+'<mo>;</mo>'+sss('k',t,'R','r')+'<mo>]</mo><mo>}</mo>'),'r');
+  // 连线：h_t → c^Q / k^R / c^KV
+  line([[350,485],[350,430]]); line([[150,430],[635,430]]);
+  line([[150,430],[150,406]],true); line([[635,430],[635,406]],true); line([[350,430],[350,287]],true);
+  // 公式直接写在对应的线旁边：c^KV 那条写在横线下方、h_t 往右那一段的中间
+  lb(492,453,M('<msup><mi>W</mi><mi>DKV</mi></msup>'+sub('h','t')),'c');
+  lb(250,453,M('<msup><mi>W</mi><mi>DQ</mi></msup>'+sub('h','t')),'c');   // c^Q 写在横线左半段下方
+  lb(360,306,M('<mi class="r">RoPE</mi><mo stretchy="false">(</mo><msup><mi class="r">W</mi><mi>KR</mi></msup>'+sub('h','t')+'<mo stretchy="false">)</mo>'));   // k^R 公式直接写在竖线右边（原 apply RoPE 的位置）
+  // c^Q → q^C、q^R（q^R 再旋转）；c^KV → k^C、v^C
+  // 横线抬到 325，q^R 公式写在横线下方、和右边 k^R 的公式同一高度
+  line([[150,380],[150,325]]); line([[70,325],[235,325]]);
+  line([[70,325],[70,288]],true); line([[235,325],[235,288]],true);
+  lb(62,306,M('<msup><mi class="q">W</mi><mi>UQ</mi></msup>'+sss('c',t,'Q','q')),'r');   // q^C 写在 q^C 竖线左侧
+  lb(229,306,M('<mi class="r">RoPE</mi><mo stretchy="false">(</mo><msup><mi class="q">W</mi><mi>QR</mi></msup>'+sss('c',t,'Q','q')+'<mo stretchy="false">)</mo>'),'r');   // q^R 公式写在 q^R 竖线左边、和 k^R 公式同一高度（右边会撞上 k^R 竖线）
+  line([[635,380],[635,360]]); line([[530,360],[740,360]]);   // c^KV 居中在 k^C(530) 和 v^C(740) 之间
+  line([[530,360],[530,288]],true); line([[740,360],[740,288]],true);
+  // k^C、v^C 两行写在两根竖线之间、横线上方
+  lb(635,308,M('<msup><mi class="k">W</mi><mi>UK</mi></msup>'+sss('c',t,'KV','c')),'c');
+  lb(635,340,M('<msup><mi class="v">W</mi><mi>UV</mi></msup>'+sss('c',t,'KV','c')),'c');
+  // 拼接：q^C + q^R → q；k^C + k^R → k（「直接相连」写在箭头右边，左边留给拼接向量的维度）
+  line([[66,254],[66,228],[231,228],[231,254]]); line([[148,228],[148,194]],true);
+  lb(156,214,'concatenate','it');
+  line([[350,263],[350,228],[526,228],[526,254]]); line([[438,228],[438,194]],true);
+  lb(446,214,'concatenate','it');
+  // q、k、v 进入 Multi-Head Attention
+  line([[148,160],[148,122]]); line([[434,160],[434,122]]); line([[736,254],[736,122]]);
+  // 向量维度（DeepSeek-V2）：一律写在向量右边
+  const dm=(x,y,s,cls)=>lb(x,y,s+' 维','dm '+(cls||''));
+  dm(out.r+8,52,'5120'); dm(inp.r+8,497,'5120');
+  dm(cq.r+8,392,'1536'); dm(ckv.r+8,392,'512');
+  dm(368,274,'64');
+  dm(qc.r+8,270,'128'); dm(qr.r+8,270,'64'); dm(kc.r+8,270,'128'); dm(vc.r+8,270,'128');
+  dm(qq.r+8,176,'128+64'); dm(kk.r+8,176,'128+64');
+  // 图例：叠层 = 每个头各一份
+  stack(648,48,1,C.ink,'#fff'); lb(678,56,'128 头各一份');
+})();
+
+show(location.hash.slice(1));
+</script>
+</body>
+</html>
